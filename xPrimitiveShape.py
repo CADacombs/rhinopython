@@ -2,6 +2,7 @@
 190522-24: Started from another module.
 190721: Parameter name change.
 191119: Converted and imported functions into class methods.
+191126: Corrected starting tolerance in iterations in Surface.tryGetPlane and Surface.tryGetRoundPrimitive.
 """
 
 import Rhino
@@ -443,13 +444,8 @@ class Surface():
         else:
             rgNurbsSrf1 = rgSrf0.ToNurbsSurface()
     
-        if fTolerance <= 1e-9:
-            if bDebug:
-                s  = "Warning, some surfaces can only be found at a tolerance of"
-                s += " 1e-9 even though they should also be found at 1e-12."
-                print s
-    
-        fTol_Attempting = 1e-12 if fTolerance < 1e-12 else fTolerance
+        # Start tolerance to use at a low value and iterate up to input tolerance.
+        fTol_Attempting = fTolerance if fTolerance < 1e-9 else 1e-9
 
         while fTol_Attempting <= fTolerance:
             sc.escape_test()
@@ -497,14 +493,10 @@ class Surface():
         bSphereSkipped = False
         bTorusSkipped = False
     
-        if fTolerance <= 1e-9:
-            if bDebug:
-                s  = "Warning, some surfaces can only be found at a tolerance of"
-                s += " 1e-9 even though they should also be found at 1e-12."
-                print s
-    
-        fTol_Attempting = 1e-12
+        # Start tolerance to use at a low value and iterate up to input tolerance.
+        fTol_Attempting = fTolerance if fTolerance < 1e-9 else 1e-9
 
+        # Cylinder has preference, so all tolerances will be iterated, trying for that shape.
         if bCylinder:
             while fTol_Attempting <= fTolerance:
                 sc.escape_test()
@@ -524,7 +516,7 @@ class Surface():
                 if fTol_Attempting > fTolerance:
                     fTol_Attempting = fTolerance
 
-        fTol_Attempting = 1e-12
+        fTol_Attempting = fTolerance if fTolerance < 1e-9 else 1e-9
 
         while fTol_Attempting <= fTolerance:
             sc.escape_test()
@@ -628,8 +620,18 @@ class BrepFace():
 
 
     @staticmethod
-    def tryGetPlane(rgFace0, bMatchToShrunkFace=True, fTolerance=sc.doc.ModelAbsoluteTolerance, bDebug=False):
-    
+    def tryGetPlane(rgFace0, bMatchToShrunkFace=True, fTolerance=1e-9, bDebug=False):
+        """
+        Return on success: tuple(
+            tuple(
+                rg.Plane
+                float(Tolerance used)
+                bool(Whether shrunk surface was used),
+            None)
+        Return on fail: tuple(
+            None
+            str(LogStatement))
+        """
         if bMatchToShrunkFace:
             rgBrep_1Face_Shrunk = rgFace0.DuplicateFace(False)
             rgBrep_1Face_Shrunk.Faces.ShrinkFaces()
@@ -657,9 +659,17 @@ class BrepFace():
 
 
     @staticmethod
-    def tryGetRoundPrimitive(rgFace0, bMatchToShrunkFace=True, bCylinder=True, bCone=True, bSphere=True, bTorus=True, fTolerance=sc.doc.ModelAbsoluteTolerance, bDebug=False):
+    def tryGetRoundPrimitive(rgFace0, bMatchToShrunkFace=True, bCylinder=True, bCone=True, bSphere=True, bTorus=True, fTolerance=1e-9, bDebug=False):
         """
-        Round primitives are Cone, Cylinder, Sphere, and Torus.
+        Return on success: tuple(
+            tuple(
+                rg.Cone, Cylinder, Sphere, or Torus
+                float(Tolerance used)
+                bool(Whether shrunk surface was used),
+            None)
+        Return on fail: tuple(
+            None
+            str(LogStatement))
         """
     
         if bMatchToShrunkFace:

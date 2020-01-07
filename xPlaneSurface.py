@@ -14,6 +14,7 @@
 190519: Fixed typo in an argument name.
 190619: BoundingBox in createFromPlaneAndObjectSize is now inflated 10.0*sc.doc.ModelAbsoluteTolerance.
         Added bDebug to a function.
+191126: Bug fixes in createFromFace.
 """
 
 import Rhino
@@ -23,24 +24,28 @@ import Rhino.Input as ri
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
+import xPrimitiveShape
+
 
 def createFromFace(rgFace0, bMatchToShrunkFace=True, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, bDebug=False):
     """
-    Return on success:
-        PlaneSurface at a size relative to the BrepFace
-        fTol_Used
-        bShrunkUsed
-    Return on fail:
+    Return on success: tuple(
+        tuple(
+            PlaneSurface(That at least covers the entire BrepFace)
+            float(Tolerance used)
+            bool(Whether shrunk surface was used),
+        None)
+    Return on fail: tuple(
         None
-        String: Log statement.
+        str(LogStatement))
     """
     
     rgSrf_Face0 = rgFace0.UnderlyingSurface()
     
     if isinstance(rgSrf_Face0, rg.PlaneSurface):
         return None, "Surface is already a PlaneSurface."
-    
-    rc = tryGetPlane(
+
+    rc = xPrimitiveShape.BrepFace.tryGetPlane(
             rgFace0,
             bMatchToShrunkFace=bMatchToShrunkFace,
             fTolerance=fTolerance,
@@ -50,10 +55,10 @@ def createFromFace(rgFace0, bMatchToShrunkFace=True, fTolerance=0.1*sc.doc.Model
     else:
         rgPlane1, fTol_Used, bShrunkUsed = rc[0]
     
-    rgSrf1 = xPlaneSurface.createFromPlaneAndObjectSize(
-            rgPlane=rgPlane1,
-            obj_ForSize=rgFace0,
-            bDebug=bDebug)
+    rgSrf1 = createFromPlaneAndObjectSize(
+        rgPlane=rgPlane1,
+        obj_ForSize=rgFace0,
+        bDebug=bDebug)
     if rgSrf1 is None:
         return None, "createFromPlaneAndObjectSize fail."
     

@@ -1,5 +1,6 @@
 """
 191118-19: Created by moving main function from another module.
+191215: Corrected debug printed output.
 
 TODO:
     Rotate RevSurface's before moving seams to avoid conversion to NurbsSurface.
@@ -383,12 +384,12 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
     Returns: New Brep.
     """
 
-    if bDebug: print '-'*80 + '\n' + 'refreshToShape()'
+    if bDebug: print '-'*80 + '\n' + 'replaceShape()'
 
     shape_In = shape
     
     if not shape_In.IsValid:
-        print "{} is NOT valid in refreshToShape!".format(shape_In)
+        print "{} is NOT valid in replaceShape!".format(shape_In)
 
     rgBrep_0RebuiltEs = rgBrep0.DuplicateBrep()
     for f in rgBrep_0RebuiltEs.Faces:
@@ -438,7 +439,7 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
     
     for c in rgCrvs_Joined_Otr:
         if not c.IsClosed:
-            print "Outer curve is not closed in xBrep.refreshToShape."
+            print "Outer curve is not closed in xBrep.replaceShape."
             return
     
     rgCrvs_Joined_Inr = rg.Curve.JoinCurves(rgCrvs_ToJoin_Inr, fTolerance)
@@ -447,7 +448,7 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
     
     for c in rgCrvs_Joined_Inr:
         if not c.IsClosed:
-            print "Inner curve is not closed in xBrep.refreshToShape."
+            print "Inner curve is not closed in xBrep.replaceShape."
             return
     
     rgCrvs_Joined_All = rgCrvs_Joined_Otr + rgCrvs_Joined_Inr

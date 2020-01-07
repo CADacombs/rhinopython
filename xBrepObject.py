@@ -26,6 +26,8 @@
         extractFaces now returns a tuple of (list of extracted), (list of remaining) instead of just a list of extracted Breps.
 191117: CreateBooleanUnion for separating "shells" now accepts non-manifold breps.
 191118: Modified determination of joining tolerances in 2 functions.
+191208: Replaced an xrange with range so that the reversed result can be passed to length
+191213: Bug fixed by changing JoinBrep tolerance value in addFromSubsetOfFaces.
 """
 
 import Rhino
@@ -112,10 +114,8 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
         
         # Join monoface breps.
 
-        fTol_Join = max(
-            1.05 * max([edge.Tolerance for edge in rgBrep0.Edges]),
-            2.1 * sc.doc.ModelAbsoluteTolerance,
-        )
+        # Using a tight tolerance to rejoin only existing shared edges.
+        fTol_Join = 1e-9
 
         rgBreps_Joined = rg.Brep.JoinBreps(rgBreps1, tolerance=fTol_Join)
         if rgBreps_Joined is None:
@@ -385,7 +385,8 @@ def replaceFaces(rhBrep0, idxs_rgFaces, rgBreps_NewGeom, bExtract=False, fTolera
         except: obj = [obj]
         return obj
     if idxs_rgFaces is None:
-        idxs_rgFaces = reversed(xrange(rgBrep0.Faces.Count))
+        idxs_rgFaces = range(rgBrep0.Faces.Count)
+        idxs_rgFaces.reverse()
     else:
         idxs_rgFaces = sorted(coerceList(idxs_rgFaces), reverse=True)
     rgBreps_NewGeom = coerceList(rgBreps_NewGeom)

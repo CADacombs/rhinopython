@@ -28,6 +28,8 @@
 191118: Modified determination of joining tolerances in 2 functions.
 191208: Replaced an xrange with range so that the reversed result can be passed to length
 191213: Bug fixed by changing JoinBrep tolerance value in addFromSubsetOfFaces.
+200107: replaceGeometry now returns None when some of the new geometry is invalid.
+200108: Modified how addFromSubsetOfFaces handles invalid breps created by BrepFace.DuplicateFace.
 """
 
 import Rhino
@@ -242,13 +244,19 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
         
         # Duplicate face to its own brep.
         rgBrep1 = rgFace.DuplicateFace(duplicateMeshes=True)
-        gBrep1 = sc.doc.Objects.AddBrep(rgBrep1, attr)
+        if not rgBrep1.IsValid:
+            gBrep1 = None
+        else:
+            gBrep1 = sc.doc.Objects.AddBrep(rgBrep1, attr)
+
         if gBrep1 is None:
-            print "Brep face {} from {} could not be added to document.".format(
+            s = "Brep face {} from {} could not be added to document.".format(
                     idx, gBrep0)
-            rc = rs.MessageBox("Continue extracting faces, skipping this one?",
-                    buttons=4,
-                    title="addFromSubsetOfFaces")
+            print s
+            rc = rs.MessageBox(
+                s + "\nContinue extracting faces, skipping this one?",
+                buttons=4,
+                title="xBrepObject.addFromSubsetOfFaces")
             if rc is not None and rc == 6:
                 continue
             #if not bDebug: rs.DeleteObjects(gBreps1_Extracted)
@@ -279,6 +287,12 @@ def replaceGeometry(brep_toReplace, rgBreps_NewGeom):
     except: rgBreps_NewGeom = [rgBreps_NewGeom]
 
     rgBreps_NewGeom = [coerceBrep(o) for o in rgBreps_NewGeom]
+    
+    for rgB in rgBreps_NewGeom:
+        if not rgB.IsValid:
+            print "Brep geometry was not replaced because" \
+                  " some of the new geometry is invalid."
+            return
 
     # Separate any shells of modified brep and act based on shell quantity.
     rgBreps_per_shell = []
@@ -342,7 +356,8 @@ def removeFaces(rhBrep0, idxs_rgFaces):
     gBrep0 = rs.coerceguid(rhBrep0)
     
     if rgBrep0.Faces.Count == len(idxs_rgFaces):
-        # Since all faces of original brep are affected, delete brep instead of removing faces.
+        # Since all faces of original brep are to be removed,
+        # delete brep instead of removing faces.
         bSuccess = sc.doc.Objects.Delete(rdBrep0, True)
         rgBrep0.Dispose()
         return [] if bSuccess else None

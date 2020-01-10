@@ -655,23 +655,26 @@ def processBrep(rgBrep0, idx_rgFs, bEcho=False, bDebug=False):
         
         rgBs_Adj_Extended = []
         
-        for iB1_1F, rgB1_1F in enumerate(rgBs1_1F_Adj_ForExt):
-            #sc.doc.Objects.AddBrep(rgB1_1F)
-            if not xBrepFace_extendAtUntrimmedEdge.isBrepReadyForExtend(
-                    rgB1_1F, bEcho=bEcho, bDebug=bDebug):
+        for iB in range(len(rgBs1_1F_Adj_ForExt)):
+            rgB_In = rgBs1_1F_Adj_ForExt[iB]
+
+            #sEval = 'rgB_In.IsSolid'; print sEval+':',eval(sEval)
+            if rgB_In.IsSolid:
+                rgBs_Adj_Extended.append(rgB_In.DuplicateBrep())
+            elif not xBrepFace_extendAtUntrimmedEdge.isBrepReadyForExtend(
+                    rgB_In, bEcho=bEcho, bDebug=bDebug):
                 if bEcho:
                     s = "Brep {} of rgBs1_1F_Adj_ForExt is not ready to be " \
-                          "extended and will be skipped.".format(iB1_1F)
+                          "extended and will be skipped.".format(iB)
                     print s
-                print sc.doc.Objects.AddBrep(rgB1_1F)
-                raise ValueError(s)
-                return
+                #sc.doc.Objects.AddBrep(rgB1_1F)
+                rgBs_Adj_Extended.append(rgB_In.DuplicateBrep())
             else:
-                rgB1_1F_Adj_Ext = extend1FaceBrep(rgB1_1F, isoStats_Closest_OnFaces[iB1_1F])
+                rgB_Out = extend1FaceBrep(rgB_In, isoStats_Closest_OnFaces[iB])
                 
-                if rgB1_1F_Adj_Ext is not None:
-                    rgBs_Adj_Extended.append(rgB1_1F_Adj_Ext)
-                    #sc.doc.Objects.AddBrep(rgB1_1F_Adj_Ext); sc.doc.Views.Redraw()
+                if rgB_Out is not None:
+                    rgBs_Adj_Extended.append(rgB_Out)
+                    #sc.doc.Objects.AddBrep(rgB_Out); sc.doc.Views.Redraw()
         
         return rgBs_Adj_Extended
 
@@ -689,9 +692,9 @@ def processBrep(rgBrep0, idx_rgFs, bEcho=False, bDebug=False):
     ) = rc
 
     if bDebug:
-        sEval = "idx_AdjFs"; print sEval+':',eval(sEval)
-        sEval = "idx_Ls_perAdjF"; print sEval+':',eval(sEval)
-        sEval = "idx_Ts_ToRemove_perL_perAdjF"; print sEval+':',eval(sEval)
+        sEval = 'idx_AdjFs'; print sEval+':',eval(sEval)
+        sEval = 'idx_Ls_perAdjF'; print sEval+':',eval(sEval)
+        sEval = 'idx_Ts_ToRemove_perL_perAdjF'; print sEval+':',eval(sEval)
 
 
     # Remove selected and adjacent faces from brep.
@@ -771,7 +774,7 @@ def processBrep(rgBrep0, idx_rgFs, bEcho=False, bDebug=False):
         iCt_NakedBorders)
     if rgBs_Joined is not None:
         if bEcho:
-            print "Brep healed into a solid after " \
+            print "Brep healed after " \
                 "untrimming adjacent faces."
 
         rgB_Unaffected.Dispose()
@@ -790,7 +793,7 @@ def processBrep(rgBrep0, idx_rgFs, bEcho=False, bDebug=False):
     #    for rgB in rgBs_Adj_RemovedSharedT: rgB.Dispose()
     #    return rgB_Joined, rgBs_Adj_0, [], rgCrvs1_Joined
 
-    if bEcho: print "Failed to heal into a solid after untrimming adjacent faces."
+    if bEcho: print "Failed to heal after untrimming adjacent faces."
 
 
     print "Phase 2: Trim adjacent faces and join all."
@@ -815,7 +818,7 @@ def processBrep(rgBrep0, idx_rgFs, bEcho=False, bDebug=False):
         iCt_NakedBorders)
     if rgBs_Joined is not None:
         if bEcho:
-            print "Brep healed into a solid after " \
+            print "Brep healed after " \
                 "trimming adjacent faces."
 
         rgB_Unaffected.Dispose()
@@ -836,7 +839,7 @@ def processBrep(rgBrep0, idx_rgFs, bEcho=False, bDebug=False):
 
     for rgB in rgBs_Adj_NewTrim: rgB.Dispose()
 
-    if bEcho: print "Failed to heal into a solid after trimming adjacent faces."
+    if bEcho: print "Failed to heal brep after trimming adjacent faces."
 
 
     print "Phase 3: Extend the adjacent faces and trim again."
@@ -887,7 +890,7 @@ def processBrep(rgBrep0, idx_rgFs, bEcho=False, bDebug=False):
         iCt_NakedBorders)
     if rgBs_Joined is not None:
         if bEcho:
-            print "Brep healed into a solid after " \
+            print "Brep healed after " \
                 "extending and trimming adjacent faces."
 
         rgB_Unaffected.Dispose()
@@ -908,7 +911,7 @@ def processBrep(rgBrep0, idx_rgFs, bEcho=False, bDebug=False):
 
     for rgB in rgBs_Adj_NewTrim: rgB.Dispose()
 
-    if bEcho: print "Failed to heal into a solid after extending and trimming adjacent faces."
+    if bEcho: print "Failed to heal after extending and trimming adjacent faces."
 
     return [rgB_Unaffected], [], rgBs_Adj_RemovedSharedT, rgCrvs1_Joined
 
@@ -965,19 +968,20 @@ def processBrepObjects(gBreps0, idx_rgFs_perB0, bHeal=True, bAddModFaces=True, b
         ) = rc
 
         if len(rgB1s_forReplacement) == 1 and not rgBs_Adj_0 and not rgBs_Adj_Mod:
-            if bEcho: print "Brep healed into a solid after trimming faces."
             if not xBrepObject.replaceGeometry(rdBrep0, rgB1s_forReplacement):
                 if bEcho: print "Replacing original brep failed."
         else:
             if bAddModFaces and rgBs_Adj_Mod:
-                for iB1_1F, rgB in enumerate(rgBs_Adj_Mod):
-                    idB1_1F = sc.doc.Objects.AddBrep(rgB, rdBrep0.Attributes)
+                for iB in range(len(rgBs_Adj_Mod)):
+                    idB1_1F = sc.doc.Objects.AddBrep(
+                        rgBs_Adj_Mod[iB], rdBrep0.Attributes)
                 if bEcho:
                     print "Modified " \
                         "faces adjacent with those removed have been extracted."
             elif rgBs_Adj_0:
-                for iB1_1F, rgB in enumerate(rgBs_Adj_0):
-                    idB1_1F = sc.doc.Objects.AddBrep(rgB, rdBrep0.Attributes)
+                for iB in range(len(rgBs_Adj_0)):
+                    idB1_1F = sc.doc.Objects.AddBrep(
+                        rgBs_Adj_0[iB], rdBrep0.Attributes)
                 if bEcho:
                     print "Unmodified " \
                         "faces adjacent with those removed have been extracted."

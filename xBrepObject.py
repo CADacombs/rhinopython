@@ -1,15 +1,6 @@
 """
-181025: Created, starting with another script.
-181108: Added bAddOnlyMonofaces to addFromSubsetOfFaces.
-        Added extractFaces.
-181202: Added comments.
-190130: extractFaces now modifies attributes (as desired) of monoface breps.
-190412: Added iterable checker to repslaceFaces.
-190428-30: Changed some parameter names.
-190506: Added a function.
-190519: Fixed some print bugs.
-190524: Added a function.
-190530: replaceFaces now allows replacement of all faces.
+181025: Created.
+...
 190810: replaceFaces now accepts surfaces as input for the new geometry.
         Added fTolerance_Join parameter for replaceFaces.  If one is not provided, the current brep's maximum edge tolerance is used.
 190827: CANCELED.
@@ -30,6 +21,10 @@
 191213: Bug fixed by changing JoinBrep tolerance value in addFromSubsetOfFaces.
 200107: replaceGeometry now returns None when some of the new geometry is invalid.
 200108: Modified how addFromSubsetOfFaces handles invalid breps created by BrepFace.DuplicateFace.
+200129: Corrected a docstring.
+200527: Modified conditionals for some printed output.
+200619: Added more functions.  Purged some of this history.
+200701: Now no face indices passed to extractFaces creates an _Explode.  Various minor changes.
 """
 
 import Rhino
@@ -40,6 +35,8 @@ import scriptcontext as sc
 
 from System import Guid
 from System.Diagnostics import Stopwatch
+
+import xBrepFace
 
 
 def coerceRhinoObject(rhObj):
@@ -90,15 +87,14 @@ def coerceBrep(rhObj):
         return geom
 
 
-def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer=True, bRetainColor=True, bDebug=False):
+def addFromSubsetOfFaces(rhBrep, idxFaces, bAddOnlyMonofaces=True, bRetainLayer=True, bRetainColor=True, bDebug=False):
     """
     """
     
-    rdBrep0 = coerceBrepObject(rhBrep0)
-    if rdBrep0 is None: return
-    rgBrep0 = rdBrep0.BrepGeometry
-    if not rgBrep0.IsValid: return
-    gBrep0 = rs.coerceguid(rhBrep0)
+    rdBrep_In = coerceBrepObject(rhBrep)
+    if rdBrep_In is None: return
+    rgBrep_In = rdBrep_In.BrepGeometry
+    if not rgBrep_In.IsValid: return
     
     
     def addBrepOfSubsetOfFaces_JoinBreps():
@@ -107,7 +103,7 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
         rgBreps1 = [] # Faces (breps) to be duplicated.
         
         for i in idxFaces:
-            rgFace = rgBrep0.Faces[i]
+            rgFace = rgBrep_In.Faces[i]
             rgBrep_1Face = rgFace.DuplicateFace(True)
             if rgBrep_1Face is None:
                 if bDebug: print "Face {} could not be duplicated as a brep!".format(i)
@@ -140,7 +136,7 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
             rgBreps_per_shell = rgBreps_Joined[:]
         
         
-        attr = rdBrep0.Attributes.Duplicate()
+        attr = rdBrep_In.Attributes.Duplicate()
         if not bRetainLayer: attr.LayerIndex = sc.doc.Layers.CurrentLayerIndex
         if not bRetainColor: attr.ColorSource = rd.ObjectColorSource.ColorFromLayer
         
@@ -153,7 +149,7 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
     
     def addBrepOfSubsetOfFaces_RemoveAt():
         
-        rgBrep1 = rgBrep0.Duplicate()
+        rgBrep1 = rgBrep_In.Duplicate()
         
         # Create list of non-extracted faces.
         # This is faster than looping through all faces while testing each.
@@ -181,7 +177,7 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
         
         rgBrep1.Dispose()
         
-        attr = rdBrep0.Attributes.Duplicate()
+        attr = rdBrep_In.Attributes.Duplicate()
         if not bRetainLayer: attr.LayerIndex = sc.doc.Layers.CurrentLayerIndex
         if not bRetainColor: attr.ColorSource = rd.ObjectColorSource.ColorFromLayer
         
@@ -194,11 +190,11 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
         return gBreps_1Shell
     
     
-    nFaces = rgBrep0.Faces.Count
+    nFaces = rgBrep_In.Faces.Count
     
     # If brep has only 1 face, return the brep's GUID.
     if nFaces == 1:
-        return [gBrep0]
+        return [rdBrep_In.Id]
     
     idxFaces = list(set(idxFaces))
     
@@ -233,14 +229,14 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
     
     # Add only monoface breps.
     
-    attr = rdBrep0.Attributes.Duplicate()
+    attr = rdBrep_In.Attributes.Duplicate()
     if not bRetainLayer: attr.LayerIndex = sc.doc.Layers.CurrentLayerIndex
     if not bRetainColor: attr.ColorSource = rd.ObjectColorSource.ColorFromLayer
     
     gBreps1_Extracted = []
     
     for idx in idxFaces:
-        rgFace = rgBrep0.Faces[idx]
+        rgFace = rgBrep_In.Faces[idx]
         
         # Duplicate face to its own brep.
         rgBrep1 = rgFace.DuplicateFace(duplicateMeshes=True)
@@ -251,7 +247,7 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
 
         if gBrep1 is None:
             s = "Brep face {} from {} could not be added to document.".format(
-                    idx, gBrep0)
+                    idx, rdBrep_In.Id)
             print s
             rc = rs.MessageBox(
                 s + "\nContinue extracting faces, skipping this one?",
@@ -268,7 +264,7 @@ def addFromSubsetOfFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer
     return gBreps1_Extracted
 
 
-def replaceGeometry(brep_toReplace, rgBreps_NewGeom):
+def replaceGeometry(rhBrep_toReplace, rgBreps_NewGeom):
     """
     Replaces BrepObject with new geometry after separating any 'shells'.
     Parameters:
@@ -281,7 +277,7 @@ def replaceGeometry(brep_toReplace, rgBreps_NewGeom):
     
     #if rgBrep1.Faces.Count == 0: return
     
-    rdBrep_In = coerceBrepObject(brep_toReplace)
+    rdBrep_In = coerceBrepObject(rhBrep_toReplace)
 
     try: rgBreps_NewGeom = list(set(rgBreps_NewGeom))
     except: rgBreps_NewGeom = [rgBreps_NewGeom]
@@ -336,9 +332,9 @@ def replaceGeometry(brep_toReplace, rgBreps_NewGeom):
         return gBreps_Out
 
 
-def removeFaces(rhBrep0, idxs_rgFaces):
+def removeFaces(rhBrep, idxs_rgFaces):
     """
-    rhBrep0: GUID or BrepObject.
+    rhBrep: GUID or BrepObject.
     idxs_rgFaces: Iterable of face indices.
     
     Returns:
@@ -349,49 +345,49 @@ def removeFaces(rhBrep0, idxs_rgFaces):
     try: idxs_rgFaces = sorted(list(set(idxs_rgFaces)), reverse=True)
     except: idxs_rgFaces = [idxs_rgFaces]
 
-    rdBrep0 = coerceBrepObject(rhBrep0)
-    if rdBrep0 is None: return
-    rgBrep0 = rdBrep0.Geometry
-    if not rgBrep0.IsValid and rgBrep0.Faces.Count > 1: return
-    gBrep0 = rs.coerceguid(rhBrep0)
+    rdBrep_In = coerceBrepObject(rhBrep)
+    if rdBrep_In is None: return
+    rgBrep_In = rdBrep_In.Geometry
+    if not rgBrep_In.IsValid and rgBrep_In.Faces.Count > 1: return
     
-    if rgBrep0.Faces.Count == len(idxs_rgFaces):
+    if rgBrep_In.Faces.Count == len(idxs_rgFaces):
         # Since all faces of original brep are to be removed,
         # delete brep instead of removing faces.
-        bSuccess = sc.doc.Objects.Delete(rdBrep0, True)
-        rgBrep0.Dispose()
+        bSuccess = sc.doc.Objects.Delete(rdBrep_In, True)
+        rgBrep_In.Dispose()
         return [] if bSuccess else None
     
-    rgBrep_WIP = rgBrep0.Duplicate()
+    rgBrep_WIP = rgBrep_In.Duplicate()
     
     # Remove faces from brep geometry.
     map(rgBrep_WIP.Faces.RemoveAt, idxs_rgFaces)
-    if (rgBrep0.Faces.Count - rgBrep_WIP.Faces.Count) != len(idxs_rgFaces):
+    if (rgBrep_In.Faces.Count - rgBrep_WIP.Faces.Count) != len(idxs_rgFaces):
         return None
-    return replaceGeometry(rdBrep0, rgBrep_WIP) # GUIDs of modified (remaining) Breps.
+    return replaceGeometry(rdBrep_In, rgBrep_WIP) # GUIDs of modified (remaining) Breps.
 
 
-def replaceFaces(rhBrep0, idxs_rgFaces, rgBreps_NewGeom, bExtract=False, fTolerance_Join=None, bEcho=True, bDebug=False):
+def replaceFaces(rhBrep, idxs_rgFaces, rgBreps_NewGeom, bExtract=False, fTolerance_Join=None, bEcho=False, bDebug=False):
     """Replaces faces using Brep.JoinBreps .
     
     Parameters:
-        rhBrep0: Guid or BrepObject
+        rhBrep: Guid or BrepObject
         idxs_rgFaces: Indices of faces that are to be replaced.
             ints, iterable of ints, or None (to indicate that all faces are to be replaced.)
         rgBreps_NewGeom: Brep or surface geometry.
         bEcho: Boolean
         bDebug: Boolean
-    Returns:
-        bExtract==True
-            Tuple: (List of GUIDs of Breps), (List of GUIDs of remaining Breps)
-        bExtract==False
-            List of GUIDs of BrepObjects.
-        None on fail.
+    Returns on success (bExtract==True):
+        list(GUIDs of Breps),
+        list(GUIDs of remaining Breps)
+    Returns on success (bExtract==False):
+        list(GUIDs of BrepObjects)
+    Returns on fail:
+        None
     
     TODO: Allow BrepFace as alternative input for rgBreps_NewGeom.
     """
 
-    rdBrep0 = coerceBrepObject(rhBrep0)
+    rdBrep0 = coerceBrepObject(rhBrep)
     if rdBrep0 is None: return
     rgBrep0 = rdBrep0.BrepGeometry
     
@@ -449,7 +445,7 @@ def replaceFaces(rhBrep0, idxs_rgFaces, rgBreps_NewGeom, bExtract=False, fTolera
 
         b, sLog = rgBrep0_WithFacesRemoved.IsValidWithLog()
         if not b:
-            print sLog
+            if bEcho: print sLog
             rgBrep0_WithFacesRemoved.Dispose()
             for b in breps_NewGeom_WIP: b.Dispose()
             return
@@ -466,10 +462,11 @@ def replaceFaces(rhBrep0, idxs_rgFaces, rgBreps_NewGeom, bExtract=False, fTolera
                     gBreps_Modified = replaceGeometry(rdBrep0, rgBrep0_WithFacesRemoved)
                     rgBrep0_WithFacesRemoved.Dispose()
                 else:
-                    s  = "{} new faces could not be added.".format(
-                        len(breps_NewGeom_WIP) - len(gBreps_Extracted))
-                    s += "  No faces were removed from original brep."
-                    print s
+                    if bEcho:
+                        s  = "{} new faces could not be added.".format(
+                            len(breps_NewGeom_WIP) - len(gBreps_Extracted))
+                        s += "  No faces were removed from original brep."
+                        print s
                 return gBreps_Extracted, gBreps_Modified
             return replaceSome_Extract()
         else:
@@ -485,12 +482,18 @@ def replaceFaces(rhBrep0, idxs_rgFaces, rgBreps_NewGeom, bExtract=False, fTolera
 
                 len_Joined = len(rgBreps_Joined)
                 if len_Joined == 0:
-                    print "rgBreps_Joined is empty.  No objects have been modified."
+                    if bEcho:
+                        print "rgBreps_Joined is empty.  No objects have been modified."
                     return
                 else:
-                    print "JoinBreps returned {} breps.".format(len_Joined)
-                    if len_Joined == 1 and bSolidAtStart and not rgBreps_Joined[0].IsSolid:
-                        print "Warning: Brep is no longer a solid!"
+                    if bEcho:
+                        print "JoinBreps returned {} breps.".format(len_Joined)
+                        if (
+                            len_Joined == 1 and
+                            bSolidAtStart and
+                            not rgBreps_Joined[0].IsSolid
+                        ):
+                            print "Warning: Brep is no longer a solid!"
                     gBreps_Out = replaceGeometry(rdBrep0, rgBreps_Joined) # None or list of GUIDs.
                     for brep in rgBreps_Joined: brep.Dispose()
                     return gBreps_Out
@@ -511,10 +514,11 @@ def replaceFaces(rhBrep0, idxs_rgFaces, rgBreps_NewGeom, bExtract=False, fTolera
                 if len(gBreps_Extracted) == len(breps_NewGeom_WIP):
                     sc.doc.Objects.Delete(objectId=rdBrep0.Id, quiet=False)
                 else:
-                    s  = "{} new faces could not be added.".format(
-                        len(breps_NewGeom_WIP) - len(gBreps_Extracted))
-                    s += "  Original brep was not deleted."
-                    print s
+                    if bEcho:
+                        s  = "{} new faces could not be added.".format(
+                            len(breps_NewGeom_WIP) - len(gBreps_Extracted))
+                        s += "  Original brep was not deleted."
+                        print s
                 return gBreps_Extracted, []
             return replaceAll_Extract()
         else:
@@ -529,57 +533,72 @@ def replaceFaces(rhBrep0, idxs_rgFaces, rgBreps_NewGeom, bExtract=False, fTolera
 
                 len_Joined = len(rgBreps_Joined)
                 if len_Joined == 0:
-                    print "rgBreps_Joined is empty.  No objects have been modified."
+                    if bEcho:
+                        print "rgBreps_Joined is empty.  No objects have been modified."
                     return
                 else:
-                    print "JoinBreps returned {} breps.".format(len_Joined)
-                    if len_Joined == 1 and bSolidAtStart and not rgBreps_Joined[0].IsSolid:
-                        print "Warning: Brep is no longer a solid!"
+                    if bEcho:
+                        print "JoinBreps returned {} breps.".format(len_Joined)
+                        if (
+                            len_Joined == 1 and
+                            bSolidAtStart and
+                            not rgBreps_Joined[0].IsSolid
+                        ):
+                            print "Warning: Brep is no longer a solid!"
                     gBreps_Out = replaceGeometry(rdBrep0, rgBreps_Joined) # None or list of GUIDs.
                     for brep in rgBreps_Joined: brep.Dispose()
                     return gBreps_Out
             return replaceAll_Join()
 
 
-def extractFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer=True, bRetainColor=True, bCurrentLayer=None, bByLayerColor=None, bEcho=True, bDebug=False):
+def extractFaces(rhBrep, idxFaces, bAddOnlyMonofaces=True, bRetainLayer=True, bRetainColor=True, bCurrentLayer=None, bByLayerColor=None, bEcho=True, bDebug=False):
     """
-    Returns gBreps1_Extracted.
+    Parameters:
+        rhBrep: rd.BrepObject, GUID of rd.BrepObject, or ObjRef of rd.BrepObject
+        idxFaces: list(int(Index of face) or not for all.
+    Returns:
+        list(GUID of extracted brep), list(GUID of remaining brep) on success.
+        None on fail.
     
     TODO: Remove support for bCurrentLayer and bByLayerColor after dependent scripts are modified.
     """
 
-    try: idxFaces = list(set(idxFaces))
-    except: idxFaces = [idxFaces]
-
-    rdBrep0 = coerceBrepObject(rhBrep0)
-    if rdBrep0 is None: return
-    rgBrep0 = rdBrep0.Geometry
-    if not rgBrep0.IsValid:
-        if bEcho: print "Invalid Brep {} will not be processed.".format(rdBrep0.Id)
+    rdBrep_In = coerceBrepObject(rhBrep)
+    if rdBrep_In is None: return
+    rgBrep_In = rdBrep_In.BrepGeometry
+    if not rgBrep_In.IsValid:
+        if bEcho: print "Invalid Brep {} will not be processed.".format(rdBrep_In.Id)
         return
-    gBrep0 = rs.coerceguid(rhBrep0)
-    
+
+    if not idxFaces:
+        if rgBrep_In.Faces.Count == 1:
+            return [rdBrep_In.Id], []
+        idxFaces = range(rgBrep_In.Faces.Count)
+    else:
+        try: idxFaces = list(set(idxFaces))
+        except: idxFaces = [idxFaces]
+
     if bCurrentLayer is not None: bRetainLayer = not bCurrentLayer
     if bByLayerColor is not None: bRetainColor = not bByLayerColor
     
-    if rgBrep0.Faces.Count == 1:
+    if rgBrep_In.Faces.Count == 1:
         # Brep is monoface.
-        rgBrep0.Dispose()
+        rgBrep_In.Dispose()
         
-        if bRetainLayer and bRetainColor: return [gBrep0], []
+        if bRetainLayer and bRetainColor: return [rdBrep_In.Id], []
         
         # The layer and/or color is to be modified.
-        attr = rdBrep0.Attributes
+        attr = rdBrep_In.Attributes
         if not bRetainLayer: attr.LayerIndex = sc.doc.Layers.CurrentLayerIndex
         if not bRetainColor: attr.ColorSource = rd.ObjectColorSource.ColorFromLayer
-        rdBrep0.CommitChanges()
-        return [gBrep0], []
+        rdBrep_In.CommitChanges()
+        return [rdBrep_In.Id], []
     
     
     # Brep is polyface.
     
     gBreps1_Extracted = addFromSubsetOfFaces(
-            rhBrep0=rdBrep0,
+            rhBrep=rdBrep_In,
             idxFaces=idxFaces,
             bRetainLayer=bRetainLayer,
             bRetainColor=bRetainColor,
@@ -588,7 +607,7 @@ def extractFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer=True, b
     )
     if gBreps1_Extracted is None: return
     
-    rc = removeFaces(rdBrep0, idxFaces)
+    rc = removeFaces(rdBrep_In, idxFaces)
     if rc is None:
         return
     else:
@@ -600,49 +619,91 @@ def extractFaces(rhBrep0, idxFaces, bAddOnlyMonofaces=True, bRetainLayer=True, b
     return gBreps1_Extracted, gBs_Remaining
 
 
-def selectFaces(rhBrep0, idxFaces, bEcho=True):
+def selectFaces(rhBreps, idxFaces_perBrep=None, surfaceTestFunc=None, bEcho=True):
     if Rhino.RhinoApp.ExeVersion < 6: return
-    
-    rdBrep0 = coerceBrepObject(rhBrep0)
-    if rdBrep0 is None: return
-    
-    rgBrep0 = rdBrep0.Geometry
-    if not rgBrep0.IsValid:
-        rgBrep0.Dispose()
+
+    try: rhBreps = list(rhBreps)
+    except: rhBreps = [rhBreps]
+
+    if idxFaces_perBrep:
+        if isinstance(idxFaces_perBrep[0], int):
+            idxFaces_perBrep = [idxFaces_perBrep]
+
+
+    if idxFaces_perBrep is None and isinstance(rhBreps[0], rd.ObjRef):
+        rc = sortObjrefsIntoBrepGuidsAndFaceIndices(objrefs=rhBreps)
+        if rc is None: return
+
+        rhBreps, idxFaces_perBrep = rc
+
+    if idxFaces_perBrep is None and surfaceTestFunc is None:
+        print "Parameters result in selection of all faces.  None will be be selected."
         return
-    
-    for idx_rgFace in idxFaces:
-        compIdx = rg.ComponentIndex(
-                rg.ComponentIndexType.BrepFace,
-                index=idx_rgFace)
-        rdBrep0.SelectSubObject(
-                componentIndex=compIdx,
-                select=True, syncHighlight=True, persistentSelect=True)
-    ct_Faces_Selected = 0
-    for idxFace in xrange(rgBrep0.Faces.Count):
-        compIdx = rg.ComponentIndex(
-                rg.ComponentIndexType.BrepFace, idxFace)
-        if rdBrep0.IsSubObjectSelected(compIdx): ct_Faces_Selected += 1
-    rgBrep0.Dispose()
-    if len(idxFaces) == ct_Faces_Selected:
-        if bEcho:
-            print "{} faces found and are selected.".format(
-                    len(idxFaces))
-    else:
-        if bEcho:
-            s = "{} faces found, but only {} are selected.".format(
-                    len(idxFaces), ct_Faces_Selected)
-            print s
-    
-    return ct_Faces_Selected
 
 
-def separateShells(rhBrep0, bEcho=True):
+    iCt_Fs_Found = 0 # Applies when using surfaceTestFunc.
+    iCt_Fs_Selected = 0
+
+    for iB, rhB_In in enumerate(rhBreps):
+
+        idxFaces = idxFaces_perBrep[iB]
+    
+        rdBrep0 = coerceBrepObject(rhB_In)
+        if rdBrep0 is None: return
+    
+        rgBrep0 = rdBrep0.Geometry
+        if not rgBrep0.IsValid:
+            rgBrep0.Dispose()
+            return
+
+        for idxFace in idxFaces:
+
+            if surfaceTestFunc:
+                if not surfaceTestFunc(rgBrep0.Faces[idxFace]):
+                    continue
+
+            iCt_Fs_Found += 1
+
+            compIdx = rg.ComponentIndex(
+                    rg.ComponentIndexType.BrepFace,
+                    index=idxFace)
+            iSelected = rdBrep0.SelectSubObject(
+                    componentIndex=compIdx,
+                    select=True, syncHighlight=True, persistentSelect=True)
+            """
+            iSelected:
+                0: object is not selected
+                1: object is selected
+                2: object is selected persistently.
+            """
+
+        for idxFace in xrange(rgBrep0.Faces.Count):
+            compIdx = rg.ComponentIndex(
+                    rg.ComponentIndexType.BrepFace, idxFace)
+            if rdBrep0.IsSubObjectSelected(compIdx): iCt_Fs_Selected += 1
+        rgBrep0.Dispose()
+
+
+    if bEcho:
+        if surfaceTestFunc:
+            if iCt_Fs_Found == iCt_Fs_Selected:
+                print "{} faces found and are selected.".format(
+                    iCt_Fs_Found)
+            else:
+                print "{} faces found, but only {} are selected.".format(
+                    iCt_Fs_Found, iCt_Fs_Selected)
+        else:
+            print "{} faces are selected.".format(iCt_Fs_Selected)
+
+    return iCt_Fs_Selected
+
+
+def separateShells(rhBrep, bEcho=True):
     """
     Separate any brep shells of modified brep and act based on shell quantity.
     Returns list of GUIDs of new breps or list with GUID of only existing brep.
     """
-    rdBrep0 = coerceBrepObject(rhBrep0)
+    rdBrep0 = coerceBrepObject(rhBrep)
     if rdBrep0 is None: return
     rgBrep0 = rdBrep0.Geometry
     if rgBrep0.Faces.Count == 1:
@@ -677,3 +738,270 @@ def separateShells(rhBrep0, bEcho=True):
                 return
         sc.doc.Objects.Delete(rdBrep0, True)
         return gBreps1
+
+
+def formatDistance(fDistance):
+    if fDistance is None:
+        return "(No deviation was provided.)"
+    if fDistance == 0.0:
+        return "Exactly zero"
+    if fDistance < 10.0**(-(sc.doc.DistanceDisplayPrecision-3)):
+        return "{:.1e}".format(fDistance)
+    else:
+        return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
+
+
+def sortObjrefsIntoBrepGuidsAndFaceIndices(objrefs):
+    """
+    Sorts objrefs of entire breps or faces into 2 lists.
+
+    Returns on success:
+        list(GUIDs of breps)
+        list(lists(int(Indices of faces)) per brep in other list)
+    """
+
+    gBreps = []
+    idx_Faces_PerBrep = []
+    
+    for objref in objrefs:
+        rdBrep = objref.Object()
+        gBrep = objref.ObjectId
+        compIndex = objref.GeometryComponentIndex.Index
+
+        if compIndex == -1:
+            rgBrep = objref.Brep()
+            if not rgBrep: continue
+            if gBrep in gBreps:
+                if rgBrep.Faces.Count == len(idx_Faces_PerBrep[gBreps.index(gBrep)]):
+                    continue
+                else:
+                    idx_Faces_PerBrep[gBreps.index(gBrep)] = range(rgBrep.Faces.Count)
+            else:
+                gBreps.append(gBrep)
+                idx_Faces_PerBrep.append(range(rgBrep.Faces.Count))
+        else:
+            # Face of polyface brep was selected.
+            rdObj = objref.Object()
+            if rdObj.ObjectType == rd.ObjectType.InstanceReference:
+                print "Objects in block instances are not supported."
+                continue
+            else:
+                if gBrep in gBreps:
+                    idx_gBrep = gBreps.index(gBrep)
+                    idx_Faces_PerBrep[idx_gBrep].append(compIndex)
+                else:
+                    gBreps.append(gBrep)
+                    idx_Faces_PerBrep.append([compIndex])
+
+    return gBreps, idx_Faces_PerBrep
+
+
+def modifyFacesOfBrepObjects(rhBreps_In, idx_Faces_perBrep=None, surfaceFunc=None, bExtract=False, bEcho=True, bDebug=False):
+    """
+    Parameters:
+        rhBreps_In, # Plural so that summary of 
+    """
+
+
+    if not idx_Faces_perBrep and isinstance(rhBreps_In[0], rd.ObjRef):
+        rc = sortObjrefsIntoBrepGuidsAndFaceIndices(objrefs=rhBreps_In)
+        if rc is None: return
+
+        rhBreps_In, idx_Faces_perBrep = rc
+
+        #print gBreps_In
+        #for idxs in idx_Faces_perBrep: print idxs
+
+
+    gBs_Out_All = []
+    srf_devs_All = []
+    sLogs_allBreps = []
+
+    sc.doc.Objects.UnselectAll()
+
+
+    for iB, rhBrep_In in enumerate(rhBreps_In):
+
+        if isinstance(rhBrep_In, Guid):
+            gBrep_In = rhBrep_In
+            rdBrep_In = sc.doc.Objects.FindId(gBrep_In) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(gBrep_In)
+        elif isinstance(rhBrep_In, rd.BrepObject):
+            rdBrep_In = rhBrep_In
+            gBrep_In = rdBrep_In.Id
+        else:
+            continue
+
+        rgBrep_In = rdBrep_In.BrepGeometry
+
+        if not idx_Faces_perBrep:
+            idx_Faces_toProcess = range(rgBrep_In.Faces.Count)
+        else:
+            idx_Faces_toProcess = idx_Faces_perBrep[iB]
+
+        s = "brep {} of {}".format(iB+1, len(rhBreps_In))
+        Rhino.RhinoApp.SetCommandPrompt(prompt="Processing {} ...".format(s))
+
+        if bDebug: print "Processing brep {}.".format(gBrep_In)
+
+
+        rgBs_1F_Processed_thisB = []
+        idx_Faces_Success_thisB = []
+        srf_devs_thisBrep = []
+
+        sCmdPrompt_In = Rhino.RhinoApp.CommandPrompt
+
+        for iF, idx_Face in enumerate(idx_Faces_toProcess):
+            Rhino.RhinoApp.SetCommandPrompt(
+                    prompt=sCmdPrompt_In +
+                    "  Face[{}] of 0-{} ...".\
+                            format(iF, len(idx_Faces_toProcess)))
+            if bDebug: print Rhino.RhinoApp.CommandPrompt
+
+            rgF_B_In = rgBrep_In.Faces[idx_Face]
+
+            res, sLog = xBrepFace.createModifiedFace(
+                rgF_B_In,
+                surfaceFunc,
+                bDebug=bDebug,
+                )
+
+            if res is None:
+                sLogs_allBreps.append(sLog)
+                continue
+
+            rgB_1F_Created, srf_dev = res
+        
+            if not rgB_1F_Created.IsValid:
+                print "Invalid brep geometry for face (index={}) after modification.".format(idx_Face)
+                print "It will not be included in processed results."
+                rgB_1F_Created.Dispose()
+                continue
+        
+            rgBs_1F_Processed_thisB.append(rgB_1F_Created)
+            idx_Faces_Success_thisB.append(idx_Face)
+            srf_devs_thisBrep.append(srf_dev)
+            srf_devs_All.append(srf_dev)
+
+        if not rgBs_1F_Processed_thisB:
+            continue # to next brep.
+
+
+        # Modify BrepObject with successful surface conversions.
+
+        rc = replaceFaces(
+            rdBrep_In,
+            idx_Faces_Success_thisB,
+            rgBs_1F_Processed_thisB,
+            bExtract=bExtract)
+        if rc is None:
+            pass
+        else:
+            if bExtract:
+                gBs_Out_thisBrep, gRemaining = rc
+            else:
+                gBs_Out_thisBrep = rc
+            gBs_Out_All.extend(gBs_Out_thisBrep)
+
+
+    if bEcho:
+        for sLog in set(sLogs_allBreps):
+            print "[{}] {}".format(sLogs_allBreps.count(sLog), sLog)
+
+
+    if not gBs_Out_All:
+        return []
+
+
+        if min(srf_devs_All) != max(srf_devs_All):
+            print "Maximum deviations range from {} to {}".format(
+                        formatDistance(min(srf_devs_All)),
+                        formatDistance(max(srf_devs_All)))
+        else:
+            print "Maximum deviation: {}".format(formatDistance(max(srf_devs_All)))
+
+
+    return gBs_Out_All
+
+
+def createBrepObjectsOfNewSurfaces(rhSrfs_In, surfaceFunc, bEcho=True, bDebug=False):
+    """
+    """
+
+    gBs_Out = []
+    srf_devs_All = []
+    sLogs = []
+    
+    sc.doc.Objects.UnselectAll()
+
+    sCmdPrompt0 = Rhino.RhinoApp.CommandPrompt
+
+    for iS, rhSrf_In in enumerate(rhSrfs_In):
+
+        Rhino.RhinoApp.SetCommandPrompt(
+            "Processing surface {} of {} ...".format(
+                iS+1,
+                len(rhSrfs_In)))
+
+        if isinstance(rhSrf_In, Guid):
+            gBrep_In = rhSrf_In
+            rdBrep_In = sc.doc.Objects.FindId(gBrep_In) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(gBrep_In)
+            rgBrep_In = rdBrep_In.BrepGeometry
+            if rgBrep_In.Faces.Count > 1:
+                sLogs.append("BrepObject input has more than 1 face and was skipped.")
+                continue # to next surface.
+            rgFace_In = rgBrep_In.Faces[0]
+        elif isinstance(rhSrf_In, rd.BrepObject):
+            rdBrep_In = rhSrf_In
+            gBrep_In = rdBrep_In.Id
+            rgBrep_In = rdBrep_In.BrepGeometry
+            if rgBrep_In.Faces.Count > 1:
+                sLogs.append("BrepObject input has more than 1 face and was skipped.")
+                continue # to next surface.
+            rgFace_In = rgBrep_In.Faces[0]
+        elif isinstance(rhSrf_In, rd.ObjRef):
+            gBrep_In = rhSrf_In.ObjectId
+            rdBrep_In = rhSrf_In.Object()
+            rgBrep_In = rhSrf_In.Brep()
+            rgFace_In = rhSrf_In.Face()
+        else:
+            sLogs.append("{} passed to createBrepObjects.".format(
+                rhSrf_In.GetType().Name))
+            continue # to next surface.
+
+        rgSrf_In = rgFace_In.UnderlyingSurface()
+
+        res, sLog = surfaceFunc(rgSrf_In)
+
+        if sLog is not None:
+            sLogs.append(sLog)
+
+        if res is None:
+            continue # to next surface.
+
+        ns_Res, srf_dev = res
+
+        if not ns_Res:
+            continue # to next brep.
+
+        srf_devs_All.append(srf_dev)
+
+        gB_Added = sc.doc.Objects.AddSurface(ns_Res)
+        ns_Res.Dispose()
+        if gB_Added == Guid.Empty:
+            sLogs.append("New surface could not be added to document.")
+            continue
+
+        gBs_Out.append(gB_Added)
+
+    for sLog in set(sLogs):
+        print "{} count of: {}".format(sLogs.count(sLog), sLog)
+
+    if gBs_Out:
+        print "{} surfaces added to document.".format(len(gBs_Out))
+        print "Maximum deviation from original surface: {}".format(formatDistance(max(srf_devs_All)))
+    else:
+        print "No surfaces added to document."
+
+    return gBs_Out
+
+

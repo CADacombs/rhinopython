@@ -10,6 +10,7 @@
 190731: Bug fix for when main brep is divided into multiple breps when its faces are extracted.
 191031: Import-related update.  Added a function.
 191119: Import-related update.
+200401: Refactored processBreps.  Simplified printed output.
 """
 
 import Rhino
@@ -323,11 +324,15 @@ def processAllFacesOfBrepObject(gBrep0, bTryConvert=None, fTolerance=None, bShri
         rgBrep0.Dispose()
     
     if ct_Face_Start != ct_Face_End:
-        print "Face count changed from {} to {}.".format(
+        if bDebug:
+            print "Face count changed from {} to {}.".format(
                 ct_Face_Start, ct_Face_End)
     else:
-        print "No faces were merged.  Face count remains at {}.".format(
+        if bDebug:
+            print "No faces were merged.  Face count remains at {}.".format(
                 ct_Face_Start)
+    
+    return ct_Face_Start - ct_Face_End
 
 
 def processOnlyToLargestFaceOfBrepObject(gBrep0, bTryConvert=None, fTolerance=None, bShrinkSrfsOfPrimitives=None, bExtract=None, bEcho=None, bDebug=None):
@@ -382,13 +387,14 @@ def processBreps(gBreps0, bProcessAllFaces=None, bTryConvert=None, fTolerance=No
     if bEcho:
         print "Maximum simplification tolerance allowed: {}".format(fTolerance)
     
-    gBreps1 = []
     
-    fTols_used_for_primitive = []
-    
-    for gBrep0 in gBreps0:
-        if bProcessAllFaces:
-            rc = processAllFacesOfBrepObject(
+    if bProcessAllFaces:
+        iCt_Breps_NoMerge = 0
+        iCt_Breps_Merge = 0
+        iCt_Faces_Total = 0
+        
+        for gBrep0 in gBreps0:
+            iCt_Faces = processAllFacesOfBrepObject(
                     gBrep0=gBrep0,
                     bTryConvert=bTryConvert,
                     fTolerance=fTolerance,
@@ -397,7 +403,24 @@ def processBreps(gBreps0, bProcessAllFaces=None, bTryConvert=None, fTolerance=No
                     bEcho=bEcho,
                     bDebug=bDebug,
             )
-        else:
+            if isinstance(iCt_Faces, int):
+                if iCt_Faces:
+                    iCt_Breps_Merge += 1
+                    iCt_Faces_Total += iCt_Faces
+                else:
+                    iCt_Breps_NoMerge += 1
+        if bEcho:
+            s = "{} breps with merged faces.".format(iCt_Breps_Merge)
+            if iCt_Faces_Total:
+                s += "  Total face count was reduced by {}.".format(iCt_Faces_Total)
+            if iCt_Breps_NoMerge:
+                s += "  No faces were merged in {} breps.".format(iCt_Breps_NoMerge)
+            print s
+    else:
+        gBreps1 = []
+        fTols_used_for_primitive = []
+        
+        for gBrep0 in gBreps0:
             rc = processOnlyToLargestFaceOfBrepObject(
                     gBrep0=gBrep0,
                     bTryConvert=bTryConvert,
@@ -407,22 +430,22 @@ def processBreps(gBreps0, bProcessAllFaces=None, bTryConvert=None, fTolerance=No
                     bEcho=bEcho,
                     bDebug=bDebug,
             )
-        if rc is None: continue
-        gBrep0, fTol_PrimitiveUsedA = rc
-        gBreps1.append(gBrep0)
-        if fTol_PrimitiveUsedA is not None:
-            fTols_used_for_primitive.append(rc[1])
-    
-    if bEcho and gBreps1:
-        ct_gBreps0 = len(gBreps1)
-        if ct_gBreps0 == 1:
-            print "1 brep was merged."
-        else:
-            print "{} breps were merged.".format(ct_gBreps0)
-        if fTols_used_for_primitive:
-            print "Range of simplification tolerances used to find largest faces: {} to {}".format(
-                    min(fTols_used_for_primitive),
-                    max(fTols_used_for_primitive))
+            if rc is None: continue
+            gBrep0, fTol_PrimitiveUsedA = rc
+            gBreps1.append(gBrep0)
+            if fTol_PrimitiveUsedA is not None:
+                fTols_used_for_primitive.append(rc[1])
+        
+        if bEcho and gBreps1:
+            ct_gBreps0 = len(gBreps1)
+            if ct_gBreps0 == 1:
+                print "1 brep was merged."
+            else:
+                print "{} breps were merged.".format(ct_gBreps0)
+            if fTols_used_for_primitive:
+                print "Range of simplification tolerances used to find largest faces: {} to {}".format(
+                        min(fTols_used_for_primitive),
+                        max(fTols_used_for_primitive))
 
 
 def main():

@@ -7,10 +7,10 @@
 160623: Added retrimOneFaceBrep() and trimOneFaceBrepWithCurves().
 160630: Added some functions.
 160706: Moved some functions to another script.
-160707: findMatchingBrepInBrepSplitUsingEdgeBBox() & findMatchingBrepInBrepSplitUsingFaceBBox now try to matching bounding boxes at ModelAbsoluteTolerance then, if necessary, 10*ModelAbsoluteTolerance.
-        Added findMatchingFaceIndexInBrepSplitUsingFaceBBox().
-160708: Added findMatchingFaceIndexInBrepSplitUsingEdgeBBox().
-160725: Added ptOnFaceMinDistFromBorder() & findMatchingFaceIndexInBrepSplitUsingPtOnFace().
+160707: Some functions now try to matching bounding boxes at ModelAbsoluteTolerance then, if necessary, 10*ModelAbsoluteTolerance.
+        Added a function.
+160708: Added a function.
+160725: Added a function.
 160819: Added indicesOfInvalidBrepFaces().
 160824: Fixed bug in orderedLists_AdjFLT_perSelFBorders and renamed to orderedLists_AdjacentFLT_perSelFBorders.
 160826: trimOneFaceBrepWithCurves(): Default value of bShrinkFaces changed from True to False.
@@ -26,7 +26,9 @@
 190128: Moved indicesOfContiguousFilletFaces to spbBrep.py.
 190129: Updated a comment.
 190201: Copied some code from spb_rc5\brep.py.
-190505, 200107: Modified this history log.
+190505, 200107, 200401: Modified this history log.
+200505: Simplified a function.
+200522: Bug fix.
 """
 
 import Rhino
@@ -50,7 +52,7 @@ def usingBoundingBoxOfBrep(rgBrep_toSearch, rgBrep_ForBBox, bDebug=False):
     """
     rgBrep_ForBBox will most likely be a brep or a face.
     """
-    if bDebug: print 'findMatchingFaceIndexInBrepSplitUsingBrepBBox()...'
+    if bDebug: print 'xBrep_findMatchingFace.usingBoundingBoxOfBrep()...'
     
     rgBbox_B0 = rgBrep_ForBBox.GetBoundingBox(True)
     
@@ -81,7 +83,7 @@ def usingBoundingBoxOfBrep(rgBrep_toSearch, rgBrep_ForBBox, bDebug=False):
 
 
 def usingBoundingBoxOfEdges(rgBrep_toSearch, rgBrep0_1F, bDebug=False):
-    if bDebug: print 'findMatchingFaceIndexInBrepSplitUsingEdgeBBox()...'
+    if bDebug: print 'xBrep_findMatchingFace.usingBoundingBoxOfEdges()...'
     
     rgCrvs_B0Edges = rgBrep0_1F.DuplicateEdgeCurves() # Includes seams
     
@@ -127,22 +129,11 @@ def usingBoundingBoxOfEdges(rgBrep_toSearch, rgBrep0_1F, bDebug=False):
 
 def usingPointOnFace(rgBrep_toSearch, ptOnFace, bDebug=False):
     """
+    Returns face index.
     """
-    if bDebug: print 'usingPointOnFace()...'
-    
-    # Test the point distance to each face.
-    for f, rgFace in enumerate(rgBrep_toSearch.Faces):
-        rgBrep1_1F = rgFace.DuplicateFace(False)
-        if rgBrep1_1F is None:
-            if bDebug: sPrint = 'rgBrep1_1F'; print sPrint + ':', eval(sPrint)
-            return
-        
+    for rgFace in rgBrep_toSearch.Faces:
         b, u, v = rgFace.ClosestPoint(ptOnFace)
         if b:
+            print rgFace.IsPointOnFace(u, v)
             if rgFace.IsPointOnFace(u, v):
-                rgFace.Dispose()
-                rgBrep1_1F.Dispose()
-                return f
-        
-        rgFace.Dispose()
-        rgBrep1_1F.Dispose()
+                return rgFace.FaceIndex

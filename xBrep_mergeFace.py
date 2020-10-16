@@ -40,7 +40,7 @@
 190810: Import-related changes.
 191101: Import-related changes.  Bug fix.
 191117: Non-manifold breps are no longer accepted.
-191118-19: Import-related updates.
+191118-19, 200715: Import-related updates.
 """
 
 import Rhino
@@ -347,7 +347,7 @@ def processBrep(rgBrep0, idx_rgFaceA, idx_rgFaces_Filter=None, bTryConvert=None,
     rgBrep_New1F = xBrep_createFromShape.replaceShape(
             rgBrep0=rgBrep_SubOf0,
             shape=shapeA,
-            fTolerance=fTolerance,
+            fTolerance=None,
             bDebug=bDebug)
     if rgBrep_New1F is None:
         if bDebug: sEval = 'rgBrep_New1F'; print sEval + ':', eval(sEval)

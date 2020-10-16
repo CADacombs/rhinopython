@@ -1,6 +1,9 @@
 """
 191118-19: Created by moving main function from another module.
 191215: Corrected debug printed output.
+200401: Import-related bug fix.
+200611: Implemented more correct use of IsPointOnFace.
+200715: Joined 
 
 TODO:
     Rotate RevSurface's before moving seams to avoid conversion to NurbsSurface.
@@ -10,6 +13,7 @@ import Rhino
 import Rhino.Geometry as rg
 import scriptcontext as sc
 
+import xBrep_findMatchingFace
 import xPlaneSurface
 
 import random
@@ -17,7 +21,7 @@ import random
 maxExponentFor2 = 4
 
 
-def rotateSphericalBrepToAvoidCurves(rgBrep0, rgCrvs_ToAvoid, rotationCenter, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, bDebug=False):
+def rotateSphericalBrepToAvoidCurves(rgBrep0, rgCrvs_ToAvoid, rotationCenter, fTolerance=None, bDebug=False):
     """
     Parameters:
         rgBrep0
@@ -25,8 +29,16 @@ def rotateSphericalBrepToAvoidCurves(rgBrep0, rgCrvs_ToAvoid, rotationCenter, fT
         rotationCenter
     Returns: New brep.
     Moves surface (from sphere) seam away from rgCrvs_ToAvoid.
-    Do not use this for spherical surfaces."""
-        
+    Do not use this for spherical surfaces.
+    """
+
+
+    if fTolerance is None:
+        fTolerance = max(
+            2.0*sc.doc.ModelAbsoluteTolerance,
+            max([e.Tolerance for e in rgBrep0.Edges])
+            )
+
     # Join curves to be avoided.  Joining them now will reduce the number of tests.
     rgCrvs_Joined = rg.Curve.JoinCurves(rgCrvs_ToAvoid, fTolerance)
     if rgCrvs_Joined is None:
@@ -140,7 +152,7 @@ def rotateSphericalBrepToAvoidCurves(rgBrep0, rgCrvs_ToAvoid, rotationCenter, fT
                             return rgBrep_Rotated
 
 
-def moveSurfaceSeamsToAvoidCurves(rgSrf0, rgCrvs_ToAvoid, iDirections, tolerance=4.0*sc.doc.ModelAbsoluteTolerance, bDebug=False):
+def moveSurfaceSeamsToAvoidCurves(rgSrf0, rgCrvs_ToAvoid, iDirections, tolerance=None, bDebug=False):
     """
     Parameters:
         rgCrvs_ToAvoid: Curves from which to move the seam.
@@ -153,6 +165,9 @@ def moveSurfaceSeamsToAvoidCurves(rgSrf0, rgCrvs_ToAvoid, iDirections, tolerance
     rgBrep_1F_ToMoveSrfSeam = rgSrf0.ToBrep()
     if rgBrep_1F_ToMoveSrfSeam is None: return
         
+    if tolerance is None:
+        tolerance = 4.0*sc.doc.ModelAbsoluteTolerance
+    
     # Test at existing seam location(s) in case moving the seam is not necessary.
     # This also gets a base count for the number of faces from split.
     rgFace_ToMoveSeam = rgBrep_1F_ToMoveSrfSeam.Faces[0]
@@ -285,7 +300,7 @@ def moveSurfaceSeamsToAvoidCurves(rgSrf0, rgCrvs_ToAvoid, iDirections, tolerance
     return rgSrf1
 
 
-def getRandomPointOnFace(rgBrep, idxFace, fDistMin=10.0*sc.doc.ModelAbsoluteTolerance):
+def getRandomPointOnFace(rgBrep, idxFace, fDistMin=None):
     """
     Parameters:
         rgBrep: Used to get the edges from the edge indices.
@@ -296,6 +311,9 @@ def getRandomPointOnFace(rgBrep, idxFace, fDistMin=10.0*sc.doc.ModelAbsoluteTole
     """
     
     rgFace = rgBrep.Faces[idxFace]
+    
+    if fDistMin is None:
+        fDistMin = 10.0*sc.doc.ModelAbsoluteTolerance
     
     areaMassProp = Rhino.Geometry.AreaMassProperties.Compute(rgFace)
     if areaMassProp is None:
@@ -312,7 +330,9 @@ def getRandomPointOnFace(rgBrep, idxFace, fDistMin=10.0*sc.doc.ModelAbsoluteTole
     rgEdges = [rgBrep.Edges[idxEdge] for idxEdge in rgFace.AdjacentEdges()]
     
     for i in xrange(100000): # If point is not on face, continue searching.
-        if rgFace.IsPointOnFace(u, v):# If point is not at least fDistMin from border, continue searching.
+        ptFaceRel = rgFace.IsPointOnFace(u, v)
+        if ptFaceRel == rg.PointFaceRelation.Interior:
+            # If point is not at least fDistMin from border, continue searching.
             pt = rgFace.PointAt(u, v)
             for rgEdge in rgEdges:
                 b, t = rgEdge.ClosestPoint(pt)
@@ -337,10 +357,11 @@ def getRandomPointOnFace(rgBrep, idxFace, fDistMin=10.0*sc.doc.ModelAbsoluteTole
 def getFaceAtPoint(rgBrep_Split, ptOnFace, bEcho=False):
     """
     """
+
     if bEcho: print 'getFaceAtPoint()...'
     
     # Test the point distance to each face.
-    for f, rgFace in enumerate(rgBrep_Split.Faces):
+    for iF, rgFace in enumerate(rgBrep_Split.Faces):
         rgBrep1_1F = rgFace.DuplicateFace(False)
         if rgBrep1_1F is None:
             if bEcho: sPrint = 'rgBrep1_1F'; print sPrint + ':', eval(sPrint)
@@ -348,10 +369,16 @@ def getFaceAtPoint(rgBrep_Split, ptOnFace, bEcho=False):
         
         b, u, v = rgFace.ClosestPoint(ptOnFace)
         if b:
-            if rgFace.IsPointOnFace(u, v):
+            # Shouldn't need to implement this if IsPointOnFace correctly
+            # returns rg.PointFaceRelation.Interior.
+            #pt_Closest = rgFace.PointAt(u, v)
+            #fDist = pt_Closest.DistanceTo(ptOnFace)
+
+            ptFaceRel = rgFace.IsPointOnFace(u, v)
+            if ptFaceRel == rg.PointFaceRelation.Interior:
                 rgFace.Dispose()
                 rgBrep1_1F.Dispose()
-                return f
+                return iF
         
         rgFace.Dispose()
         rgBrep1_1F.Dispose()
@@ -377,7 +404,7 @@ def extendCylinderToObjectSize(rgCyl, rgObjForSizeRef, bDebug=False):
         if bDebug: print "Height of cylinder after: {}".format(rgCyl.TotalHeight)
 
 
-def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, bDebug=False):
+def replaceShape(rgBrep0, shape, fTolerance=None, bDebug=False):
     """
     shape_ForMerge can be NurbsSurface, Cone, Cylinder, Plane, Sphere, or Torus.
     
@@ -385,21 +412,30 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
     """
 
     if bDebug: print '-'*80 + '\n' + 'replaceShape()'
+    
+    rgBrep_In = rgBrep0
 
     shape_In = shape
     
     if not shape_In.IsValid:
         print "{} is NOT valid in replaceShape!".format(shape_In)
 
-    rgBrep_0RebuiltEs = rgBrep0.DuplicateBrep()
-    for f in rgBrep_0RebuiltEs.Faces:
-        f.RebuildEdges(
-                tolerance=fTolerance,
-                rebuildSharedEdges=True,
-                rebuildVertices=True)
+    if fTolerance is None:
+        fTolerance = max(
+            2.0*sc.doc.ModelAbsoluteTolerance,
+            max([e.Tolerance for e in rgBrep_In.Edges])
+            )
+
+    # 200715: Disabled rgBrep_0RebuiltEs.
+    #    rgBrep_0RebuiltEs = rgBrep_In.DuplicateBrep()
+    #    for f in rgBrep_0RebuiltEs.Faces:
+    #        f.RebuildEdges(
+    #                tolerance=fTolerance,
+    #                rebuildSharedEdges=True,
+    #                rebuildVertices=True)
 
     # Prepare trimming curves.
-    rgCrvs_NEs_Otr = rgBrep_0RebuiltEs.DuplicateNakedEdgeCurves(outer=True, inner=False)
+    rgCrvs_NEs_Otr = rgBrep_In.DuplicateNakedEdgeCurves(outer=True, inner=False)
     
     #map(sc.doc.Objects.AddCurve, rgCrvs_ToJoin_Otr); sc.doc.Views.Redraw()
     
@@ -414,7 +450,7 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
     
     #map(sc.doc.Objects.AddCurve, rgCrvs_ToJoin_Otr); sc.doc.Views.Redraw()
     
-    rgCrvs_NEs_Inr = rgBrep_0RebuiltEs.DuplicateNakedEdgeCurves(outer=False, inner=True)
+    rgCrvs_NEs_Inr = rgBrep_In.DuplicateNakedEdgeCurves(outer=False, inner=True)
     
     #map(sc.doc.Objects.AddCurve, rgCrvs_Inr); sc.doc.Views.Redraw()
     
@@ -437,31 +473,31 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
 
     #map(sc.doc.Objects.AddCurve, rgCrvs_Joined_Otr); sc.doc.Views.Redraw()
     
-    for c in rgCrvs_Joined_Otr:
-        if not c.IsClosed:
-            print "Outer curve is not closed in xBrep.replaceShape."
-            return
-    
     rgCrvs_Joined_Inr = rg.Curve.JoinCurves(rgCrvs_ToJoin_Inr, fTolerance)
 
     #map(sc.doc.Objects.AddCurve, rgCrvs_Joined_Inr); sc.doc.Views.Redraw()
     
-    for c in rgCrvs_Joined_Inr:
+    rgCrvs_Joined_All = rg.Curve.JoinCurves(
+        list(rgCrvs_Joined_Otr) + list(rgCrvs_Joined_Inr),
+        fTolerance)
+    
+    for c in rgCrvs_Joined_All:
         if not c.IsClosed:
-            print "Inner curve is not closed in xBrep.replaceShape."
+            #sc.doc.Objects.AddCurve(c); sc.doc.Views.Redraw(); 1/0
+            print "Curve is not closed in xBrep.replaceShape."
             return
     
-    rgCrvs_Joined_All = rgCrvs_Joined_Otr + rgCrvs_Joined_Inr
+    #rgCrvs_Joined_All = rgCrvs_Joined_Otr + rgCrvs_Joined_Inr
     
     if bDebug: sEval = 'len(rgCrvs_Joined_All)'; print sEval + ':', eval(sEval)
-    #map(sc.doc.Objects.AddCurve, rgCrvs_Joined_All); sc.doc.Views.Redraw()
+    #map(sc.doc.Objects.AddCurve, rgCrvs_Joined_All); sc.doc.Views.Redraw(); 1/0
     
     # Determine how many faces into which the brep should split.
     # As in the case of a complete cylinder, the outer loop can have more than 1 trim set.
     iCt_Crvs_Joined_Otr = rgCrvs_Joined_Otr.Count
     if bDebug: sEval = 'iCt_Crvs_Joined_Otr'; print sEval + ':', eval(sEval)
-    numTargetSplits_Max = (iCt_Crvs_Joined_Otr + rgBrep_0RebuiltEs.Loops.Count -
-            rgBrep_0RebuiltEs.Faces.Count + 1)
+    numTargetSplits_Max = (iCt_Crvs_Joined_Otr + rgBrep_In.Loops.Count -
+            rgBrep_In.Faces.Count + 1)
     if bDebug: sEval = 'numTargetSplits_Max'; print sEval + ':', eval(sEval)
     
     rgCrvs_ForSplit = []
@@ -480,7 +516,7 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
     
     if sShape == 'Plane':
         rgPlaneSrf1 = xPlaneSurface.createFromPlaneAndObjectSize(
-                rgPlane=shape_In, obj_ForSize=rgBrep_0RebuiltEs)
+                rgPlane=shape_In, obj_ForSize=rgBrep_In)
         rgBrep_FullSrf = rgPlaneSrf1.ToBrep()
         rgFace_FullSrf = rgBrep_FullSrf.Faces[0]
         
@@ -515,7 +551,7 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
         # Primitive of RevSurface.
         
         # Check for case of sphere or torus not requiring any trim.
-        if len(rgCrvs_Joined_Otr) + len(rgCrvs_Joined_Inr) == 0:
+        if len(rgCrvs_Joined_All) == 0:
             if sShape == 'Sphere' or sShape == 'Torus':
                 rgRevSrf1_ForSolid = shape_In.ToRevSurface()
                 rgBrep_FromRevSrf = rgRevSrf1_ForSolid.ToBrep()
@@ -524,7 +560,7 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
 
         # Extend rgShapeX of cylinder or cone.
         if sShape == 'Cylinder':
-            extendCylinderToObjectSize(shape_In, rgBrep_0RebuiltEs, bDebug=bDebug)
+            extendCylinderToObjectSize(shape_In, rgBrep_In, bDebug=bDebug)
             #sc.doc.Objects.AddBrep(shape_In.ToBrep(False, False))
         elif sShape == 'Cone': # Extend length of cone so that surface is larger than trim.
             fScale = 1.1
@@ -610,17 +646,19 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
                 # Find correct Face of baseball sphere brep.
                 pt_ToFindFace = rgCrvs_Joined_Otr[0].PointAtStart
                 for iF, rgFace1 in enumerate(rgBrep_BaseballSphere_Rotated.Faces):
-                    rgSrf = rgFace1.UnderlyingSurface()
-                    b, u,v = rgSrf.ClosestPoint(pt_ToFindFace)
+                    b, u,v = rgFace1.ClosestPoint(pt_ToFindFace)
                     if not b: return
-                    if pt_ToFindFace.DistanceTo(rgFace1.PointAt(u,v)) > sc.doc.ModelAbsoluteTolerance:
+
+                    fDist = pt_ToFindFace.DistanceTo(rgFace1.PointAt(u,v))
+                    if fDist > sc.doc.ModelAbsoluteTolerance:
                         continue
-                    #sc.doc.Objects.AddBrep(rgFace1.DuplicateFace(False)); 1/0
-                    if rgFace1.IsPointOnFace(u,v):
+
+                    ptFaceRel = rgFace1.IsPointOnFace(u,v)
+                    if ptFaceRel == rg.PointFaceRelation.Interior:
                         rgBrep_Split = rgFace1.Split(
                                 curves=rgCrvs_ForSplit,
                                 tolerance=sc.doc.ModelAbsoluteTolerance)
-                        #sc.doc.Objects.AddBrep(rgBrep_Split); 1/0
+                        break
             if rgBrep_Split is None:
                 rgBrep_FullSphere_FromRevSrf = rgRevSrf1_FromShape.ToBrep()
                 rgFace_FullSrf = rgBrep_FullSphere_FromRevSrf.Faces[0]
@@ -680,24 +718,25 @@ def replaceShape(rgBrep0, shape, fTolerance=0.1*sc.doc.ModelAbsoluteTolerance, b
     
     idx_rgFace_Pos = None
     ptOnFace = getRandomPointOnFace(
-            rgBrep=rgBrep_0RebuiltEs,
+            rgBrep=rgBrep_In,
             idxFace=0,
             fDistMin=2.0*sc.doc.ModelAbsoluteTolerance)
     if not ptOnFace:
         ptOnFace = getRandomPointOnFace(
-                rgBrep=rgBrep_0RebuiltEs,
+                rgBrep=rgBrep_In,
                 idxFace=0,
                 fDistMin=1.0*sc.doc.ModelAbsoluteTolerance)
     if ptOnFace:
+        #sc.doc.Objects.AddPoint(ptOnFace)
         idx_rgFace_Pos = getFaceAtPoint(
                 rgBrep_Split, ptOnFace, bDebug)
     
     if idx_rgFace_Pos is None:
-        idx_rgFace_Pos = findMatchingFaceIndexInBrepSplitUsingBrepBBox(
-                rgBrep_Split, rgBrep_0RebuiltEs)
+        idx_rgFace_Pos = xBrep_findMatchingFace.usingBoundingBoxOfBrep(
+                rgBrep_Split, rgBrep_In)
         if idx_rgFace_Pos is None:
-            idx_rgFace_Pos = findMatchingFaceIndexInBrepSplitUsingEdgeBBox(
-                    rgBrep_Split, rgBrep_0RebuiltEs)
+            idx_rgFace_Pos = xBrep_findMatchingFace.usingBoundingBoxOfEdges(
+                    rgBrep_Split, rgBrep_In)
             if idx_rgFace_Pos is None:
                 return
     

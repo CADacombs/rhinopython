@@ -7,7 +7,9 @@
 180915-16: Refactored and externalized some functions to another function.
         Name changed from duplicateBorderSelect.py to dupBorderSelect.py.
 191110-12: Returned some functions from another module.  Added more functions.
-200109: Updated a function name.
+200109: Modified a function name.
+200205: Refactored 2 functions into 1.
+200602: Modified some variable names.
 """
 
 import Rhino
@@ -101,44 +103,49 @@ def getNakedEdgeIndices_2EdgesPerVertexOnly(brep):
     return idxs_nakedEdges_perBorder
 
 
-def joinEdgeCrvsToEdgeTols(brep, idxs_Border):
-
-    # Do not get EdgeCurves since they sometimes extend beyond the Edge Vertices.
-    crvs_toJoin = []
-    tols_Border = []
-    for iE in idxs_Border:
-        edge = brep.Edges[iE]
-        crvs_toJoin.append(edge)
-        tols_Border.append(edge.Tolerance)
-
-    rgCrvs_Joined = rg.Curve.JoinCurves(
-            crvs_toJoin,
-            joinTolerance=2.01*max(tols_Border))
-    if not rgCrvs_Joined:
-        1/0
-    elif len(rgCrvs_Joined) > 1:
-        s  = "More than 1 closed curve joined for a single border."
-        s += "  This brep will not be used for trimming."
-        print s
-        return
-
-    rgCrv_Joined = rgCrvs_Joined[0]
-
-    #if not rgCrv_Joined.IsClosed:
-    #    sc.doc.Objects.AddCurve(rgCrv_Joined)
-    #    raise ValueError("Warning... curves for JoinCurves did not close.")
-
-    return rgCrv_Joined
-
-
-def createClosedCrvs_2EdgesPerVertexOnly(brep):
+def createClosedCrvs_2EdgesPerVertexOnly(brep, bDebug=False):
     """
     Returns closed curves.
     """
+
+
+
+    def joinEdgeCrvsToEdgeTols(brep, idxs_Border, bDebug=False):
+
+        # Do not get EdgeCurves since they sometimes extend beyond the Edge Vertices.
+        crvs_toJoin = []
+        tols_Border = []
+        for iE in idxs_Border:
+            edge = brep.Edges[iE]
+            crvs_toJoin.append(edge)
+            tols_Border.append(edge.Tolerance)
+
+        rgCrvs_Joined = rg.Curve.JoinCurves(
+                crvs_toJoin,
+                joinTolerance=2.01*max(tols_Border))
+        if not rgCrvs_Joined:
+            1/0
+        elif len(rgCrvs_Joined) > 1:
+            if bDebug:
+                s  = "More than 1 closed curve joined for a single border."
+                s += "  This brep will not be used for trimming."
+                print s
+            return
+
+        rgCrv_Joined = rgCrvs_Joined[0]
+
+        #if not rgCrv_Joined.IsClosed:
+        #    sc.doc.Objects.AddCurve(rgCrv_Joined)
+        #    raise ValueError("Warning... curves for JoinCurves did not close.")
+
+        return rgCrv_Joined
+
+
+
     idxs_NEs_perBorder = getNakedEdgeIndices_2EdgesPerVertexOnly(brep)
     crvs_Border = []
     for idxs_Border in idxs_NEs_perBorder:
-        crv_Border = joinEdgeCrvsToEdgeTols(brep, idxs_Border)
+        crv_Border = joinEdgeCrvsToEdgeTols(brep, idxs_Border, bDebug=bDebug)
         if crv_Border and crv_Border.IsClosed: crvs_Border.append(crv_Border)
     return crvs_Border
 
@@ -147,7 +154,14 @@ def createClosedCrvs_2EdgesPerVertexOnly(brep):
 #
 
 
-def get_BrepIds_EdgeIndices_Lists_from_Objrefs(objrefs):
+def convertObjrefsToSortedBrepsAndEdges(objrefs):
+    """
+    Parameters:
+        objrefs of Edges
+    Returns on success:
+        list(GUIDs of breps)
+        list(list(Edge indices) per brep)
+    """
     
     gBreps = []
     idxs_Edges = []
@@ -175,28 +189,28 @@ def getInput():
     
     # Get trimmed edges of breps.
     go = ri.Custom.GetObject()
-    go.SetCommandPrompt("Select at least one edge of each naked edge loop")
+
     go.GeometryFilter = Rhino.DocObjects.ObjectType.EdgeFilter
     go.GeometryAttributeFilter = (ri.Custom.GeometryAttributeFilter.BoundaryEdge)
+
+    go.SetCommandPrompt("Select at least one edge of each naked edge loop")
+
     go.EnablePreSelect(False, True)
+
     res = go.GetMultiple(1, 0)
+
     if res != ri.GetResult.Object: return
     
     objrefs = go.Objects()
     go.Dispose()
-    
-    rc = get_BrepIds_EdgeIndices_Lists_from_Objrefs(objrefs)
-    if rc is None: return
-    
-    gBreps, idxs_Edges = rc
-    
-    return gBreps, idxs_Edges
+
+    return objrefs
 
 
-def getEdgeIndicesOfBorders(gBrep, idxs_Edges, bEcho=True, bDebug=False):
+def getEdgeIndicesOfBorders(rhBrep, idxs_Edges, bDebug=False):
     """
     Parameter:
-        gBrep
+        rhBrep
         idxs_Edges: List of BrepEdge indices or None if all borders (naked edges) are to be returned.
     Loop through each target edge of the brep:
         Find adjacent naked edges using vertices.
@@ -206,9 +220,10 @@ def getEdgeIndicesOfBorders(gBrep, idxs_Edges, bEcho=True, bDebug=False):
     Returns: 1-level deep list: Indices of BrepEdge in list per border.
         The edges are in order in border loop.
     """
-    rgBrep = rs.coercebrep(gBrep)
+
+    rgBrep = rs.coercebrep(rhBrep)
     if not rgBrep.IsValid:
-        print "Warning!  {} is not valid.  Check results.".format(gBrep)
+        print "Warning!  Brep is not valid.  Check results."
     
     idxs_Es_perBorder = [] # 1-level deep list.
     
@@ -280,16 +295,19 @@ def getEdgeIndicesOfBorders(gBrep, idxs_Edges, bEcho=True, bDebug=False):
     return idxs_Es_perBorder
 
 
-def get_joined_curves(gBrep, idxs_Edges_per_border, bEcho=True, bDebug=False):
+def get_joined_curves(rhBrep, idxs_Edges_per_border, bEcho=True, bDebug=False):
     """
     Parameters:
-        gBrep
+        rhBrep: rg.Brep, rd.BrepObject, or (GUID of brep)
         idxs_Edges_per_border: These are ordered to border loop.
+        bEcho,
+        bDebug
         
-    Returns: 0-level deep list.
+    Returns on success:
+        list(rg.Curve (0-level deep))
     """
     
-    rgBrep = rs.coercebrep(gBrep)
+    rgBrep = rs.coercebrep(rhBrep)
     
     rgCrvs_Borders = []
     
@@ -317,37 +335,53 @@ def add_CurvesOfBorders(rgCrvs, bEcho=True, bDebug=False):
     return gCurves_borders
 
 
-def processBrep(gBrep, idxs_Trims, bEcho=True, bDebug=False):
+def processBrep(rgBrep, idxs_Trims, bEcho=True, bDebug=False):
     
-    idxs_Edges_per_border = getEdgeIndicesOfBorders(gBrep, idxs_Trims, bEcho, bDebug)
+    idxs_Edges_per_border = getEdgeIndicesOfBorders(rgBrep, idxs_Trims, bDebug)
     if idxs_Edges_per_border is None: return
     
-    rgCrvs_borders = get_joined_curves(gBrep, idxs_Edges_per_border, bEcho, bDebug)
+    rgCrvs_borders = get_joined_curves(rgBrep, idxs_Edges_per_border, bEcho, bDebug)
     if rgCrvs_borders is None: return
     
     gCurves_borders = add_CurvesOfBorders(rgCrvs_borders, bEcho, bDebug)
     return gCurves_borders
 
 
-def processBreps(gBreps, idx_Trims_PerBrep, bEcho=True, bDebug=False):
+def processBrepObjects(rhBreps, idx_Trims_PerBrep, bEcho=True, bDebug=False):
+    """
+    Parameters:
+        rdBreps, # list(rd.BrepObject's or GUID's of them)
+        idx_Trims_PerBrep,
+        bEcho,
+        bDebug
+    Returns on success:
+        list(list(GUIDs of curves) per brep))
+    """
     
     gCurves_Borders_PerBrep = [] # 1-level deep list nesting.
     
-    for gBrep, idxs_Trims in zip(gBreps, idx_Trims_PerBrep):
-        gCurves_Borders_PerBrep.append(processBrep(gBrep, idxs_Trims, bEcho, bDebug))
+    for rhBrep, idxs_Trims in zip(rhBreps, idx_Trims_PerBrep):
+        rgBrep_In = rs.coercebrep(rhBrep)
+        gCurves_Borders_PerBrep.append(
+            processBrep(rgBrep_In, idxs_Trims, bEcho, bDebug))
     
     return gCurves_Borders_PerBrep
 
 
 def main(bEcho=True, bDebug=False):
     
-    rc = getInput()
+    objrefs = getInput()
+    if not objrefs: return
+
+    rc = convertObjrefsToSortedBrepsAndEdges(objrefs)
     if rc is None: return
+    
     gBreps, idxs_Edges_per_Brep = rc
     
     sc.doc.Objects.UnselectAll()
     
-    gCurves_Borders_PerBrep = processBreps(gBreps, idxs_Edges_per_Brep, bEcho, bDebug)
+    gCurves_Borders_PerBrep = processBrepObjects(
+        gBreps, idxs_Edges_per_Brep, bEcho, bDebug)
     if gCurves_Borders_PerBrep is None: return
     
     sc.doc.Views.Redraw()

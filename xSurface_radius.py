@@ -45,6 +45,7 @@
 190810, 0903: Fixed bug in constantRadiusOfSurface.
 191118: Import-related update.
 191206: Bug fix.
+200518: For accuracy, now uses 0.1*sc.doc.ModelAbsoluteTolerance as a tolerance to recognize primitive shapes.
 """
 
 import Rhino
@@ -298,7 +299,7 @@ def curvaturesAtNormalizedParameters(rgSrf, u_Norm, v_Norm):
     return kappa_Max, kappa_Min
 
 
-def constantRadiusOfSurface(rgFace, fRadTol=10.0*sc.doc.ModelAbsoluteTolerance, bEcho=False, bDebug=False):
+def constantRadiusOfSurface(rgFace, fRadTol=None, bEcho=False, bDebug=False):
     if bDebug: print 'constantRadiusOfSurface()'
     
     
@@ -318,6 +319,9 @@ def constantRadiusOfSurface(rgFace, fRadTol=10.0*sc.doc.ModelAbsoluteTolerance, 
             return rgPrimitive.MinorRadius
     
     
+    if fRadTol is None:
+        fRadTol=10.0*sc.doc.ModelAbsoluteTolerance
+    
     # If the face is of a cylinder, sphere, or torus, obtain the shape's radius.
     rc = xBrepFace_tryGetPrimitiveShape.tryGetPrimitiveShape(
             rgFace,
@@ -326,7 +330,7 @@ def constantRadiusOfSurface(rgFace, fRadTol=10.0*sc.doc.ModelAbsoluteTolerance, 
             bCone=False,
             bSphere=True,
             bTorus=True,
-            fTolerance=fRadTol,
+            fTolerance=0.1*sc.doc.ModelAbsoluteTolerance,
             bDebug=bDebug)
     if rc and rc[0]:
         rgPrimitive, fTol_Used, sShrunkOrNot = rc[0]

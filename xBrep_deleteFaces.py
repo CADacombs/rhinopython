@@ -14,6 +14,7 @@
            Added bHeal and bAddModFaces.
            Now tries Brep.JoinBreps instead of Brep.Join due to forced edge joining of the latter.
            Now determines whether resultant brep is final based on naked edge border counts before versus after processing.
+200619: Import-related update.
 
 TODO: 
 """
@@ -27,8 +28,8 @@ from System.Diagnostics import Stopwatch
 
 import xBrep_findMatchingFace
 import xBrep_nakedEdgeLoop
+import xBrepFace
 import xBrepFace_extendAtUntrimmedEdge
-import xBrepFace_pointOnInterior
 import xBrepFace_removeTrim
 import xBrepObject
 import xInput
@@ -748,7 +749,7 @@ def processBrep(rgBrep0, idx_rgFs, bEcho=False, bDebug=False):
         if idx_AdjF == 36:
             pass
         
-        pt = xBrepFace_pointOnInterior.createPoint3d(rgB0.Faces[idx_AdjF])
+        pt = xBrepFace.createPoint3dOnInterior(rgB0.Faces[idx_AdjF])
         if pt is None:
             print "Point on face not found!" \
                 "Only non-modified adjacent faces will be added."

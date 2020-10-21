@@ -7,7 +7,7 @@
         Although only one trim is allowed to be extended when running this script
         directly, multiple extended Trims can be passed to trimExtendedSrf.
 160915: trimExtendedSrf: Fixed bug in IsoStatus matching.
-190413,0423, 200109: Import-related update.
+190413,0423, 200109, 0619: Import-related update.
 """
 
 import Rhino
@@ -17,7 +17,7 @@ import Rhino.Input as ri
 import scriptcontext as sc
 
 import xBrep_findMatchingFace
-import xBrepFace_pointOnInterior
+import xBrepFace
 import xBrepTrim
 
 
@@ -295,7 +295,7 @@ def trimExtendedSrf(rgSrf_Ext, rgBrep0, idxTrims_toSkip, bEcho=False, bDebug=Fal
     # Check whether brep has more than one face before attempting to get correct face.
     if rgBrep_Split.Faces.Count > 1:
         # Get point on face of original brep for face matching.
-        ptOnFace = xBrepFace_pointOnInterior.createPoint3d(
+        ptOnFace = xBrepFace.createPoint3dOnInterior(
             rgBrep0.Faces[0],
             fMinDistFromBorder=10.0*sc.doc.ModelAbsoluteTolerance)
         if ptOnFace is None:

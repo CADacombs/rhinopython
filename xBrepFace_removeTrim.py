@@ -16,6 +16,8 @@
 190620: Corrected printed output of curves added.
 200109-10: Import-related update.  Printed feedback change.
         Added Brep.Repair as a temporary fix for some cases where invalid breps are created.
+200415: Corrected GeometryAttributeFilter in getInput.
+200701: Import-related update.
 
 TODO: 
 """
@@ -118,9 +120,11 @@ def getInput():
     go.SetCommandPrompt("Select edge to remove")
 
     go.GeometryFilter = Rhino.DocObjects.ObjectType.EdgeFilter
+
     go.GeometryAttributeFilter = (
-            ri.Custom.GeometryAttributeFilter.TrimmingBoundaryEdge |
-            ri.Custom.GeometryAttributeFilter.MatedEdge)
+        ~
+        ri.Custom.GeometryAttributeFilter.SeamEdge
+        )
 
     while True:
         Opts.riAddOpts['bEcho'](go)
@@ -1123,8 +1127,8 @@ def processBrepObjects(gBreps0, idx_rgTs_ToRemove_PerBs0, bEcho=True, bDebug=Fal
 
             # No breaks (fails), so remove faces from polyface brep.
             gBreps1_B0WithFacesRemoved = xBrepObject.removeFaces(
-                    rhBrep0=gBrep0,
-                    idxs_rgFaces=idx_rgFaces_B0)
+                    gBrep0,
+                    idx_rgFaces_B0)
             if gBreps1_B0WithFacesRemoved is None:
                 print "Faces could not be removed from {}.".format(gBrep0)
                 return

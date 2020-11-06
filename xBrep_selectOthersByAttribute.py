@@ -1,9 +1,12 @@
 """
 201030: Created, starting with xBreps_similar.py.
+201102: Added support for Extrusions.  Now considers Attributes.ColorSource.  Added feedback for when analyzing large data sets.
+201105: Improved efficency of volume checking and open breps are now skipped for volume matching.
 """
 
 import Rhino
 import Rhino.DocObjects as rd
+import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
 
@@ -100,11 +103,11 @@ def getInput():
     """
     """
     
-    # Get brep with optional input.
+    # Get Brep/Extrusion with optional input.
     
     go = ri.Custom.GetObject()
-    go.SetCommandPrompt("Select source brep")
-    go.GeometryFilter = rd.ObjectType.Brep
+    go.SetCommandPrompt("Select source brep/extrusion")
+    go.GeometryFilter = rd.ObjectType.Brep # Brep will also filter Extrusions ( https://discourse.mcneel.com/t/restriction-of-objecttype-in-rhinocommon/73603/5 )
     go.SubObjectSelect = False
 
     idxs_Opt = {}
@@ -162,7 +165,6 @@ def getInput():
         Opts.saveSticky()
 
 
-
 def getMatches(objref_toMatch, **kwargs):
     """
     """
@@ -185,73 +187,180 @@ def getMatches(objref_toMatch, **kwargs):
 
     objref0 = objref_toMatch
 
-    rgBrep0 = objref0.Brep()
-    if not rgBrep0.IsValid:
-        print "Brep {} is invalid.  Repair it then rerun this script.".format(
-            objref0.ObjectId)
-        rgBrep0.Dispose()
-        return
-        
-    if sAttr == 'Volume':
+    bToMatch_IsExtrusion = bool(objref0.Surface())
+
+    if sAttr == "Colour":
+        rdRhObj0 = objref0.Object()
+
+        if rdRhObj0.Attributes.ColorSource == rd.ObjectColorSource.ColorFromMaterial:
+            print "Colour from material not supported yet."
+            return
+        elif rdRhObj0.Attributes.ColorSource == rd.ObjectColorSource.ColorFromObject:
+            colorRhObj0 = rdRhObj0.Attributes.ObjectColor
+        else:
+            if rdRhObj0.Attributes.ColorSource == rd.ObjectColorSource.ColorFromLayer:
+                pass
+            else:
+                # Color from parent.
+                # Use layer color unless object is within a block definition.
+                pass
+
+            li = rdRhObj0.Attributes.LayerIndex
+            layer = sc.doc.Layers.FindIndex(li)
+            colorRhObj0 = layer.Color
+
+
+    elif sAttr == 'Volume':
+        rgBrep0 = objref0.Brep() # Brep is also returned when objref0 contains an Extrusion.
+
+        if not rgBrep0.IsValid:
+            print "Reference {} {} is invalid.  Repair it then rerun this script.".format(
+                "Extrusion" if bToMatch_IsExtrusion else "Brep",
+                objref0.ObjectId)
+            rgBrep0.Dispose()
+            return
+
+        if not rgBrep0.IsSolid:
+            print "Reference {} {} is open.  Its 'Volume' will not be matched.".format(
+                "Extrusion" if bToMatch_IsExtrusion else "Brep",
+                objref0.ObjectId)
+            rgBrep0.Dispose()
+            return
+
         fVol0 = rgBrep0.GetVolume()
         if not fVol0:
-            print "Volume can not be calculated.  Repair brep {}.".format(objref0.ObjectId)
+            print "Volume can not be calculated.  Repair {} {}.".format(
+                "Extrusion" if bToMatch_IsExtrusion else "Brep",
+                objref0.ObjectId)
             rgBrep0.Dispose()
-        
-    rgBrep0.Dispose()
-    
+            return
+
+        iToMatch_FaceCt = rgBrep0.Faces.Count
+
+        rgBrep0.Dispose()
     
     gBreps_ToSearch = []
     rgBreps_ToSearch = []
     iCts_Faces_ToSearch = []
     fEdgeLens_ToSearch = []
-    
+
     iter = rd.ObjectEnumeratorSettings()
     iter.NormalObjects = True
     iter.LockedObjects = False
     iter.IncludeLights = False
     iter.IncludeGrips = False
-    rdBrepObjects = []
-    
-    Rhino.RhinoApp.CommandPrompt = "Scanning objects ..."
-    
-    gBreps_MatchesFound = []
-    
-    for rdRhinoObject in sc.doc.Objects.GetObjectList(iter):
-        sc.escape_test()
-        
-        if rdRhinoObject.ObjectType != rd.ObjectType.Brep: continue
-        if rdRhinoObject.Id == objref0.ObjectId: continue
-        
-        rgBrepX = rdRhinoObject.BrepGeometry
-        
-        if not rgBrepX.IsValid:
-            print "Brep {} is invalid.  Fix first.".format(rdRhinoObject.Id)
-            rgBrepX.Dispose()
-            continue
-        
+    iter.ObjectTypeFilter = rd.ObjectType.Brep | rd.ObjectType.Extrusion
+
+    gBreps_MatchesFound = [] # Also can include Extrusions.
+
+    iBrepExtrCt = 0
+    for rdObj in sc.doc.Objects.GetObjectList(iter):
+        iBrepExtrCt += 1
+
+    iOpenBrepCt = 0
+
+    idxs_AtTenths = [int(round(0.1*i*iBrepExtrCt,0)) for i in range(10)]
+
+    for i, rdRhObjX in enumerate(sc.doc.Objects.GetObjectList(iter)):
+        if sc.escape_test(throw_exception=False):
+            print "*** Analysis interrupted by user." \
+                "  Selected breps/extrusions are of partial results."
+            return gBreps_MatchesFound
+
+        if rdRhObjX.Id == objref0.ObjectId: continue
+
+        if iBrepExtrCt > 10:
+            if i in idxs_AtTenths:
+                Rhino.RhinoApp.SetCommandPrompt("Analysis at {:d}% of {} breps/extrusions ...".format(
+                    int(100.0 * (i+1) / iBrepExtrCt), iBrepExtrCt))
+        elif iBrepExtrCt > 1:
+            Rhino.RhinoApp.SetCommandPrompt(
+                "Analysis at {} of {} breps/extrusions".format(
+                    i+1, iBrepExtrCt))
+        else:
+            Rhino.RhinoApp.SetCommandPrompt("Analyzing other brep/extrusion ...")
+
+
         if sAttr == 'Colour':
-            if rdRhinoObject.Attributes.ObjectColor == objref0.Object().Attributes.ObjectColor:
-                gBreps_MatchesFound.append(rdRhinoObject.Id)
-        if sAttr == 'Name':
-            if rdRhinoObject.Attributes.Name == objref0.Object().Attributes.Name:
-                gBreps_MatchesFound.append(rdRhinoObject.Id)
-        if sAttr == 'Layer':
-            if rdRhinoObject.Attributes.LayerIndex == objref0.Object().Attributes.LayerIndex:
-                gBreps_MatchesFound.append(rdRhinoObject.Id)
+            if rdRhObjX.Attributes.ColorSource == rd.ObjectColorSource.ColorFromObject:
+                colorRhObjX = rdRhObjX.Attributes.ObjectColor
+            elif rdRhObjX.Attributes.ColorSource == rd.ObjectColorSource.ColorFromMaterial:
+                print "Colour from material not supported yet."
+                return
+            else:
+                if rdRhObjX.Attributes.ColorSource == rd.ObjectColorSource.ColorFromLayer:
+                    pass
+                else:
+                    # Color from parent.
+                    # Use layer color unless object is within a block definition.
+                    pass
+
+                li = rdRhObjX.Attributes.LayerIndex
+                layer = sc.doc.Layers.FindIndex(li)
+                colorRhObjX = layer.Color
+
+            if colorRhObjX == colorRhObj0:
+                gBreps_MatchesFound.append(rdRhObjX.Id)
+        elif sAttr == 'Name':
+            if rdRhObjX.Attributes.Name == objref0.Object().Attributes.Name:
+                gBreps_MatchesFound.append(rdRhObjX.Id)
+        elif sAttr == 'Layer':
+            if rdRhObjX.Attributes.LayerIndex == objref0.Object().Attributes.LayerIndex:
+                gBreps_MatchesFound.append(rdRhObjX.Id)
         elif sAttr == 'Volume':
-            fVol = rgBrepX.GetVolume()
-            if not fVol:
-                print "Volume can not be calculated.  Repair brep {}.".format(rdRhinoObject.Id)
+
+            bToCheck_IsExtrusion = isinstance(rdRhObjX, rd.ExtrusionObject)
+
+            rgGeomX = rdRhObjX.Geometry
+
+            if not rgGeomX.IsValid:
+                print "{} {} is invalid.  Fix first.".format(
+                    rdRhObjX.GetType().Name,
+                    rdRhObjX.Id)
+                rgGeomX.Dispose()
+                continue
+
+            if bToCheck_IsExtrusion:
+                rgBrepX = rgGeomX.ToBrep(splitKinkyFaces=True)
+                rgGeomX.Dispose()
+            else:
+                rgBrepX = rgGeomX
+
+            if not rgBrepX.IsSolid:
+                iOpenBrepCt += 1
                 rgBrepX.Dispose()
                 continue
+
+            ## This significantly speeds up the analysis.
+            #if rdRhObjX.ObjectType == rd.ObjectType.Brep:
+            #    if rgBrepX.Faces.Count != iToMatch_FaceCt:
+            #        rgBrepX.Dispose()
+            #        continue
+
+            fVol = rgBrepX.GetVolume() # GetVolume may be faster than VolumeMassProperties.Compute.
+            if not fVol:
+                print "Volume can not be calculated.  Repair {} {}.".format(
+                    rdRhObjX.GetType().Name,
+                    rdRhObjX.Id)
+                rgBrepX.Dispose()
+                continue
+
+            rgBrepX.Dispose()
 
             fVolDiff = abs(fVol - fVol0)
             if bDebug: print "Volume:", fVol0, fVolDiff
             if fVolDiff > fFloatTol:
                 continue
 
-            gBreps_MatchesFound.append(rdRhinoObject.Id)
+            gBreps_MatchesFound.append(rdRhObjX.Id)
+
+
+    if sAttr == 'Volume':
+        if iOpenBrepCt:
+            print "{} open breps skipped for volume matching.".format(iOpenBrepCt)
+        else:
+            print "No open breps are present."
+
 
     return gBreps_MatchesFound
 
@@ -276,9 +385,9 @@ def main():
     else:
         sc.doc.Views.RedrawEnabled = False
     
+    #print list(sc.doc.Objects.GetSelectedObjects(includeLights=False, includeGrips=False))
+
     sc.doc.Objects.UnselectAll()
-    
-    nSelected_All = 0
     
     rc = getMatches(
             objref_toMatch=objref_toMatch,
@@ -287,16 +396,24 @@ def main():
             bEcho=bEcho,
             bDebug=bDebug,
             )
-    if not rc: return
+    if not rc:
+        print "No matches found.  No objects are selected."
+        return
     
     gBreps_MatchesFound = rc
     
     sc.doc.Objects.Select(objectIds=[objref_toMatch.ObjectId] + gBreps_MatchesFound)
-    
-    rdObjs_Sel = sc.doc.Objects.GetSelectedObjects(includeLights=False, includeGrips=False)
-    
-    print "{} breps are selected.".format(len(list(rdObjs_Sel)))
-    
+
+    rdObjs_Sel = list(sc.doc.Objects.GetSelectedObjects(includeLights=False, includeGrips=False))
+
+    if rdObjs_Sel:
+        print "{} [{}] breps / [{}] extrusions are selected.".format(
+            len(rdObjs_Sel),
+            len([rdObj for rdObj in rdObjs_Sel if rdObj.ObjectType == rd.ObjectType.Brep]),
+            len([rdObj for rdObj in rdObjs_Sel if rdObj.ObjectType == rd.ObjectType.Extrusion]))
+    else:
+        print "No objects are selected."
+
     sc.doc.Views.RedrawEnabled = True
 
 

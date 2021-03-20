@@ -17,6 +17,8 @@ def main():
     
     sc.doc.Views.RedrawEnabled = False
     
+    sc.doc.Objects.UnselectAll() # For first call to _EdgeContinuity.
+    
     Rhino.RhinoApp.SetCommandPrompt("")
     
     for iB in xrange(len(gBs)):

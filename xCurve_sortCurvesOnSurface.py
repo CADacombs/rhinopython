@@ -4,8 +4,10 @@
 200619: Import-related update.
 200629: Now checks and rejects curves completely on surface/face border.
 200810: Replaced some local code with a function from an import.
+210113: Trialing using more tolerance for checking curves against full surface borders.  See TODO.
+        Debugging bug fix.
 
-TODO: Add capability of tracking CurveObjects in main routine so that CurveObjects can be selecting instead of duplicated.
+TODO: Add capability of tracking CurveObjects in main routine so that CurveObjects can be selected instead of duplicated.
 """
 
 import Rhino
@@ -337,7 +339,6 @@ def duplicateCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolera
 
     def isCurveCompletelyOnFaceBorder(crv):
 
-
         strongBox_points = StrongBox[Array[rg.Point3d]]()
 
         rc = crv.DivideByLength(
@@ -374,8 +375,9 @@ def duplicateCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolera
                 #sc.doc.Views.Redraw(); 1/0
 
         for pt in pts:
+            # TODO: Review the results of the following using more tolerance for natural surfaces.
             rc = xBrepFace.is3dPointOnFace(
-                rgFace, pt, fTolerance)
+                rgFace, pt, 1.5*fTolerance if rgB_Temp else fTolerance)
 
             if rc != rg.PointFaceRelation.Boundary:
                 return False
@@ -443,6 +445,7 @@ def duplicateCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolera
         rgB_Temp = rgSrf.ToBrep()
         rgFace = rgB_Temp.Faces[0]
 
+    #sc.doc.Objects.AddBrep(rgFace.Brep); sc.doc.Views.Redraw(); 1/0
 
     # Full curves completely, not completely on Surface.
     fulls_CompletelyOn, fulls_PartiallyOn = [], []
@@ -453,7 +456,7 @@ def duplicateCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolera
             fulls_CompletelyOn.append(c.DuplicateCurve())
         else:
             fulls_PartiallyOn.append(c.DuplicateCurve())
-    #map(sc.doc.Objects.AddCurve, NBs_AllOnSrf); return
+    #map(sc.doc.Objects.AddCurve, fulls_CompletelyOn); 1/0; return
 
 
     if rgB_Temp: rgB_Temp.Dispose()

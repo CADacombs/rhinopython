@@ -10,6 +10,7 @@
 200430: Added bOnlyUseCrvsOnFace and option to use all normal wires and brep edges.
 200505: Bug fix.
 200519-23, 0619,24,25, 0701,29: Refactored.  Exported a function to its own script.  Import-related update.
+210223: Modified an option default.
 """
 
 import Rhino
@@ -72,7 +73,7 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bPickPtForKeepNotRemove'; keys.append(key)
-    values[key] = False
+    values[key] = True
     names[key] = 'AtPointPicked'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Remove', 'Keep')
     riAddOpts[key] = addOptionToggle(key, names, riOpts)

@@ -3,8 +3,7 @@
 ...
 190810: replaceFaces now accepts surfaces as input for the new geometry.
         Added fTolerance_Join parameter for replaceFaces.  If one is not provided, the current brep's maximum edge tolerance is used.
-190827: CANCELED.
-190828: Maximum of 1.01 * brep's edge tolerance and input tolerance is now used for JoinBreps.
+...
 191010: Fixed bug where duplicate values in idxFaces caused some faces to be missing from brep with faces removed.
         Changed some parameter names.  Changed a printed output to bDebug.
 191015: Corrected a variable name in 1 function.
@@ -25,6 +24,13 @@
 200527: Modified conditionals for some printed output.
 200619: Added more functions.  Purged some of this history.
 200701: Now no face indices passed to extractFaces creates an _Explode.  Various minor changes.
+210503: Fixed bug in addFromSubsetOfFaces that distorted some edges when
+        CreateBooleanUnion was used to separate "shells".  CreateBooleanUnion
+        now is performed on individual breps, not Array of Breps.  This bug also
+        indicated a possible change in CreateBooleanUnion between RC6 and RC7,
+        since the former's method returned None while the latter returned
+        distorted edges.
+210507: Corrected printed output.
 """
 
 import Rhino
@@ -126,11 +132,16 @@ def addFromSubsetOfFaces(rhBrep, idxFaces, bAddOnlyMonofaces=True, bRetainLayer=
         
         if any(b.Faces.Count > 1 for b in rgBreps_Joined):
             # Separate any brep shells of modified brep and act based on shell quantity.
-            rgBreps_per_shell = rg.Brep.CreateBooleanUnion(
-                rgBreps_Joined, tolerance=0.0, manifoldOnly=False)
-            if rgBreps_per_shell is None:
-                if bDebug: print "Error in attempting to separate brep shells.  No objects have been modified."
-                return
+            rgBreps_per_shell = []
+            for b in rgBreps_Joined:
+                rc = rg.Brep.CreateBooleanUnion(
+                    [b],
+                    tolerance=0.0,
+                    manifoldOnly=False)
+                if rc is None:
+                    if bDebug: print "Error in attempting to separate brep shells.  No objects have been modified."
+                    return
+                rgBreps_per_shell.extend(rc)
         else:
             # Skipped attempting to Boolean union monoface breps in case any contact are in contact with one another.
             rgBreps_per_shell = rgBreps_Joined[:]
@@ -614,7 +625,7 @@ def extractFaces(rhBrep, idxFaces, bAddOnlyMonofaces=True, bRetainLayer=True, bR
         gBs_Remaining = rc
     
     if bEcho:
-        print "Extracted {} faces.".format(len(gBreps1_Extracted))
+        print "Extracted {} breps.".format(len(gBreps1_Extracted))
     
     return gBreps1_Extracted, gBs_Remaining
 

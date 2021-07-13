@@ -3,6 +3,11 @@
 200629: Bug fix.
 200729: Import-related update.
 200810: Added a couple of functions.
+210114: Removed raise for when createPoint3dOnInterior doesn't find a point.
+210209: Now won't raise an error when 2 curves do not close in splitFace.
+210407: Added more support for new-in-V7's BrepFace.PerFaceColor.
+210412: Added more times fEdgeLen_Min is used in splitFace.
+210503: Now, curves on SENW are ignored for retrim when underlying surface is not being replaced.
 """
 
 import Rhino
@@ -106,12 +111,20 @@ def createPoint3dOnInterior(rgFace, fMinDistFromBorder=None, bDebug=False):
             u_Shrunk = rand.NextDouble() * domU_Shrunk.Length + domU_Shrunk.Min
             v_Shrunk = rand.NextDouble() * domV_Shrunk.Length + domV_Shrunk.Min
 
-#    sc.doc.Objects.AddBrep(rgFace.DuplicateFace(duplicateMeshes=True))
-#    sc.doc.Views.Redraw()
+    from System.Drawing import Color
+    attr = rd.ObjectAttributes()
+    attr.LayerIndex = sc.doc.Layers.CurrentLayerIndex
+    attr.ColorSource = rd.ObjectColorSource.ColorFromObject
+    attr.ObjectColor = Color.Red
+    sc.doc.Objects.AddBrep(rgFace.DuplicateFace(duplicateMeshes=True), attributes=attr)
 
-    raise ValueError(
-        "Failed to find an interior point on face[{}].".format(
-            rgFace.FaceIndex))
+    print "Failed to find an interior point on face." \
+        "  Its monoface has been added to the document."
+
+    #sc.doc.Views.Redraw()
+    #raise ValueError(
+    #    "Failed to find an interior point on face[{}].".format(
+    #        rgFace.FaceIndex))
 
 
 def is3dPointOnFace(rgFace, pt, fTolerance=None):
@@ -240,23 +253,37 @@ def splitFace(rgFace, **kwargs):
     fMaxEdgeDev = max(fEdgeDevs)
 
 
+    def trimIsSenw(rgTrim):
+        return (rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.South or
+                rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.East or
+                rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.North or
+                rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.West)
+
+
     # Although splits may be successful if trims include seams,
     # they are avoided for cleaner input.  Otherwise, this could be used:
     # rgCrvs_fromLoops = [loop.To3dCurve() for loop in rgFace_In.Loops]
 
     rgCrvs_fromLoops = []
-    for loop in rgF_In.Loops:
+    for iL in range(rgF_In.Loops.Count):
+        rgL = rgF_In.Loops[iL]
         cs_ofLoop = []
-        for trim in loop.Trims:
-            # TODO: Also remove curves on surface extents?
-            #       Only if new surface is not provided.
-            if trim.TrimType == rg.BrepTrimType.Seam: continue
-            if trim.TrimType == rg.BrepTrimType.Singular: continue
-            if trim.TrimType not in (
+        for iT in range(rgL.Trims.Count):
+            rgT = rgL.Trims[iT]
+            if rgT.TrimType == rg.BrepTrimType.Seam: continue
+            if rgT.TrimType == rg.BrepTrimType.Singular: continue
+            if rgT.TrimType not in (
                 rg.BrepTrimType.Boundary, rg.BrepTrimType.Mated
             ):
-                print trim.TrimType
-            cs_ofLoop.append(trim.Edge.DuplicateCurve())
+                print rgT.TrimType
+
+            if rgSrf_Replacement is None:
+                # Ignore curves on SENW.
+                if trimIsSenw(rgT):
+                    if bDebug: print "SENW curve ignored."
+                    continue
+
+            cs_ofLoop.append(rgT.Edge.DuplicateCurve())
         
         #for c in cs_ofLoop: sc.doc.Objects.AddCurve(c)
         #sc.doc.Views.Redraw(); 1/0
@@ -264,14 +291,17 @@ def splitFace(rgFace, **kwargs):
         cs_WIP = []
         for c in cs_ofLoop:
             fLength = c.GetLength()
-            if fLength > fSplitTol:
+            if fLength > max(fSplitTol, fEdgeLen_Min):
+                # Before including fEdgeLen_Min, adjacent LineCurves would
+                # sometimes become PolylineCurves from JoinCurves, with
+                # entire PolylineCurve counted as 1 segment.
                 cs_WIP.append(c)
             else:
                 c.Dispose()
         
         cs_ofLoop = cs_WIP[:]
         
-        fJoinTol = 2.01*max(fMaxEdgeDev, fSplitTol)
+        fJoinTol = max(2.0*fMaxEdgeDev, 2.0*fSplitTol, fEdgeLen_Min)
         
         rgCrvs_Joined = rg.Curve.JoinCurves(
             cs_ofLoop,
@@ -281,9 +311,13 @@ def splitFace(rgFace, **kwargs):
         #    sc.doc.Views.Redraw(); 1/0
 
         for c in rgCrvs_Joined:
-            if not c.IsClosed:
-                sc.doc.Objects.AddCurve(c); sc.doc.Views.Redraw()
-                raise ValueError("Curve is not closed.")
+        #    if not c.IsClosed:
+        #        if len(cs_ofLoop) == 2:
+        #            print "Loop may be thin and didn't close."
+        #            return
+        #        
+        #        sc.doc.Objects.AddCurve(c); sc.doc.Views.Redraw()
+        #        raise ValueError("Curve is not closed.")
             rgCrvs_fromLoops.append(c)
 
     #for c in rgCrvs_fromLoops: sc.doc.Objects.AddCurve(c)
@@ -295,7 +329,10 @@ def splitFace(rgFace, **kwargs):
     rc = xBrep_splitSurfaceWithCurves.getCurvesToSplitSurface(
         rgCrvs_Splitters_WIP, rgSrf_toSplit, fSplitTol)
     if not rc:
-        return rgSrf_toSplit.ToBrep()
+        rgB_Out = rgSrf_toSplit.ToBrep()
+        if Rhino.RhinoApp.ExeVersion >= 7:
+            rgB_Out.Faces[0].PerFaceColor = rgF_In.PerFaceColor
+        return rgB_Out
 
     for c in rgCrvs_Splitters_WIP: c.Dispose()
     rgCrvs_Splitters_WIP = rc

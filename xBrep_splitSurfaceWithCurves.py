@@ -16,6 +16,9 @@
 200629: Refactored.
 200701: Bug fix.
 200729: Import-related update.
+210122: Now, processBrepObjects processes more object types for faces and splitters.
+210125: Minor bug fix.
+210325: Added bAddSplittingCrvs.
 """
 
 import Rhino
@@ -133,6 +136,12 @@ class Opts():
     riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
+    key = 'bAddSplittingCrvs'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    riAddOpts[key] = addOptionToggle(key, names, riOpts)
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
 
     for key in keys:
         if key not in names:
@@ -189,6 +198,8 @@ def getInput_Faces():
             key = 'bExplode'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'bEcho'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'bDebug'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
+        if Opts.values['bDebug']:
+            key = 'bAddSplittingCrvs'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         
         res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
         
@@ -281,6 +292,8 @@ def getInput_TrimmingObjects(objrefs_Face):
             key = 'bExplode'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'bEcho'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'bDebug'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
+        if Opts.values['bDebug']:
+            key = 'bAddSplittingCrvs'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
 
         if Opts.values['bSelBrep']:
             go.GeometryFilter = rd.ObjectType.Curve | rd.ObjectType.Brep
@@ -544,14 +557,15 @@ def splitFaceOfBrep(rgFace_toSplit, rgCrvs_Splitters, **kwargs):
     return rgB_Split
 
 
-def getCurvesToSplitSurface(rgCrvs_tryForSplitters, rgSrf, fTolerance):
+def getCurvesToSplitSurface(rgCrvs_tryForSplitters, rgSrf, fTolerance, bDebug=False):
     """
     Duplicates input curves that are on surface and splits to edges.
     """
     rc = xCurve_sortCurvesOnSurface.duplicateCurvesOnSurface(
         rgCrvs_tryForSplitters,
         rgSrf,
-        fTolerance=fTolerance)
+        fTolerance=fTolerance,
+        bDebug=bDebug)
     if not rc: return
     (
         crvs_CompletelyOnSrf_Closed,
@@ -583,9 +597,11 @@ def getCurvesToSplitSurface(rgCrvs_tryForSplitters, rgSrf, fTolerance):
         )
 
 
-def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
+def processBrepObjects(rhObjs_Faces, rhObjs_Splitters, **kwargs):
     """
     Parameters:
+        rhObjs_Faces,
+        rhObjs_Splitters,
         bSplitUnderlyingSrf
         bOnlyUseCrvsOnSrf
         bSplitToCrvSegs
@@ -595,6 +611,7 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
         bExtract
         bEcho
         bDebug
+        bAddSplittingCrvs
     """
 
 
@@ -609,6 +626,7 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
     bExtract = getOpt('bExtract')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
+    bAddSplittingCrvs = getOpt('bAddSplittingCrvs')
 
 
     def getBrepObject(rhObj):
@@ -617,10 +635,10 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
             return rdObj
 
 
-    def getSortedBrepIdsAndFaces(objrefs):
+    def getSortedBrepIdsAndFaces(rhObjs_Faces):
         """
         Parameters:
-            list(objrefs)
+            list(rhObjs_Faces)
         Returns:
             list(Brep GUIDs)
             list(lists(integers of Face indices) per brep)
@@ -628,8 +646,25 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
         
         gBreps_In = []
         idxs_Faces_perBrep = []
-    
-        for o in objrefs:
+
+        for rhObj in rhObjs_Faces:
+            if isinstance(rhObj, Guid):
+                gBrep_In = rhObj
+                rgBrep_In = rs.coercebrep(gBrep_In)
+                if gBrep_In in gBreps_In:
+                    idxs_Faces_perBrep[gBreps_In.index(gBrep_In)] = range(rgBrep_In.Faces.Count)
+                else:
+                    gBreps_In.append(gBrep_In)
+                    idxs_Faces_perBrep.append(range(rgBrep_In.Faces.Count))
+                continue
+
+            if not isinstance(rhObj, rd.ObjRef):
+                raise ValueError(
+                    "This {} is invalid input for processBrepObjects.".format(
+                        rhObj.GetType().Name))
+
+            o = rhObj # ObjRef.
+
             gBrep_In = o.ObjectId
             rdBrep_In = o.Object()
             rgBrep_In = o.Brep()
@@ -683,6 +718,9 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
         rgCrvs_Edges = []
         gBreps_ofEdges = []
         for o in rhObjs_CurveOrBrep:
+            if isinstance(o, rg.Curve):
+                rgCrvs_CrvObjs.append(o)
+                continue
             rdObj = rs.coercerhinoobject(o) # coercecurve returns various rg.Curves, including rg.BrepEdge.
             if rdObj.ObjectType == rd.ObjectType.Curve:
                 rgCrvs_CrvObjs.append(rdObj.Geometry)
@@ -715,8 +753,8 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
 
             if bOnlyUseCrvsOnSrf:
                 rgCrvs_Splitters_thisFace = getCurvesToSplitSurface(
-                    rgCrvs_Splitters_FilteredToBrep, srf_toSplit, fTolerance)
-                if bDebug:
+                    rgCrvs_Splitters_FilteredToBrep, srf_toSplit, fTolerance, bDebug)
+                if bDebug and bAddSplittingCrvs:
                     for c in rgCrvs_Splitters_thisFace: sc.doc.Objects.AddCurve(c)
             else:
                 rgCrvs_Splitters_thisFace = rgCrvs_Splitters_FilteredToBrep
@@ -729,6 +767,8 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
                 for c in rgCrvs_Splitters_thisFace:
                     c.Dispose()
                 rgCrvs_Splitters_thisFace = cs_WIP
+                if bDebug and bAddSplittingCrvs:
+                    for c in rgCrvs_Splitters_thisFace: sc.doc.Objects.AddCurve(c)
 
 
             rgBrep_Ret_Split = splitSurfaceIntoBrep(
@@ -805,7 +845,9 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
 
             if bOnlyUseCrvsOnSrf:
                 rgCrvs_Splitters_thisFace = getCurvesToSplitSurface(
-                    rgCrvs_Splitters_FilteredToBrep, rgFace_toSplit, fTolerance)
+                    rgCrvs_Splitters_FilteredToBrep, rgFace_toSplit, fTolerance, bDebug)
+                if bDebug and bAddSplittingCrvs:
+                    for c in rgCrvs_Splitters_thisFace: sc.doc.Objects.AddCurve(c)
             else:
                 rgCrvs_Splitters_thisFace = rgCrvs_Splitters_FilteredToBrep
 
@@ -814,8 +856,6 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
                 cs_WIP = xCurve.duplicateSegments(
                     rgCrvs_Splitters_thisFace,
                     bExplodePolyCrvs=True)
-                for c in rgCrvs_Splitters_thisFace:
-                    c.Dispose()
                 rgCrvs_Splitters_thisFace = cs_WIP
 
 
@@ -863,7 +903,7 @@ def processBrepObjects(objrefs_BrepFace, rhObjs_Splitters, **kwargs):
         return [gBrep_In]
 
 
-    gBreps_In, idxs_rgFace_perBrep = getSortedBrepIdsAndFaces(objrefs_BrepFace)
+    gBreps_In, idxs_rgFace_perBrep = getSortedBrepIdsAndFaces(rhObjs_Faces)
     if not gBreps_In: return
 
     if not rhObjs_Splitters:
@@ -929,7 +969,7 @@ def main():
     Rhino.RhinoApp.SetCommandPrompt("Working ...")
 
     gBreps_Result = processBrepObjects(
-        objrefs_BrepFace=objrefs_Faces,
+        rhObjs_Faces=objrefs_Faces,
         rhObjs_Splitters=rhObjs_Splitters,
         )
 

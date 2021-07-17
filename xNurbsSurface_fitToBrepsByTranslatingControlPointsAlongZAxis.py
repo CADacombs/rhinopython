@@ -1,5 +1,7 @@
 """
 191018-19: Created.
+210717: Points on breps to match are now closest to starting surface.
+        Disabled options not yet implemented in main routine.
 
 Starting surface's control points' X and Y are maintained.
 Starting surface's Greville points are used for measurement.
@@ -14,7 +16,7 @@ import scriptcontext as sc
 from System import Guid
 from System.Drawing import Color
 
-import itertools
+#import itertools
 import random
 
 
@@ -27,23 +29,23 @@ class Opts:
     addOptions = {}
     stickyKeys = {}
     
-    key = 'bPickStartingSrf'; keys.append(key)
-    values[key] = True
-    names[key] = key[1:]
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    addOptions[key] = lambda getObj, key=key, names=names, riOpts=riOpts: (
-            ri.Custom.GetBaseClass.AddOptionToggle(
-                getObj, englishName=names[key], toggleValue=riOpts[key]))
-    stickyKeys[key] = '{}({})'.format(key, __file__)
+    #key = 'bPickStartingSrf'; keys.append(key)
+    #values[key] = True
+    #names[key] = key[1:]
+    #riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    #addOptions[key] = lambda getObj, key=key, names=names, riOpts=riOpts: (
+    #        ri.Custom.GetBaseClass.AddOptionToggle(
+    #            getObj, englishName=names[key], toggleValue=riOpts[key]))
+    #stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'fSamplingLength'; keys.append(key)
-    values[key] = 200.0 * sc.doc.ModelAbsoluteTolerance
-    names[key] = key[1:]
-    riOpts[key] = ri.Custom.OptionDouble(values[key])
-    addOptions[key] = lambda getObj, key=key, names=names, riOpts=riOpts: (
-            ri.Custom.GetBaseClass.AddOptionDouble(
-                getObj, englishName=names[key], numberValue=riOpts[key]))
-    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+    #key = 'fSamplingLength'; keys.append(key)
+    #values[key] = 200.0 * sc.doc.ModelAbsoluteTolerance
+    #names[key] = key[1:]
+    #riOpts[key] = ri.Custom.OptionDouble(values[key])
+    #addOptions[key] = lambda getObj, key=key, names=names, riOpts=riOpts: (
+    #        ri.Custom.GetBaseClass.AddOptionDouble(
+    #            getObj, englishName=names[key], numberValue=riOpts[key]))
+    #stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
     
     key = 'bExtrapolateMissingPts'; keys.append(key)
     values[key] = False
@@ -124,16 +126,16 @@ def getInput_ObjsToFit():
     #)
     go.GeometryFilter = rd.ObjectType.Brep
 
-    go.AcceptNumber(True, acceptZero=True)
+    #go.AcceptNumber(True, acceptZero=True)
 
-    s  = "{}:".format(Opts.names['fSamplingLength'])
-    s += " Sampling division curve length for curves and"
-    s += " target edge length of meshes extracted from breps."
-    print s
+    #s  = "{}:".format(Opts.names['fSamplingLength'])
+    #s += " Sampling division curve length for curves and"
+    #s += " target edge length of meshes extracted from breps."
+    #print s
 
     while True:
-        Opts.addOptions['bPickStartingSrf'](go)
-        Opts.addOptions['fSamplingLength'](go)
+        #Opts.addOptions['bPickStartingSrf'](go)
+        #Opts.addOptions['fSamplingLength'](go)
         Opts.addOptions['bExtrapolateMissingPts'](go)
         if Opts.values['bExtrapolateMissingPts']:
             Opts.addOptions['iExtrapolationCt'](go)
@@ -145,22 +147,22 @@ def getInput_ObjsToFit():
         if res == ri.GetResult.Cancel:
             go.Dispose()
             return
-        elif res == ri.GetResult.Object:
+
+        if res == ri.GetResult.Object:
             objrefs = go.Objects()
             go.Dispose()
             return tuple([objrefs] + [Opts.values[key] for key in Opts.keys])
-        else:
-            # An option was selected or a number was entered.
-            if res == ri.GetResult.Number:
-                Opts.riOpts['fSamplingLength'].CurrentValue = abs(go.Number())
+
+        #if res == ri.GetResult.Number:
+        #    Opts.riOpts['fSamplingLength'].CurrentValue = abs(go.Number())
             
-            key = 'fSamplingLength'
-            if Opts.riOpts[key].CurrentValue <= 0.0:
-                Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
+        #key = 'fSamplingLength'
+        #if Opts.riOpts[key].CurrentValue <= 0.0:
+        #    Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
             
-            Opts.setValues()
-            Opts.saveSticky()
-            go.ClearCommandOptions()
+        Opts.setValues()
+        Opts.saveSticky()
+        go.ClearCommandOptions()
 
 
 def getInput_srf_Starting():
@@ -179,16 +181,16 @@ def getInput_srf_Starting():
     # BrepVertex cannot be added to a filter of objects to accept.
     go.GeometryFilter = rd.ObjectType.Surface
 
-    go.AcceptNumber(True, acceptZero=True)
+    #go.AcceptNumber(True, acceptZero=True)
 
-    s  = "{}:".format(Opts.names['fSamplingLength'])
-    s += " Sampling division curve length for curves and"
-    s += " target edge length of meshes extracted from breps."
-    print s
+    #s  = "{}:".format(Opts.names['fSamplingLength'])
+    #s += " Sampling division curve length for curves and"
+    #s += " target edge length of meshes extracted from breps."
+    #print s
 
     while True:
-        Opts.addOptions['bPickStartingSrf'](go)
-        Opts.addOptions['fSamplingLength'](go)
+        #Opts.addOptions['bPickStartingSrf'](go)
+        #Opts.addOptions['fSamplingLength'](go)
         Opts.addOptions['bExtrapolateMissingPts'](go)
         if Opts.values['bExtrapolateMissingPts']:
             Opts.addOptions['iExtrapolationCt'](go)
@@ -204,18 +206,17 @@ def getInput_srf_Starting():
             objref = go.Object(0)
             go.Dispose()
             return tuple([objref] + [Opts.values[key] for key in Opts.keys])
-        else:
-            # An option was selected or a number was entered.
-            if res == ri.GetResult.Number:
-                Opts.riOpts['fSamplingLength'].CurrentValue = abs(go.Number())
-            
-            key = 'fSamplingLength'
-            if Opts.riOpts[key].CurrentValue <= 0.0:
-                Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
-            
-            Opts.setValues()
-            Opts.saveSticky()
-            go.ClearCommandOptions()
+
+        #if res == ri.GetResult.Number:
+        #    Opts.riOpts['fSamplingLength'].CurrentValue = abs(go.Number())
+
+        #key = 'fSamplingLength'
+        #if Opts.riOpts[key].CurrentValue <= 0.0:
+        #    Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
+        
+        Opts.setValues()
+        Opts.saveSticky()
+        go.ClearCommandOptions()
 
 
 def coerceBrep(rhObj):
@@ -321,7 +322,18 @@ def createPointsProjectedToBreps(rhObjs_ProjectTo, pts_toProject):
                     points=[pts_toProject[iU][iV]],
                     direction=rg.Vector3d.ZAxis,
                     tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
-            pt_to = rc[0] if rc else None
+            if len(rc) == 0:
+                pt_to = None
+            elif len(rc) == 1:
+                pt_to = rc[0]
+            else:
+                pts = rc
+                dists = []
+                for pt in pts:
+                    dist = pt.DistanceTo(pts_toProject[iU][iV])
+                    dists.append(dist)
+                pt_to = pts[dists.index(min(dists))]
+
             pts_Out[-1].append(pt_to)
 
     return pts_Out
@@ -404,7 +416,7 @@ def fit_Geometry(breps_ProjectTo, srf_Starting, **kwargs):
 
     bExtrapolateMissingPts = getOpt('bExtrapolateMissingPts')
     iExtrapolationCt = getOpt('iExtrapolationCt')
-    fSamplingLength = getOpt('fSamplingLength')
+    #fSamplingLength = getOpt('fSamplingLength')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -867,7 +879,7 @@ def fit_DocObjects(objrefs_toFit, objref_srf_Starting, **kwargs):
 
     bExtrapolateMissingPts = getOpt('bExtrapolateMissingPts')
     iExtrapolationCt = getOpt('iExtrapolationCt')
-    fSamplingLength = getOpt('fSamplingLength')
+    #fSamplingLength = getOpt('fSamplingLength')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 

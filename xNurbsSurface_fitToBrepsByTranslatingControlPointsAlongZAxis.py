@@ -2,6 +2,7 @@
 191018-19: Created.
 210717: Points on breps to match are now closest to starting surface.
         Disabled options not yet implemented in main routine.
+210718: Starting surface can no longer be selected from one of the breps to fit.
 
 Starting surface's control points' X and Y are maintained.
 Starting surface's Greville points are used for measurement.
@@ -11,6 +12,7 @@ import Rhino
 import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
+import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from System import Guid
@@ -37,15 +39,6 @@ class Opts:
     #        ri.Custom.GetBaseClass.AddOptionToggle(
     #            getObj, englishName=names[key], toggleValue=riOpts[key]))
     #stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    #key = 'fSamplingLength'; keys.append(key)
-    #values[key] = 200.0 * sc.doc.ModelAbsoluteTolerance
-    #names[key] = key[1:]
-    #riOpts[key] = ri.Custom.OptionDouble(values[key])
-    #addOptions[key] = lambda getObj, key=key, names=names, riOpts=riOpts: (
-    #        ri.Custom.GetBaseClass.AddOptionDouble(
-    #            getObj, englishName=names[key], numberValue=riOpts[key]))
-    #stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
     
     key = 'bExtrapolateMissingPts'; keys.append(key)
     values[key] = False
@@ -104,38 +97,19 @@ class Opts:
                 sc.sticky[cls.stickyKeys[key]] = cls.riOpts[key].CurrentValue
 
 
-def getInput_ObjsToFit():
+def getInput_BrepsToFit():
     """
     Get objects with optional input.
     """
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select breps to skin")
+    go.SetCommandPrompt("Select srfs and/or polysrfs to fit")
 
-    # The following are objects to ignore instead since
-    # BrepVertex cannot be added to a filter of objects to accept.
-    #go.GeometryFilter &= ~ (
-    #        rd.ObjectType.Annotation |
-    #        rd.ObjectType.BrepLoop |
-    #        rd.ObjectType.Cage |
-    #        rd.ObjectType.ClipPlane |
-    #        rd.ObjectType.Detail |
-    #        rd.ObjectType.InstanceReference |
-    #        rd.ObjectType.Light
-    #)
     go.GeometryFilter = rd.ObjectType.Brep
-
-    #go.AcceptNumber(True, acceptZero=True)
-
-    #s  = "{}:".format(Opts.names['fSamplingLength'])
-    #s += " Sampling division curve length for curves and"
-    #s += " target edge length of meshes extracted from breps."
-    #print s
 
     while True:
         #Opts.addOptions['bPickStartingSrf'](go)
-        #Opts.addOptions['fSamplingLength'](go)
         Opts.addOptions['bExtrapolateMissingPts'](go)
         if Opts.values['bExtrapolateMissingPts']:
             Opts.addOptions['iExtrapolationCt'](go)
@@ -151,21 +125,21 @@ def getInput_ObjsToFit():
         if res == ri.GetResult.Object:
             objrefs = go.Objects()
             go.Dispose()
-            return tuple([objrefs] + [Opts.values[key] for key in Opts.keys])
+            rdBreps = [rs.coercerhinoobject(o) for o in objrefs]
+            return (
+                rdBreps,
+                Opts.values['bExtrapolateMissingPts'],
+                Opts.values['iExtrapolationCt'],
+                Opts.values['bEcho'],
+                Opts.values['bDebug']
+                )
 
-        #if res == ri.GetResult.Number:
-        #    Opts.riOpts['fSamplingLength'].CurrentValue = abs(go.Number())
-            
-        #key = 'fSamplingLength'
-        #if Opts.riOpts[key].CurrentValue <= 0.0:
-        #    Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
-            
         Opts.setValues()
         Opts.saveSticky()
         go.ClearCommandOptions()
 
 
-def getInput_srf_Starting():
+def getInput_StartingSurface(rdObjs_toFit):
     """
     Get Surface with optional input.
     """
@@ -174,23 +148,11 @@ def getInput_srf_Starting():
     sc.doc.Views.Redraw()
 
     go = ri.Custom.GetObject()
-
-    go.SetCommandPrompt("Select surface to use its normals")
-
-    # The following are objects to ignore instead since
-    # BrepVertex cannot be added to a filter of objects to accept.
+    go.SetCommandPrompt("Select starting surface")
     go.GeometryFilter = rd.ObjectType.Surface
-
-    #go.AcceptNumber(True, acceptZero=True)
-
-    #s  = "{}:".format(Opts.names['fSamplingLength'])
-    #s += " Sampling division curve length for curves and"
-    #s += " target edge length of meshes extracted from breps."
-    #print s
 
     while True:
         #Opts.addOptions['bPickStartingSrf'](go)
-        #Opts.addOptions['fSamplingLength'](go)
         Opts.addOptions['bExtrapolateMissingPts'](go)
         if Opts.values['bExtrapolateMissingPts']:
             Opts.addOptions['iExtrapolationCt'](go)
@@ -202,37 +164,24 @@ def getInput_srf_Starting():
         if res == ri.GetResult.Cancel:
             go.Dispose()
             return
-        elif res == ri.GetResult.Object:
+
+        if res == ri.GetResult.Object:
             objref = go.Object(0)
             go.Dispose()
+
+            if objref.ObjectId in [o.Id for o in rdObjs_toFit]:
+                print "Starting surface cannot be one of the objects to fit"
+                sc.doc.Objects.UnselectAll()
+                go = ri.Custom.GetObject()
+                go.SetCommandPrompt("Select starting surface")
+                go.GeometryFilter = rd.ObjectType.Surface
+                continue
+
             return tuple([objref] + [Opts.values[key] for key in Opts.keys])
 
-        #if res == ri.GetResult.Number:
-        #    Opts.riOpts['fSamplingLength'].CurrentValue = abs(go.Number())
-
-        #key = 'fSamplingLength'
-        #if Opts.riOpts[key].CurrentValue <= 0.0:
-        #    Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
-        
         Opts.setValues()
         Opts.saveSticky()
         go.ClearCommandOptions()
-
-
-def coerceBrep(rhObj):
-    if isinstance(rhObj, rg.GeometryBase):
-        geom = rhObj
-    elif isinstance(rhObj, rd.ObjRef):
-        #print rhObj.GeometryComponentIndex.ComponentIndexType
-        geom = rhObj.Geometry()
-    elif isinstance(rhObj, Guid):
-        rdObj = sc.doc.Objects.FindId(rhObj) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(rhObj)
-        geom = rdObj.Geometry
-    else:
-        return
-
-    if isinstance(geom, rg.Brep):
-        return geom
 
 
 def coerceSurface(rhObj):
@@ -280,37 +229,10 @@ def getPointsAtSurfaceParameters(rhObj_Srf):
     return pts_out
 
 
-def getNormalsAtSurfaceParameters(rhObj_Srf, params):
-    srf = coerceSurface(rhObj_Srf)
-    if not srf: return
-    
-    if not srf.GetType() == rg.NurbsSurface:
-        print "Not a NurbsSurface."
-        return
-
-    ns = srf
-    vs_out = []
-
-    for iU in range(ns.Points.CountU):
-        vs_out.append([])
-        for iV in range(ns.Points.CountV):
-            u, v = params[iU][iV]
-            normal = ns.NormalAt(u, v)
-            vs_out[-1].append(normal)
-
-    return vs_out
-
-
-def createPointsProjectedToBreps(rhObjs_ProjectTo, pts_toProject):
+def createPointsProjectedToBreps(rgBreps_ProjectTo, pts_toProject):
     """
     rhObjects_Ref can include ObjRefs, DocObjects.RhinoObjects, GUIDS, or Geometry, but must be all the same type.
     """
-
-    breps = []
-    for obj in rhObjs_ProjectTo:
-        brep = coerceBrep(obj)
-        if brep: breps.append(brep)
-    if not breps: return
 
     pts_Out = []
     
@@ -318,7 +240,7 @@ def createPointsProjectedToBreps(rhObjs_ProjectTo, pts_toProject):
         pts_Out.append([])
         for iV in range(len(pts_toProject[0])):
             rc = rg.Intersect.Intersection.ProjectPointsToBreps(
-                    breps=breps,
+                    breps=rgBreps_ProjectTo,
                     points=[pts_toProject[iU][iV]],
                     direction=rg.Vector3d.ZAxis,
                     tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
@@ -407,7 +329,7 @@ def iterateFit(pts, ns_Starting):
     return ns1
 
 
-def fit_Geometry(breps_ProjectTo, srf_Starting, **kwargs):
+def fit_Surface(breps_ProjectTo, srf_Starting, **kwargs):
     """
     """
 
@@ -416,7 +338,6 @@ def fit_Geometry(breps_ProjectTo, srf_Starting, **kwargs):
 
     bExtrapolateMissingPts = getOpt('bExtrapolateMissingPts')
     iExtrapolationCt = getOpt('iExtrapolationCt')
-    #fSamplingLength = getOpt('fSamplingLength')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -426,7 +347,7 @@ def fit_Geometry(breps_ProjectTo, srf_Starting, **kwargs):
     pts_Greville = getPointsAtSurfaceParameters(ns_Starting)
 
     pts_Projected = createPointsProjectedToBreps(
-            rhObjs_ProjectTo=breps_ProjectTo,
+            rgBreps_ProjectTo=breps_ProjectTo,
             pts_toProject=pts_Greville,
     )
     if not pts_Projected:
@@ -869,8 +790,7 @@ def fit_Geometry(breps_ProjectTo, srf_Starting, **kwargs):
             sc.doc.Views.Redraw()
 
 
-
-def fit_DocObjects(objrefs_toFit, objref_srf_Starting, **kwargs):
+def processBrepObject(rdBreps_toFit, objref_srf_Starting, **kwargs):
     """
     """
 
@@ -879,16 +799,15 @@ def fit_DocObjects(objrefs_toFit, objref_srf_Starting, **kwargs):
 
     bExtrapolateMissingPts = getOpt('bExtrapolateMissingPts')
     iExtrapolationCt = getOpt('iExtrapolationCt')
-    #fSamplingLength = getOpt('fSamplingLength')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
 
-    breps_ProjectTo = [coerceBrep(rhObj) for rhObj in objrefs_toFit]
+    breps_ProjectTo = [rs.coercebrep(rhObj) for rhObj in rdBreps_toFit]
 
     srf_Starting = coerceSurface(objref_srf_Starting)
 
-    ns1 = fit_Geometry(
+    ns1 = fit_Surface(
             breps_ProjectTo=breps_ProjectTo,
             srf_Starting=srf_Starting,
             )
@@ -912,11 +831,11 @@ def fit_DocObjects(objrefs_toFit, objref_srf_Starting, **kwargs):
 
 def main():
 
-    rc = getInput_ObjsToFit()
+    rc = getInput_BrepsToFit()
     if rc is None: return
-    objrefs_toFit = rc[0]
+    rdObjs_toFit = rc[0]
 
-    rc = getInput_srf_Starting()
+    rc = getInput_StartingSurface(rdObjs_toFit)
     if rc is None: return
     objref_srf_Starting = rc[0]
 
@@ -926,8 +845,9 @@ def main():
     else:
         pass
 
+    Rhino.RhinoApp.SetCommandPrompt("Working ...")
 
-    fit_DocObjects(objrefs_toFit, objref_srf_Starting)
+    processBrepObject(rdObjs_toFit, objref_srf_Starting)
 
 
 if __name__ == '__main__': main()

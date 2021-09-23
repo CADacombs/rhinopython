@@ -6,6 +6,7 @@
 210327: Bug fix.
 210411: Added bIncludePlusMinusTols.  Moved some of createBreps to the new createBrepObjects.
 210418: Added more printed feedback.  Modified an option default value.
+210923: Disabled option for bRebuildDeg5 since its code hasn't yet been implemented.
 
 _FilletSrf and Brep.CreateFilletSurface create surfaces that are degree 2 rational in one direction.
 
@@ -174,7 +175,7 @@ def getInput():
         addOption('fRadius')
         addOption('fTolerance')
         addOption('bIncludePlusMinusTols')
-        addOption('bRebuildDeg5')
+        #addOption('bRebuildDeg5')
         addOption('bExtend')
         addOption('bTrimFillets')
         addOption('bUseUnderlyingSrf')

@@ -4,9 +4,10 @@
 210218: Refactored getInput.  Removed the single-span, degree-3 bezier option.
 210224: Added an option.
 210327: Bug fix.
-210411: Added bIncludePlusMinusTols.  Moved some of createBreps to the new createBrepObjects.
+210411: Added bTryOtherTols.  Moved some of createBreps to the new createBrepObjects.
 210418: Added more printed feedback.  Modified an option default value.
 210923: Disabled option for bRebuildDeg5 since its code hasn't yet been implemented.
+210924: Added one-to-many selection option.
 
 _FilletSrf and Brep.CreateFilletSurface create surfaces that are degree 2 rational in one direction.
 
@@ -18,10 +19,7 @@ import Rhino
 import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
-import rhinoscriptsyntax as rs
 import scriptcontext as sc
-
-from System import Guid
 
 
 class Opts():
@@ -39,14 +37,20 @@ class Opts():
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
+    key = 'bMultiPickB'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    # No sticky for this since it should always default to False.
+
     key = 'fTolerance'; keys.append(key)
     values[key] = 1.0 * sc.doc.ModelAbsoluteTolerance
     names[key] = "Tol"
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'bIncludePlusMinusTols'; keys.append(key)
+    key = 'bTryOtherTols'; keys.append(key)
     values[key] = False
+    #names[key] = "IncludeUniquePlusMinusTols"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -71,7 +75,7 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'bTryMorePickPts'; keys.append(key)
+    key = 'bTryOtherPickPts'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
@@ -143,29 +147,27 @@ class Opts():
         else:
             return
 
-        sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+        if key in cls.stickyKeys:
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-def getInput():
+def getInput_FaceA():
     """
+    Select BrepFace with options.
     """
 
-    # Get face A with optional input.
-    
     go = ri.Custom.GetObject()
 
     go.SetCommandPrompt("Select face A")
-    
-    go.GeometryFilter = rd.ObjectType.Surface
-    #    goA.GeometryFilter = rd.ObjectType.Brep
-    #    goA.GeometryAttributeFilter = ri.Custom.GeometryAttributeFilter.SubSurface
 
-    go.AcceptNumber(True, True)
-    go.EnableHighlight(False)
-    
+    go.GeometryFilter = rd.ObjectType.Surface
+
+    go.AcceptNumber(True, acceptZero=True)
+
     idxs_Opt = {}
 
     while True:
+
         go.ClearCommandOptions()
 
         idxs_Opt.clear()
@@ -173,49 +175,39 @@ def getInput():
         def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
         addOption('fRadius')
+        addOption('bMultiPickB')
         addOption('fTolerance')
-        addOption('bIncludePlusMinusTols')
+        addOption('bTryOtherTols')
         #addOption('bRebuildDeg5')
         addOption('bExtend')
         addOption('bTrimFillets')
         addOption('bUseUnderlyingSrf')
-        addOption('bTryMorePickPts')
+        addOption('bTryOtherPickPts')
         addOption('bEcho')
         addOption('bDebug')
 
-
         res = go.Get()
-        
+
         if res == ri.GetResult.Cancel:
             go.Dispose()
             return
 
         if res == ri.GetResult.Object:
-            if sc.doc.Objects.UnselectAll() > 0: sc.doc.Views.Redraw() # Allows for face highlighting.
-    
-            objrefA = go.Object(0)
+            objref = go.Object(0)
             go.Dispose()
-            gBrepA = objrefA.ObjectId
-            rgBrep = objrefA.Brep()
-            compIdxA = objrefA.GeometryComponentIndex.Index
-            idx_rgFaceA = 0 if compIdxA == -1 else compIdxA
-    
-            rdBrepA = objrefA.Object()
-            rdBrepA.HighlightSubObject(objrefA.GeometryComponentIndex, highlight=True)
-            sc.doc.Views.Redraw()
 
-            break
+            sc.doc.Objects.UnselectAll()
 
+            return (
+                objref,
+                Opts.values['bMultiPickB'],
+                Opts.values['bEcho'],
+                Opts.values['bDebug'],
+                )
 
-        # An option was selected or a number was entered.
-        
         if res == ri.GetResult.Number:
             key = 'fRadius'
-            goNum =  go.Number()
-            if goNum < 1e-6:
-                Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
-            else:
-                Opts.riOpts[key].CurrentValue = goNum
+            Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
 
@@ -226,7 +218,10 @@ def getInput():
                 break
 
 
-    # Get face B with optional input.
+def getInput_FaceB(objref_A):
+    """
+    Select BrepFaces with options.
+    """
 
     go = ri.Custom.GetObject()
 
@@ -234,11 +229,17 @@ def getInput():
 
     go.GeometryFilter = rd.ObjectType.Surface
 
-    go.AcceptNumber(True, True)
-    go.EnableHighlight(False)
-    
+    rdObj_A = objref_A.Object()
+    compIdx_A = objref_A.GeometryComponentIndex
+    rdObj_A.HighlightSubObject(compIdx_A, highlight=True)
+    sc.doc.Views.Redraw()
+
+
+    go.AcceptNumber(True, acceptZero=True)
+
+    idxs_Opt = {}
+
     while True:
-        sc.escape_test()
 
         go.ClearCommandOptions()
 
@@ -248,60 +249,61 @@ def getInput():
 
         addOption('fRadius')
         addOption('fTolerance')
-        addOption('bIncludePlusMinusTols')
-        addOption('bRebuildDeg5')
+        addOption('bTryOtherTols')
+        #addOption('bRebuildDeg5')
         addOption('bExtend')
         addOption('bTrimFillets')
         addOption('bUseUnderlyingSrf')
-        addOption('bTryMorePickPts')
+        addOption('bTryOtherPickPts')
         addOption('bEcho')
         addOption('bDebug')
 
-
-        if sc.escape_test(False):
-            rdBrepA.HighlightSubObject(objrefA.GeometryComponentIndex, highlight=False)
-            sc.doc.Views.Redraw()
-            return
-        
         res = go.Get()
 
         if res == ri.GetResult.Cancel:
-            rdBrepA.HighlightSubObject(objrefA.GeometryComponentIndex, highlight=False)
-            sc.doc.Views.Redraw()
             go.Dispose()
+            rdObj_A.HighlightSubObject(compIdx_A, highlight=False)
+            sc.doc.Views.Redraw()
             return
 
         if res == ri.GetResult.Object:
-            rdBrepA.HighlightSubObject(objrefA.GeometryComponentIndex, highlight=False)
-            sc.doc.Views.Redraw()
+            objref_B = go.Object(0)
 
-            objrefB = go.Object(0)
+            rdObj_B = objref_B.Object()
+            compIdx_B = objref_B.GeometryComponentIndex
+
+            sc.doc.Objects.UnselectAll()
+
+            if (
+                rdObj_B.Id == rdObj_A.Id and
+                compIdx_B.ComponentIndexType == compIdx_A.ComponentIndexType and
+                compIdx_B.Index == compIdx_A.Index
+            ):
+                rdObj_A.HighlightSubObject(compIdx_A, highlight=True)
+                sc.doc.Views.Redraw()
+                continue
+
             go.Dispose()
-            gBrepB = objrefB.ObjectId
-            compIdxB = objrefB.GeometryComponentIndex.Index
-            idx_rgFaceB = 0 if compIdxB == -1 else compIdxB
-            rdBrepA.HighlightSubObject(objrefA.GeometryComponentIndex, highlight=False)
+
+            rdObj_A.HighlightSubObject(compIdx_A, highlight=False)
             sc.doc.Views.Redraw()
-    
-            pt_PickedA = objrefA.SelectionPoint()
-            pt_PickedB = objrefB.SelectionPoint()
-    
+
             return (
-                gBrepA, idx_rgFaceA, pt_PickedA,
-                gBrepB, idx_rgFaceB, pt_PickedB,
-                [Opts.values[key] for key in Opts.keys]
-            )
+                objref_B,
+                Opts.values['fRadius'],
+                Opts.values['fTolerance'],
+                Opts.values['bTryOtherTols'],
+                Opts.values['bExtend'],
+                Opts.values['bTrimFillets'],
+                Opts.values['bUseUnderlyingSrf'],
+                Opts.values['bTryOtherPickPts'],
+                Opts.values['bEcho'],
+                Opts.values['bDebug'],
+                )
 
-
-        # An option was selected or a number was entered.
-        
         if res == ri.GetResult.Number:
             key = 'fRadius'
-            goNum =  go.Number()
-            if goNum < 1e-6:
-                Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
-            else:
-                Opts.riOpts[key].CurrentValue = goNum
+            Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
 
@@ -318,12 +320,12 @@ def createBreps(rgFaceA, pt3d_A, rgFaceB, pt3d_B, fRadius, fTolerance=None, **kw
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    bIncludePlusMinusTols = getOpt('bIncludePlusMinusTols')
-    bRebuildDeg5 = getOpt('bRebuildDeg5')
+    bTryOtherTols = getOpt('bTryOtherTols')
+    #bRebuildDeg5 = getOpt('bRebuildDeg5')
     bExtend = getOpt('bExtend')
     bTrimFillets = getOpt('bTrimFillets')
     bUseUnderlyingSrf = getOpt('bUseUnderlyingSrf')
-    bTryMorePickPts = getOpt('bTryMorePickPts')
+    bTryOtherPickPts = getOpt('bTryOtherPickPts')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -334,9 +336,9 @@ def createBreps(rgFaceA, pt3d_A, rgFaceB, pt3d_B, fRadius, fTolerance=None, **kw
         # No change in rgFaceA or rgFaceB.
         pass
     
-    rgBs_Fillet_PerCFS_PerTol = [] # 2-level nested lists of Breps.
-    fTols_Out = [] # In-syn with rgBs_Fillet_PerCFS_PerTol.
-    
+    rgBs_PerCFS = []
+    # The following are in-sync with rgBs_PerCFS.
+    fTols_Out = []
     areas = []
     boundingBoxCenters = []
 
@@ -348,10 +350,14 @@ def createBreps(rgFaceA, pt3d_A, rgFaceB, pt3d_B, fRadius, fTolerance=None, **kw
 
     fTol_Nom = sc.doc.ModelAbsoluteTolerance if fTolerance is None else fTolerance
 
-    fTols = (fTol_Nom, 10.0*fTol_Nom, 0.1*fTol_Nom) if bIncludePlusMinusTols else (fTol_Nom,)
 
-    for fTol in fTols:
-        rgBs_Fillet_PerCFS = [] # 1-level nested.
+    if bTryOtherTols:
+        fTols = fTol_Nom, 10.0*fTol_Nom, 0.1*fTol_Nom
+    else:
+        fTols = fTol_Nom,
+
+
+    for iT, fTol in enumerate(fTols):
 
         rgBs_Fillet = rg.Brep.CreateFilletSurface(
                 face0=rgFaceA,
@@ -368,34 +374,76 @@ def createBreps(rgFaceA, pt3d_A, rgFaceB, pt3d_B, fRadius, fTolerance=None, **kw
                     fTol)
             continue
 
-        areas_ThisTol = []
 
-        for rgBrep in rgBs_Fillet:
-            # Record area for comparison with other fillets.
-            area = rgBrep.GetArea()
-            if not area:
-                print "Area could not be obtained."
-            # Record bounding box center point for comparison with other fillets.
-            bbox = rgBrep.GetBoundingBox(accurate=False)
-            if not bbox:
-                print "Bounding box could not be obtained."
-            center = bbox.Center
-            
-            rgBs_Fillet_PerCFS.append(rgBs_Fillet)
+        def getTotalArea():
+            total_area = 0.0
+            for brep in rgBs_Fillet:
+                a = brep.GetArea()
+                if not a:
+                    return None
+                total_area += a
+            return total_area
+
+        area_ThisTol = getTotalArea()
+
+        if area_ThisTol is None:
+            print "Area could not be obtained."
+            rgBs_PerCFS.append(rgBs_Fillet)
             fTols_Out.append(fTol)
-            areas.append(area)
-            areas_ThisTol.append(area)
-            boundingBoxCenters.append(center)
-
-        rgBs_Fillet_PerCFS_PerTol.append(rgBs_Fillet_PerCFS)
-
-        if bEcho:
-            print "Fillet with accumulative area of" \
-                " {} square units as created at {} tolerance.".format(
-                    sum(areas_ThisTol), fTol)
+            areas.append(None)
+            boundingBoxCenters.append(None)
+            continue # to next tolerance.
 
 
-        if not bTryMorePickPts:
+        def getBBoxCenter():
+            bbox_ThisTol = rg.BoundingBox.Empty
+            for rgB in rgBs_Fillet:
+                bbox = rgB.GetBoundingBox(accurate=True)
+                if not bbox:
+                    return None
+                bbox_ThisTol.Union(bbox)
+            center = bbox_ThisTol.Center
+            return center
+
+        center_ThisTol = getBBoxCenter()
+
+
+        if center_ThisTol is None:
+            print "Bounding box could not be obtained."
+            rgBs_PerCFS.append(rgBs_Fillet)
+            fTols_Out.append(fTol)
+            areas.append(area_ThisTol)
+            boundingBoxCenters.append(None)
+            continue # to next tolerance.
+
+
+        if iT == 0:
+            rgBs_PerCFS.append(rgBs_Fillet)
+            fTols_Out.append(fTol)
+            areas.append(area_ThisTol)
+            boundingBoxCenters.append(center_ThisTol)
+        else:
+            if bDebug:
+                print "Fillet with accumulative area of" \
+                    " {} square units created at {} tolerance.".format(
+                        area_ThisTol, fTol)
+
+
+            def matchFound():
+                for i in range(len(fTols_Out)):
+                    if abs(area_ThisTol - areas[i]) <= fTol_Nom**2:
+                        if center_ThisTol.DistanceTo(boundingBoxCenters[i]) <= fTol_Nom:
+                            return True
+                return False
+
+            if not matchFound():
+                rgBs_PerCFS.append(rgBs_Fillet)
+                fTols_Out.append(fTol)
+                areas.append(area_ThisTol)
+                boundingBoxCenters.append(center_ThisTol)
+
+
+        if not bTryOtherPickPts:
             continue
 
         # Create fillets based on using various locations of each surface.
@@ -428,16 +476,17 @@ def createBreps(rgFaceA, pt3d_A, rgFaceB, pt3d_B, fRadius, fTolerance=None, **kw
                 #sc.doc.Objects.AddPoint(rgFaceA.PointAt(pt2d_uvA.X, pt2d_uvA.Y))
                 #sc.doc.Objects.AddPoint(rgFaceB.PointAt(pt2d_uvB.X, pt2d_uvB.Y))
 
-                for rgBrep in rgBs_Fillet:
-                    # Don't include any area matches.
+
+                # Don't include any area matches.
+                for rgB in rgBs_Fillet:
 
 
-                    area = rgBrep.GetArea()
+                    area = rgB.GetArea()
                     if not area:
                         print "Area could not be obtained."
                         continue
 
-                    bbox = rgBrep.GetBoundingBox(accurate=False)
+                    bbox = rgB.GetBoundingBox(accurate=False)
                     if not bbox:
                         print "Bounding box could not be obtained."
                         continue
@@ -455,90 +504,98 @@ def createBreps(rgFaceA, pt3d_A, rgFaceB, pt3d_B, fRadius, fTolerance=None, **kw
                         return False
 
                     if isFilletInList():
-                        rgBrep.Dispose()
+                        rgB.Dispose()
                         continue
 
 
-                    rgBs_Fillet_PerCFS.append(rgBs_Fillet)
+                    rgBs_PerCFS.append(rgBs_Fillet)
+                    fTols_Out.append(fTol)
                     areas.append(area)
                     boundingBoxCenters.append(center)
-        if not rgBs_Fillet_PerCFS:
+        if not rgBs_PerCFS:
             if bEcho: print "No fillets were created."
 
-        rgBs_Fillet_PerCFS_PerTol.append(rgBs_Fillet_PerCFS)
+
+    return rgBs_PerCFS, fTols_Out
 
 
-    return rgBs_Fillet_PerCFS_PerTol, fTols_Out
-
-
-def createBrepObjects(rgFaceA, pt3d_A, rgFaceB, pt3d_B, fRadius, fTolerance=None, **kwargs):
+def createBrepObjects(objref_A, objref_B, fRadius, fTolerance=None, **kwargs):
     """
     """
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    bIncludePlusMinusTols = getOpt('bIncludePlusMinusTols')
-    bRebuildDeg5 = getOpt('bRebuildDeg5')
+    bTryOtherTols = getOpt('bTryOtherTols')
+    #bRebuildDeg5 = getOpt('bRebuildDeg5')
     bExtend = getOpt('bExtend')
     bTrimFillets = getOpt('bTrimFillets')
     bUseUnderlyingSrf = getOpt('bUseUnderlyingSrf')
-    bTryMorePickPts = getOpt('bTryMorePickPts')
+    bTryOtherPickPts = getOpt('bTryOtherPickPts')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
     Rhino.RhinoApp.SetCommandPrompt("Working ...")
-    
+
     if bUseUnderlyingSrf:
-        rgFaceA = rgFaceA.UnderlyingSurface().ToBrep().Faces[0] # UnderlyingSurface() is not needed.
-        rgFaceB = rgFaceB.UnderlyingSurface().ToBrep().Faces[0]
+        # UnderlyingSurface() may not be needed.
+        fA = objref_A.Face().UnderlyingSurface().ToBrep().Faces[0] 
+        fB = objref_B.Face().UnderlyingSurface().ToBrep().Faces[0]
     else:
-        # No change in rgFaceA or rgFaceB.
-        pass
+        fA = objref_A.Face()
+        fB = objref_B.Face()
+
+    ptA = objref_A.SelectionPoint()
+    ptB = objref_B.SelectionPoint()
+
+    gBreps_Fillets = []
+
 
     rc = createBreps(
-        rgFaceA, pt3d_A,
-        rgFaceB, pt3d_B,
+        fA,
+        ptA,
+        fB,
+        ptB,
         fRadius=fRadius,
         fTolerance=fTolerance,
-        bIncludePlusMinusTols=bIncludePlusMinusTols,
-        bRebuildDeg5=bRebuildDeg5,
+        bTryOtherTols=bTryOtherTols,
         bExtend=bExtend,
         bTrimFillets=bTrimFillets,
         bUseUnderlyingSrf=bUseUnderlyingSrf,
-        bTryMorePickPts=bTryMorePickPts,
+        bTryOtherPickPts=bTryOtherPickPts,
         bDebug=bDebug,
         )
     if not rc:
         print "Fillets were not created using provided points."
         return
 
-    rgBs_Fillet_PerCFS_PerTol, fTols_Ret = rc
+    rgBs_PerCFS, fTols_Ret = rc
 
-    gBreps_Fillets = []
-    
-    for rgBs_Fillet_PerCFS, fTol in zip(rgBs_Fillet_PerCFS_PerTol, fTols_Ret):
-        if bDebug: print rgBs_Fillet_PerCFS, fTol
+    for rgBs_ThisCFS, fTol in zip(rgBs_PerCFS, fTols_Ret):
+        if bDebug: print rgBs_ThisCFS, fTol
 
-        for rgBs_Fillet in rgBs_Fillet_PerCFS:
-            for rgB in rgBs_Fillet:
-                if bTrimFillets:
-                    gBrep_Fillet = sc.doc.Objects.AddBrep(rgB)
-                    if gBrep_Fillet != Guid.Empty:
-                        gBreps_Fillets.append(gBrep_Fillet)
-                    else:
-                        if not bExtend and not rgB.IsSurface:
-                            print "Non-extend fillet created that is trimmed."
+        for rgB in rgBs_ThisCFS:
+            if bTrimFillets:
+                gBrep_Fillet = sc.doc.Objects.AddBrep(rgB)
+                if gBrep_Fillet != gBrep_Fillet.Empty:
+                    gBreps_Fillets.append(gBrep_Fillet)
                 else:
-                    for f in rgB.Faces:
-                        gBrep_Fillet = sc.doc.Objects.AddBrep(f.ToBrep())
-                        if gBrep_Fillet != Guid.Empty:
-                            gBreps_Fillets.append(gBrep_Fillet)
+                    if not bExtend and not rgB.IsSurface:
+                        print "Non-extend fillet created that is trimmed."
+            else:
+                for f in rgB.Faces:
+                    gBrep_Fillet = sc.doc.Objects.AddBrep(f.ToBrep())
+                    if gBrep_Fillet != gBrep_Fillet.Empty:
+                        gBreps_Fillets.append(gBrep_Fillet)
 
     if bEcho:
-        print "Added {} brep(s) to document of tolerance(s) [{}].".format(
-            len(gBreps_Fillets),
-            ','.join(str(f) for f in fTols_Ret)
-            )
+        s = "Added {} brep(s) to document".format(len(gBreps_Fillets))
+
+        if bTryOtherTols:
+            s += " of tolerance(s) [{}].".format(','.join(str(f) for f in fTols_Ret))
+        else:
+            s += "."
+
+        print s
 
     return gBreps_Fillets
 
@@ -549,53 +606,53 @@ def main():
         print "This script uses Brep.CreateFilletSurface that is missing from Rhino V5's RC."
         return
 
-    rc = getInput()
+    rc = getInput_FaceA()
     if rc is None: return
-
     (
-        gBrepA, idx_rgFaceA, pt3d_A,
-        gBrepB, idx_rgFaceB, pt3d_B,
+        objref_A,
+        bMultiPickB,
+        bEcho,
+        bDebug,
+        ) = rc
+
+    while True:
+        sc.escape_test()
+
+        rc = getInput_FaceB(objref_A)
+        if rc is None: break
+
         (
+            objref_B,
             fRadius,
             fTolerance,
-            bIncludePlusMinusTols,
-            bRebuildDeg5,
+            bTryOtherTols,
             bExtend,
             bTrimFillets,
             bUseUnderlyingSrf,
-            bTryMorePickPts,
+            bTryOtherPickPts,
             bEcho,
             bDebug,
-        )
-    ) = rc
+            ) = rc
 
-    rgBrepA = rs.coercebrep(gBrepA)
-    rgBrepB = rs.coercebrep(gBrepB)
+        gBreps_Fillets = createBrepObjects(
+            objref_A,
+            objref_B,
+            fRadius=fRadius,
+            fTolerance=fTolerance,
+            bTryOtherTols=bTryOtherTols,
+            bExtend=bExtend,
+            bTrimFillets=bTrimFillets,
+            bUseUnderlyingSrf=bUseUnderlyingSrf,
+            bTryOtherPickPts=bTryOtherPickPts,
+            bEcho=bEcho,
+            bDebug=bDebug,
+            )
 
-    rgFaceA = rgBrepA.Faces[idx_rgFaceA]
-    rgFaceB = rgBrepB.Faces[idx_rgFaceB]
+        if not gBreps_Fillets and not bMultiPickB: return
 
-    gBreps_Fillets = []
+        if not bMultiPickB: break
 
-    rc = createBrepObjects(
-        rgFaceA, pt3d_A,
-        rgFaceB, pt3d_B,
-        fRadius=fRadius,
-        fTolerance=fTolerance,
-        bIncludePlusMinusTols=bIncludePlusMinusTols,
-        bRebuildDeg5=bRebuildDeg5,
-        bExtend=bExtend,
-        bTrimFillets=bTrimFillets,
-        bUseUnderlyingSrf=bUseUnderlyingSrf,
-        bTryMorePickPts=bTryMorePickPts,
-        bEcho=bEcho,
-        bDebug=bDebug,
-        )
-    if rc:
-        gBreps_Fillets.extend(rc)
-
-    if gBreps_Fillets:
-        sc.doc.Views.Redraw()
+    sc.doc.Views.Redraw()
 
 
 if __name__ == '__main__': main()

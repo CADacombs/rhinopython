@@ -248,6 +248,7 @@ def getInput_FaceB(objref_A):
         def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
         addOption('fRadius')
+        addOption('bMultiPickB')
         addOption('fTolerance')
         addOption('bTryOtherTols')
         #addOption('bRebuildDeg5')
@@ -291,6 +292,7 @@ def getInput_FaceB(objref_A):
             return (
                 objref_B,
                 Opts.values['fRadius'],
+                Opts.values['bMultiPickB'],
                 Opts.values['fTolerance'],
                 Opts.values['bTryOtherTols'],
                 Opts.values['bExtend'],
@@ -624,6 +626,7 @@ def main():
         (
             objref_B,
             fRadius,
+            bMultiPickB,
             fTolerance,
             bTryOtherTols,
             bExtend,

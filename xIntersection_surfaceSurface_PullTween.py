@@ -1,6 +1,6 @@
 """
 210921: Created.
-210927: Now, starting curve directions are matched.
+210927: Bug fix: Match starting curve directions.
 """
 
 import Rhino

@@ -1,5 +1,6 @@
 """
 210921: Created.
+210927: Now, starting curve directions are matched.
 """
 
 import Rhino
@@ -347,6 +348,8 @@ def createCurve(face_A, face_B, **kwargs):
     if cA_Start is not None:
         cB_Start = getEdgeWithPointsAtBothVertices(fB)
         if cB_Start is not None:
+            if not rg.Curve.DoDirectionsMatch(cA_Start, cB_Start):
+                cB_Start.Reverse()
             rc = createTweenCurves(cA_Start, cB_Start)
             if len(rc) == 1:
                 crv_WIP = rc[0]

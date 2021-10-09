@@ -6,7 +6,8 @@
 180914: Fixed bug for ChangeLayer option. 
 191019: Added MatchProps option.
 210706: Added numerical input for jumping to an index+1.  Added ZoomIn and ZoomOut options.
-211009: Bug fix for zooming into TextDot, which ZoomSelected differently than other objects.
+211009a: Bug fix for zooming into TextDot, which ZoomSelected differently than other objects.
+211009b: Added print statements reporting the zoom factor.  Commented out debug print statements.
 """
 
 import Rhino.Input as ri
@@ -18,14 +19,14 @@ def zoomToObject(gObj, fZoomFactor=1.0):
     rs.EnableRedraw(False)
     rs.UnselectAllObjects()
     rs.SelectObject(gObj)
-    print fZoomFactor, rs.ViewRadius(),
+    #print fZoomFactor, rs.ViewRadius(),
     if rs.ObjectType(gObj) == 8192:
         # TextDot
         rs.ViewCameraTarget(target=rs.TextDotPoint(gObj))
     else:
         rs.ZoomSelected()
         rs.ViewRadius(radius=rs.ViewRadius()*fZoomFactor)
-    print rs.ViewRadius()
+    #print rs.ViewRadius()
     rs.EnableRedraw()
 
 
@@ -33,6 +34,7 @@ def main():
     
     stickyKey = 'fZoomFactor({})({})'.format(__file__, sc.doc.Name)
     fZoomFactor = sc.sticky[stickyKey] if sc.sticky.has_key(stickyKey) else 1.0
+    print "Zoom factor: {}".format(fZoomFactor)
     
     gObjs = rs.GetObjects("Select objects", preselect=True)
     if gObjs is None: return
@@ -105,12 +107,14 @@ def main():
                 # TextDot
                 rs.ViewRadius(radius=0.5*rs.ViewRadius())
             fZoomFactor *= 0.5
+            print "Zoom factor: {} -> {}".format(sc.sticky[stickyKey], fZoomFactor)
             sc.sticky[stickyKey] = fZoomFactor
         elif sOption == 'ZoomOut':
             if rs.ObjectType(gObj_current) == 8192:
                 # TextDot
                 rs.ViewRadius(radius=2.0*rs.ViewRadius())
             fZoomFactor *= 2.0
+            print "Zoom factor: {} -> {}".format(sc.sticky[stickyKey], fZoomFactor)
             sc.sticky[stickyKey] = fZoomFactor
         elif sOption == 'HighlightAll':
             rs.SelectObjects(gObjs)

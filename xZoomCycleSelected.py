@@ -8,6 +8,7 @@
 210706: Added numerical input for jumping to an index+1.  Added ZoomIn and ZoomOut options.
 211009a: Bug fix for zooming into TextDot, which ZoomSelected differently than other objects.
 211009b: Added print statements reporting the zoom factor.  Commented out debug print statements.
+211010: Now supports perspective viewports.
 """
 
 import Rhino.Input as ri
@@ -15,26 +16,32 @@ import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 
-def zoomToObject(gObj, fZoomFactor=1.0):
+def zoomToObject(gObj, fMagFactor=1.0):
     rs.EnableRedraw(False)
+    
     rs.UnselectAllObjects()
     rs.SelectObject(gObj)
-    #print fZoomFactor, rs.ViewRadius(),
+    
     if rs.ObjectType(gObj) == 8192:
         # TextDot
         rs.ViewCameraTarget(target=rs.TextDotPoint(gObj))
     else:
         rs.ZoomSelected()
-        rs.ViewRadius(radius=rs.ViewRadius()*fZoomFactor)
-    #print rs.ViewRadius()
+        viewport = sc.doc.Views.ActiveView.ActiveViewport
+        viewport.Magnify(fMagFactor, mode=False)
+    
     rs.EnableRedraw()
 
 
 def main():
     
-    stickyKey = 'fZoomFactor({})({})'.format(__file__, sc.doc.Name)
-    fZoomFactor = sc.sticky[stickyKey] if sc.sticky.has_key(stickyKey) else 1.0
-    print "Zoom factor: {}".format(fZoomFactor)
+    stickyKey = 'fMagFactor({})'.format(__file__)
+    if sc.sticky.has_key(stickyKey):
+        fMagFactor = sc.sticky[stickyKey]
+    else:
+        fMagFactor = sc.sticky[stickyKey] = 1.0
+    
+    print "Magnification factor: {}".format(fMagFactor)
     
     gObjs = rs.GetObjects("Select objects", preselect=True)
     if gObjs is None: return
@@ -64,19 +71,16 @@ def main():
     for s in sOptions : go.AddOption(s)
     
     # Set first selection and view.
-    sView = rs.CurrentView()
     gObj_current = gObjs[idxSelected]
     
-    zoomToObject(gObj_current, fZoomFactor)
+    zoomToObject(gObj_current, fMagFactor)
     
     while len(gObjs) > 0:
         go.SetCommandPrompt(
                 "Selected object {} of {}.  Press Esc when done.".format(
                 idxSelected + 1, len(gObjs)))
         
-        sView = rs.CurrentView()
         
-        #rs.EnableRedraw()
         res = go.Get()
         if res == ri.GetResult.Cancel:
             rs.SelectObjects(gObjs)
@@ -92,11 +96,12 @@ def main():
             sOption = go.StringResult()
             print sOption
         
-        #rs.EnableRedraw(False)
         
         if sOption == 'All':
+            rs.EnableRedraw()
             rs.SelectObjects(gObjs)
-            rs.ZoomSelected(sView)
+            rs.ZoomSelected()
+            rs.EnableRedraw(False)
             continue
         elif sOption == 'Next':
             idxSelected += 1
@@ -105,17 +110,19 @@ def main():
         elif sOption == 'ZoomIn':
             if rs.ObjectType(gObj_current) == 8192:
                 # TextDot
-                rs.ViewRadius(radius=0.5*rs.ViewRadius())
-            fZoomFactor *= 0.5
-            print "Zoom factor: {} -> {}".format(sc.sticky[stickyKey], fZoomFactor)
-            sc.sticky[stickyKey] = fZoomFactor
+                viewport = sc.doc.Views.ActiveView.ActiveViewport
+                viewport.Magnify(2.0, mode=False)
+            fMagFactor *= 2.0
+            print "Magnification factor: {} -> {}".format(sc.sticky[stickyKey], fMagFactor)
+            sc.sticky[stickyKey] = fMagFactor
         elif sOption == 'ZoomOut':
             if rs.ObjectType(gObj_current) == 8192:
                 # TextDot
-                rs.ViewRadius(radius=2.0*rs.ViewRadius())
-            fZoomFactor *= 2.0
-            print "Zoom factor: {} -> {}".format(sc.sticky[stickyKey], fZoomFactor)
-            sc.sticky[stickyKey] = fZoomFactor
+                viewport = sc.doc.Views.ActiveView.ActiveViewport
+                viewport.Magnify(0.5, mode=False)
+            fMagFactor *= 0.5
+            print "Magnification factor: {} -> {}".format(sc.sticky[stickyKey], fMagFactor)
+            sc.sticky[stickyKey] = fMagFactor
         elif sOption == 'HighlightAll':
             rs.SelectObjects(gObjs)
             continue
@@ -138,12 +145,10 @@ def main():
                 rs.ObjectLayer(gObj_current, layer)
                 gObjs.remove(gObj_current)
         elif sOption == 'MatchProps':
-            #rs.EnableRedraw()
             gSource = rs.GetObject("Select object which to match its properties")
             if gSource:
                 rs.MatchObjectAttributes(gObj_current, gSource)
                 gObjs.remove(gObj_current)
-            #rs.EnableRedraw(False)
         
         if len(gObjs) == 0:
             print "No more objects."
@@ -151,7 +156,7 @@ def main():
         idxSelected = idxSelected % len(gObjs)
         gObj_current = gObjs[idxSelected]
         
-        zoomToObject(gObj_current, fZoomFactor)
+        zoomToObject(gObj_current, fMagFactor)
 
 
 if __name__ == '__main__': main()

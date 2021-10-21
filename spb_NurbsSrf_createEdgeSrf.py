@@ -1,5 +1,5 @@
 """
-211013-17: Created.
+211013-21: Created.
 
 TODO:
     Add support for G2 continuity.
@@ -13,6 +13,8 @@ import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
+
+import spb_NurbsSrf_matchTo1
 
 
 W = rg.IsoStatus.West
@@ -163,74 +165,6 @@ def getInput():
             if go.Option().Index == idxs_Opt[key]:
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
-
-
-def createTanSrfFromEdge(rgTrim):
-    """
-    """
-
-    rgEdge = rgTrim.Edge
-    ns = rgTrim.Face.UnderlyingSurface().ToNurbsSurface()
-
-    ncA = rgEdge.ToNurbsCurve()
-
-    ts = ncA.GrevilleParameters()
-
-    pts_on_ncA = ncA.GrevillePoints()
-    pts_on_ncB = []
-
-    angle_Rad = Rhino.RhinoMath.ToRadians(90.0)
-
-    for i in range(len(ts)):
-        t = ts[i]
-        #pt_Start = ncA.PointAt(t)
-        pt_Start = pts_on_ncA[i]
-
-        bSuccess, u, v = ns.ClosestPoint(pt_Start)
-        if not bSuccess:
-            print "ClosestPoint failed." \
-                "  Continuity increase will not occur on an edge."
-            return
-
-        vNormal = ns.NormalAt(u, v)
-        bSuccess, frame = ncA.PerpendicularFrameAt(t)
-        if not bSuccess:
-            print "PerpendicularFrameAt failed." \
-                "  Continuity increase will not occur on an edge."
-            return
-        
-        pt_Normal = pt_Start + vNormal
-
-        pt_End = rg.Point3d(pt_Normal)
-
-        xform_Rotation = rg.Transform.Rotation(
-                angleRadians=angle_Rad,
-                rotationAxis=frame.ZAxis,
-                rotationCenter=frame.Origin)
-
-        pt_End.Transform(xform_Rotation)
-
-        pts_on_ncB.append(pt_End)
-
-
-    ncB = ncA.DuplicateCurve()
-    ncB.SetGrevillePoints(pts_on_ncB)
-
-
-    rgB_Loft = rg.Brep.CreateFromLoft(
-            curves=[ncA, ncB],
-            start=rg.Point3d.Unset,
-            end=rg.Point3d.Unset,
-            loftType=rg.LoftType.Straight,
-            closed=False)
-
-    if len(rgB_Loft) != 1:
-        print "{} breps resulted from one curve." \
-            "  Continuity increase will not occur on an edge."
-
-    #sc.doc.Objects.AddBrep(rgB_Loft[0]); sc.doc.Views.Redraw()
-
-    return rgB_Loft[0].Surfaces[0]
 
 
 def getFormattedDistance(fDistance):
@@ -606,98 +540,60 @@ def areSrfParamsAlignedAlongMatchingSides(ns_A, side_A, ns_B, side_B):
     raise Exception("The 2 sides' positions do not match.")
 
 
-def findMatchingCurveByEndPoints(curvesA, curvesB, bEcho=True):
-    """ Returns list(int(Indices of B per order of A)) """
-
-    idxBs_per_As = []
-
-    fTol = 2.0 * sc.doc.ModelAbsoluteTolerance
-
-    for iA, cA in enumerate(curvesA):
-
-        ptsA = [cA.PointAtStart, cA.PointAtEnd]
-
-        for iB, cB in enumerate(curvesB):
-            if iB in idxBs_per_As:
-                continue
-
-            ptsB = [cB.PointAtStart, cB.PointAtEnd]
-
-            if (
-                cA.PointAtStart.DistanceTo(cB.PointAtStart) <= fTol
-                and
-                cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= fTol
-            ):
-                idxBs_per_As.append(iB)
-                break # to next curveA.
-
-            if (
-                cA.PointAtStart.DistanceTo(cB.PointAtEnd) <= fTol
-                and
-                cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= fTol
-            ):
-                idxBs_per_As.append(iB)
-                break # to next curveA.
-        else:
-            if bEcho:
-                print "Matching curve not found."
-            return
-    
-    return idxBs_per_As
-
-
-def createAlignedRefGeom(geoms_NotAR_In, ns_Coons, bEcho=True):
+def createAlignedRefGeom(geom_R_In, ns_Coons, side_C, bEcho=True):
     """
-    Returns WSEN-ordered list of reference NSs with parameterizations aligned
+    Returns either
+        NurbsSurface with parameterizations aligned or
+        NurbsCurve with parameterization aligned with Coons
     with working NS.
     """
 
-    cs_C = [getIsoCurveOfSide(s, ns_Coons) for s in (W,S,E,N)]
-    cs_R = [getCurveOfNurbs(geom) for geom in geoms_NotAR_In]
+    c_C = getIsoCurveOfSide(side_C, ns_Coons)
+    #cs_R = getCurveOfNurbs(geom_R_In)
 
-    idx_R_per_A = findMatchingCurveByEndPoints(cs_C, cs_R, bEcho)
-    if idx_R_per_A is None: return
+    #idx_R_per_A = spb_NurbsSrf_matchTo1.findMatchingCurveByEndPoints(cs_C, cs_R, bEcho)
+    #if idx_R_per_A is None: return
 
 
-    def createAlignedRefSrfs(side_A, ns_R, side_R):
-        if side_A == side_R:
+    def createAlignedRefSrfs(side_C, ns_R, side_R):
+        if side_C == side_R:
             pass
-        elif side_A in (S, N) and side_R in (S, N):
+        elif side_C in (S, N) and side_R in (S, N):
             if isinstance(ns_R.Reverse(1, True), rg.NurbsSurface):
                 pass
-        elif side_A in (W, E) and side_R in (W, E):
+        elif side_C in (W, E) and side_R in (W, E):
             if isinstance(ns_R.Reverse(0, True), rg.NurbsSurface):
                 pass
         else:
             if isinstance(ns_R.Transpose(True), rg.NurbsSurface):
-                if side_A == W and side_R == S:
+                if side_C == W and side_R == S:
                     pass
-                elif side_A == W and side_R == N:
+                elif side_C == W and side_R == N:
                     if isinstance(ns_R.Reverse(0, True), rg.NurbsSurface):
                         pass
-                elif side_A == S and side_R == E:
+                elif side_C == S and side_R == E:
                     if isinstance(ns_R.Reverse(1, True), rg.NurbsSurface):
                         pass
-                elif side_A == S and side_R == W:
+                elif side_C == S and side_R == W:
                     pass
-                elif side_A == E and side_R == N:
+                elif side_C == E and side_R == N:
                     pass
-                elif side_A == E and side_R == S:
+                elif side_C == E and side_R == S:
                     if isinstance(ns_R.Reverse(0, True), rg.NurbsSurface):
                         pass
-                elif side_A == N and side_R == W:
+                elif side_C == N and side_R == W:
                     if isinstance(ns_R.Reverse(1, True), rg.NurbsSurface):
                         pass
-                elif side_A == N and side_R == E:
+                elif side_C == N and side_R == E:
                     pass
                 else:
                     raise Exception("What happened?")
 
 
         if (not areSrfParamsAlignedAlongMatchingSides(
-            ns_Coons, side_A, ns_R, side_A)
+            ns_Coons, side_C, ns_R, side_C)
         ):
-            if side_A in (S, N):
+            if side_C in (S, N):
                 if isinstance(ns_R.Reverse(0, True), rg.NurbsSurface):
                     pass
             else:
@@ -705,28 +601,79 @@ def createAlignedRefGeom(geoms_NotAR_In, ns_Coons, bEcho=True):
                     pass
 
 
-    geoms_Nurbs_AR_Out = [None]*4 # Each items will be a Nurbs object, not tuples.
-    planes_Out = [None]*4
+    geom_R = geom_R_In
 
-    for iA, side_A in enumerate((W,S,E,N)):
-        geom_R = geoms_NotAR_In[idx_R_per_A[iA]]
+    if isinstance(geom_R[1], rg.NurbsSurface):
+        side_R, ns_R = geom_R
+        rc = createAlignedRefSrfs(side_C, ns_R, side_R)
+        return ns_R, None
 
-        if isinstance(geom_R[1], rg.NurbsSurface):
-            side_R, ns_R = geom_R
-            rc = createAlignedRefSrfs(side_A, ns_R, side_R)
-            geoms_Nurbs_AR_Out[iA] = ns_R
-            continue
+    c_R = geom_R[0]
+    if not rg.Curve.DoDirectionsMatch(c_C, c_R):
+        c_R.Reverse()
 
-        c_R = geom_R[0]
-        c_C = cs_C[iA]
-        if not rg.Curve.DoDirectionsMatch(c_C, c_R):
-            c_R.Reverse()
+    return c_R, geom_R[1]
 
-        geoms_Nurbs_AR_Out[iA] = c_R
 
-        planes_Out[iA] = geom_R[1]
+def transferUniqueKnotVector(nurbsA, nurbsB, sideA=None, sideB=None, paramTol=None):
+    """
+    Union the knot vectors of nurbsA and nurbsB and apply to nurbsB (modify reference).
 
-    return geoms_Nurbs_AR_Out, planes_Out
+    nurbsA and nurbsB: Any combination of NurbsSurface or NurbsCurve.
+    Return True if nsB was modified.
+    """
+
+    if paramTol is None: paramTol = Rhino.RhinoMath.ZeroTolerance
+
+
+    def knotCount(geom, side):
+        if isinstance(geom, rg.NurbsSurface):
+            if side in (S, N): return geom.KnotsU.Count
+            else: return geom.KnotsV.Count
+        else:
+            return geom.Knots.Count
+
+    def degree(geom, side):
+        if isinstance(geom, rg.NurbsSurface):
+            iDir = 0 if side in (S, N) else 1
+            return geom.Degree(iDir)
+        else:
+            return geom.Degree
+
+    def knotMultiplicity(geom, side, iK):
+        if isinstance(geom, rg.NurbsSurface):
+            if side in (S, N): return geom.KnotsU.KnotMultiplicity(iK)
+            else: return geom.KnotsV.KnotMultiplicity(iK)
+        else:
+            return geom.Knots.KnotMultiplicity(iK)
+
+    def getKnot(geom, side, iK):
+        if isinstance(geom, rg.NurbsSurface):
+            if side in (S, N): return geom.KnotsU[iK]
+            else: return geom.KnotsV[iK]
+        else:
+            return geom.Knots[iK]
+
+    def insertKnot(geom, side, t, m):
+        if isinstance(geom, rg.NurbsSurface):
+            if side in (S, N): return geom.KnotsU.InsertKnot(t, m)
+            else: return geom.KnotsV.InsertKnot(t, m)
+        else:
+            return geom.Knots.InsertKnot(t, m)
+
+
+    knotCt_In = knotCount(nurbsB, sideB)
+
+    iK = degree(nurbsA, sideA)
+    while iK < knotCount(nurbsA, sideA)-degree(nurbsA, sideA):
+        sc.escape_test()
+        t_A = getKnot(nurbsA, sideA, iK)
+        m = knotMultiplicity(nurbsA, sideA, iK)
+        if abs(t_A - getKnot(nurbsB, sideB, iK)) > paramTol:
+            insertKnot(nurbsB, sideB, t_A, m)
+        iK += m
+
+    return knotCount(nurbsB, sideB) > knotCt_In
 
 
 def createSurface(rhCrvs_In, **kwargs):
@@ -744,44 +691,16 @@ def createSurface(rhCrvs_In, **kwargs):
 
 
     if len(rhCrvs_In) != 4:
-        return None, "{} curves provided.  Need exactly 4.".format(len(geoms_As_Nurbs))
+        return None, "{} curves provided.  Need exactly 4.".format(len(geoms_Nurbs))
 
 
     tol0 = Rhino.RhinoMath.ZeroTolerance
 
 
-    def getGeomFromObjRef(objref):
-        """
-        Returns BrepTrim or Curve for wires
-        """
-
-        trim = objref.Trim()
-        if trim is not None:
-            if trim.IsoStatus in (W, S, N, E):
-                # TODO: Include X, Y when G2 continuity support is added.  Then later trim surface to them.
-                return trim
-            else:
-                # Try to create tangent-from surface.
-                return trim
-
-
-        edge = objref.Edge()
-        if edge is not None:
-            if len(edge.TrimIndices()) == 1:
-                trim = edge.Brep.Trims[edge.TrimIndices()[0]]
-                if trim.IsoStatus in (W, S, N, E):
-                    return trim
-                else:
-                    # Try to create tangent-from surface.
-                    return trim
-
-        return objref.Curve()
-
-
     geoms_In = []
     for rhCrv_In in rhCrvs_In:
         if isinstance(rhCrv_In, rd.ObjRef):
-            rc = getGeomFromObjRef(rhCrv_In)
+            rc = spb_NurbsSrf_matchTo1.getGeomFromObjRef(rhCrv_In)
             if rc is None: return
             geoms_In.append(rc)
         else:
@@ -816,47 +735,8 @@ def createSurface(rhCrvs_In, **kwargs):
         return None, "2 edges of the same isostatus of the same surface were selected."
 
 
-    def getNurbsGeomFromGeom(Ins):
-        """
-        Returns 4-item list containing any combination of tuples of:
-            (IsoStatus, NurbsSurface),
-            (NurbsCurve, plane)
-            (NurbsCurve, None)
-        """
-
-        Outs = []
-
-        for In in Ins:
-            if not isinstance(In, rg.GeometryBase):
-                raise ValueError("{} not accepted.".format(In.GetType().Name))
-
-            if not isinstance(In, rg.BrepTrim):
-                Outs.append((In.ToNurbsCurve(), None))
-                continue
-
-            trim = In
-
-            srf = trim.Face.UnderlyingSurface()
-            b, plane = srf.TryGetPlane(tolerance=1e-6)
-            if b:
-                Outs.append((trim.Edge.ToNurbsCurve(), plane))
-            else:
-                if trim.IsoStatus in (W,S,E,N):
-                    Outs.append((trim.IsoStatus, srf.ToNurbsSurface()))
-                    continue
-                # Try to create tangent surface.
-                ns_Tan = createTanSrfFromEdge(trim)
-                if ns_Tan is None:
-                    Outs.append((In.ToNurbsCurve(), None))
-                    continue
-                ncs_TanNS = [getIsoCurveOfSide(side, ns_Tan) for side in (W,S,E,N)]
-                idxB = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bEcho=bEcho)[0]
-                Outs.append(((W,S,E,N)[idxB], ns_Tan))
-
-        return Outs
-
-    geoms_As_Nurbs = getNurbsGeomFromGeom(geoms_In)
-    if not geoms_As_Nurbs: return
+    geoms_Nurbs = [spb_NurbsSrf_matchTo1.getNurbsGeomFromGeom(geom) for geom in geoms_In]
+    if not geoms_Nurbs: return
 
     #for nc in [getCurveOfNurbs(geom) for geom in geoms_As_Nurbs]:
     #    sc.doc.Objects.AddCurve(nc)
@@ -909,23 +789,23 @@ def createSurface(rhCrvs_In, **kwargs):
 
         return False
 
-    if doAnyCurvesCompletelyOverlap(geoms_As_Nurbs):
+    if doAnyCurvesCompletelyOverlap(geoms_Nurbs):
         return None, "Some edges/trims completely overlap."
 
-    if not doTrimsFormAClosedLoop(geoms_As_Nurbs):
+    if not doTrimsFormAClosedLoop(geoms_Nurbs):
         print "No matching endpoint of some curves found,",
-        rc = trimNurbsAsNeededToCloseLoop(geoms_As_Nurbs)
-        geoms_WIP = rc
-        if not doTrimsFormAClosedLoop(geoms_WIP):
+        rc = trimNurbsAsNeededToCloseLoop(geoms_Nurbs)
+        geoms_Nurbs_ClosedLoop = rc
+        if not doTrimsFormAClosedLoop(geoms_Nurbs_ClosedLoop):
             print " and attempt ot split some trims at intersections failed."
             return
         print " but attempt ot split some trims at intersections succeeded."
     else:
-        geoms_WIP = geoms_As_Nurbs
+        geoms_Nurbs_ClosedLoop = geoms_Nurbs
 
 
 
-    cs = [getCurveOfNurbs(geom) for geom in geoms_WIP]
+    cs = [getCurveOfNurbs(geom) for geom in geoms_Nurbs_ClosedLoop]
 
     #for c in cs:
     #    sc.doc.Objects.AddCurve(c)
@@ -939,7 +819,7 @@ def createSurface(rhCrvs_In, **kwargs):
     ns_Coons = rgB_Res.Surfaces[0]
 
 
-    def makeNonRationalIfClose(ns):
+    def makeNonRationalIfNear(ns):
         weights = []
         for iU in range(ns.Points.CountU):
             for iV in range(ns.Points.CountV):
@@ -948,7 +828,7 @@ def createSurface(rhCrvs_In, **kwargs):
             ns.MakeNonRational()
 
     if ns_Coons.IsRational:
-        makeNonRationalIfClose(ns_Coons)
+        makeNonRationalIfNear(ns_Coons)
 
 
     # Brep.CreateEdgeSurface (always?) produces a surface with the
@@ -959,45 +839,34 @@ def createSurface(rhCrvs_In, **kwargs):
     # Create 4 modified surfaces to use for remainder of script.
 
 
-    rc = createAlignedRefGeom(geoms_WIP, ns_Coons)
-    if rc is None: return
+    # Match references to the Coons.
+    cs_C = [getIsoCurveOfSide(s, ns_Coons) for s in (W,S,E,N)]
+    cs_R = [getCurveOfNurbs(geom) for geom in geoms_Nurbs_ClosedLoop]
 
-    #sc.doc.Objects.AddSurface(ns_Coons)
-    #for r in list_Aligned_refs:
-    #    if isinstance(r, rg.NurbsSurface):
-    #        sc.doc.Objects.AddSurface(r)
-    #    elif isinstance(r, rg.Curve):
-    #        sc.doc.Objects.AddCurve(r)
-    #sc.doc.Views.Redraw(); return
+    idx_R_per_CoonsWSEN = spb_NurbsSrf_matchTo1.findMatchingCurveByEndPoints(
+        cs_C, cs_R, bEcho)
+    if idx_R_per_CoonsWSEN is None: return
 
+    geoms_Nurbs_SideMatched = [geoms_Nurbs_ClosedLoop[i] for i in idx_R_per_CoonsWSEN]
 
-    # Aligned References.
+    # Align each reference to the Coons by side and parameterization.
+    # This results in opposite u x v directions between each Refernce and the Coons.
     geoms_Nurbs_AR = {}
     planes_AR = {}
 
-
-    for i, key in enumerate((W, S, E, N)):
-        geoms_Nurbs_AR[key], planes_AR[key] = rc[0][i], rc[1][i]
-
+    for i, side in enumerate((W,S,E,N)):
+        rc = createAlignedRefGeom(geoms_Nurbs_SideMatched[i], ns_Coons, side)
+        if rc is None: return
+        geoms_Nurbs_AR[side], planes_AR[side] = rc
 
 
     # Match reference curve or surface degrees to Coons patch surface in relevant direction.
-    def increaseDegree(side):
-        geom_AR = geoms_Nurbs_AR[side]
-        if isinstance(geom_AR, rg.NurbsSurface):
-            ns = geom_AR
-            if side in (S,N):
-                return ns.IncreaseDegreeU(ns_Coons.Degree(0))
-            else:
-                return ns.IncreaseDegreeV(ns_Coons.Degree(1))
-        else:
-            nc = geom_AR
-            if side in (S,N):
-                return nc.IncreaseDegree(ns_Coons.Degree(0))
-            else:
-                return nc.IncreaseDegree(ns_Coons.Degree(1))
 
-    bResults = [increaseDegree(side) for side in (W,S,E,N)]
+    bResults = []
+    for side in W,S,E,N:
+        bResult = spb_NurbsSrf_matchTo1.transferHigherDegree(
+            ns_Coons, geoms_Nurbs_AR[side], side, side)
+    bResults.append(bResult)
     if bDebug: print bResults
 
     #for ns in geoms_ARs:
@@ -1006,24 +875,11 @@ def createSurface(rhCrvs_In, **kwargs):
 
 
     # Match reference srf relevant domains to Coons patch srf.
-    def setDomain(side):
-        geom_AR = geoms_Nurbs_AR[side]
-        if isinstance(geom_AR, rg.NurbsSurface):
-            ns = geom_AR
-            if side in (S,N):
-                return ns.SetDomain(0, ns_Coons.Domain(0))
-            else:
-                return ns.SetDomain(1, ns_Coons.Domain(1))
-        else:
-            nc = geom_AR
-            if side in (S,N):
-                nc.Domain = ns_Coons.Domain(0)
-                return (nc.Domain.EpsilonEquals(ns_Coons.Domain(0), epsilon=tol0))
-            else:
-                nc.Domain = ns_Coons.Domain(1)
-                return (nc.Domain.EpsilonEquals(ns_Coons.Domain(1), epsilon=tol0))
-
-    bResults = [setDomain(side) for side in (W,S,E,N)]
+    bResults = []
+    for side in W,S,E,N:
+        bResult = spb_NurbsSrf_matchTo1.transferDomain(
+            ns_Coons, geoms_Nurbs_AR[side], side, side)
+    bResults.append(bResult)
     if bDebug: print bResults
 
     #for ns in geoms_ARs:
@@ -1031,70 +887,19 @@ def createSurface(rhCrvs_In, **kwargs):
     #sc.doc.Views.Redraw()
 
 
-    def transferUniqueKnotVector(fromA, toB, side):
-        """ Return True if nsB was modified. """
-
-        def knotCount(geom):
-            if isinstance(geom, rg.NurbsSurface):
-                if side in (S, N): return geom.KnotsU.Count
-                else: return geom.KnotsV.Count
-            else:
-                return geom.Knots.Count
-
-        def degree(geom):
-            if isinstance(geom, rg.NurbsSurface):
-                iDir = 0 if side in (S, N) else 1
-                return geom.Degree(iDir)
-            else:
-                return geom.Degree
-
-        def knotMultiplicity(geom, iK):
-            if isinstance(geom, rg.NurbsSurface):
-                if side in (S, N): return geom.KnotsU.KnotMultiplicity(iK)
-                else: return geom.KnotsV.KnotMultiplicity(iK)
-            else:
-                return geom.Knots.KnotMultiplicity(iK)
-
-        def getKnot(geom, iK):
-            if isinstance(geom, rg.NurbsSurface):
-                if side in (S, N): return geom.KnotsU[iK]
-                else: return geom.KnotsV[iK]
-            else:
-                return geom.Knots[iK]
-
-        def insertKnot(geom, t, m):
-            if isinstance(geom, rg.NurbsSurface):
-                if side in (S, N): return geom.KnotsU.InsertKnot(t, m)
-                else: return geom.KnotsV.InsertKnot(t, m)
-            else:
-                return geom.Knots.InsertKnot(t, m)
-
-
-        knotCt_In = knotCount(toB)
-
-        iK = degree(fromA)
-        while iK < knotCount(fromA)-degree(fromA):
-            sc.escape_test()
-            t_A = getKnot(fromA, iK)
-            m = knotMultiplicity(fromA, iK)
-            if abs(t_A - getKnot(toB, iK)) > tol0:
-                insertKnot(toB, t_A, m)
-            iK += m
-
-        return knotCount(toB) > knotCt_In
 
 
     # Match reference srf knot vectors to Coons patch srf.
 
     # First, transfer unique knots to Coons so that the latter can contain all unqiue knots
     # to transfer to reference surfaces.
-    [transferUniqueKnotVector(geoms_Nurbs_AR[side], ns_Coons, side) for side in (S,N,W,E)]
+    [transferUniqueKnotVector(geoms_Nurbs_AR[side], ns_Coons, side, side) for side in (S,N,W,E)]
 
     #sc.doc.Objects.AddSurface(ns_Coons)#; sc.doc.Views.Redraw(); return
 
 
     # Back to reference surfaces.
-    [transferUniqueKnotVector(ns_Coons, geoms_Nurbs_AR[side], side) for side in (S,N,W,E)]
+    [transferUniqueKnotVector(ns_Coons, geoms_Nurbs_AR[side], side, side) for side in (S,N,W,E)]
 
     #for ns in geoms_ARs:
     #    sc.doc.Objects.AddSurface(ns)

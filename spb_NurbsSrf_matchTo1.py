@@ -9,8 +9,8 @@
         Now matches to surface of lesser degree.
         Bug fixes.
 211003: Changed verbage of a command option.
-211008-20: WIP: Bug fix when transferring knot vector.
-211019-20: WIP: 
+211008-21: Bug fix when transferring knot vector.
+        Refactored for easier use as module by other scripts.
 
 TODO:
     Allow to use trimmed surface when surface side is selected.
@@ -49,7 +49,12 @@ class Opts:
 
     key = 'iPreserveOtherEnd'; keys.append(key)
     values[key] = 2
-    listValues[key] = Enum.GetNames(rg.NurbsCurve.NurbsCurveEndConditionType)
+    listValues[key] = 'None', 'G0', 'G1', 'G2'
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bUseUnderlyingIsoCrvs'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bMaintainDegree'; keys.append(key)
@@ -255,6 +260,7 @@ def getInput_ToModify():
 
         addOption('iContinuity')
         addOption('iPreserveOtherEnd')
+        addOption('bUseUnderlyingIsoCrvs')
         addOption('bMaintainDegree')
         addOption('bReplace')
         addOption('bEcho')
@@ -353,6 +359,7 @@ def getInput_Ref(objref_SrfToMod):
 
         addOption('iContinuity')
         addOption('iPreserveOtherEnd')
+        addOption('bUseUnderlyingIsoCrvs')
         addOption('bMaintainDegree')
         addOption('bReplace')
         addOption('bEcho')
@@ -372,7 +379,8 @@ def getInput_Ref(objref_SrfToMod):
             return (
                 objref,
                 Opts.values['iContinuity'],
-                Opts.values['iPreserveOtherEnd'],
+                Opts.values['iPreserveOtherEnd'] - 1,
+                Opts.values['bUseUnderlyingIsoCrvs'],
                 Opts.values['bMaintainDegree'],
                 Opts.values['bReplace'],
                 Opts.values['bEcho'],
@@ -387,49 +395,195 @@ def getInput_Ref(objref_SrfToMod):
                 break
 
 
-def findMatchingCurvePairByEndPoints(curvesA, curvesB):
+def getGeomFromObjRef(objref):
+    """ Returns BrepTrim, (wire) Curve, or None """
+
+    if not isinstance(objref, rd.ObjRef): return
+
+    trim = objref.Trim()
+
+    if trim is not None:
+        return trim
+
+    edge = objref.Edge()
+    if edge is not None:
+        if len(edge.TrimIndices()) == 1:
+            trim = edge.Brep.Trims[edge.TrimIndices()[0]]
+            return trim
+            #if trim.IsoStatus in (W, S, N, E):
+            #    return trim
+
+    return objref.Curve()
+
+
+def areParamsAlignedPerPickPts(objref_A, objref_B):
     """
-    Returns on success:
-        int(list index from curvesA), int(list index from curvesB)
-    Returns on fail:
-        None
+    For ObjRefs with non-planar Surfaces,
+        use U parameterization direction per South and North picks, V for West and East.
+    Otherwise, use Curve's parameterization direction.
     """
 
-    #print [(iA,iB) for iA in range(len(curvesA)) for iB in range(len(curvesB))]
-
-    idxAsBs = []
-    dists = []
-
-    for iA, cA in enumerate(curvesA):
-
-        ptsM = [cA.PointAtStart, cA.PointAtEnd]
-
-        for iB, cB in enumerate(curvesB):
-            if iB in idxAsBs:
-                continue
-
-            ptsB = [cB.PointAtStart, cB.PointAtEnd]
-
-            if (
-                cA.PointAtStart.DistanceTo(cB.PointAtStart) <= fDev_tol
-                and
-                cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= fDev_tol
-            ):
-                idxAsBs.append(iB)
-                break # to next curveA.
-
-            if (
-                cA.PointAtStart.DistanceTo(cB.PointAtEnd) <= fDev_tol
-                and
-                cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= fDev_tol
-            ):
-                idxAsBs.append(iB)
-                break # to next curveA.
+    def getSidePoints_AnySrfType(srf, side):
+        """ Returns tuple(Point3d at start of NS side, Point3d at end) """
+        pt_SW = srf.PointAt(srf.Domain(0).T0, srf.Domain(1).T0)
+        pt_SE = srf.PointAt(srf.Domain(0).T1, srf.Domain(1).T0)
+        pt_NW = srf.PointAt(srf.Domain(0).T0, srf.Domain(1).T1)
+        pt_NE = srf.PointAt(srf.Domain(0).T1, srf.Domain(1).T1)
+        if side == E:
+            return pt_SE, pt_NE
+        elif side == W:
+            return pt_SW, pt_NW
+        elif side == S:
+            return pt_SW, pt_SE
+        elif side == N:
+            return pt_NW, pt_NE
         else:
-            #print "Matching curve not found."
+            raise ValueError("{} is not a valid IsoStatus.".format(side))
+
+
+    def getSidePoints_NurbsSrf(ns, side):
+        """ Returns tuple(Point3d at start of NS side, Point3d at end) """
+        cps = ns.Points
+        pt_SW = cps.GetControlPoint(           0,            0).Location
+        pt_SE = cps.GetControlPoint(cps.CountU-1,            0).Location
+        pt_NW = cps.GetControlPoint(           0, cps.CountV-1).Location
+        pt_NE = cps.GetControlPoint(cps.CountU-1, cps.CountV-1).Location
+        if side == E:
+            return pt_SE, pt_NE
+        elif side == W:
+            return pt_SW, pt_NW
+        elif side == S:
+            return pt_SW, pt_SE
+        elif side == N:
+            return pt_NW, pt_NE
+        else:
+            raise ValueError("{} IsoStatus should have been caught earlier.".format(side))
+
+
+    def isPickCloserToT0(objref):
+        pt_Sel = objref.SelectionPoint()
+        rdObj = objref.Object()
+        if rdObj == rd.CurveObject:
+            crv = objref.Curve()
+            return crv.PointAtStart.DistanceTo(pt_Sel) < crv.PointAtEnd.DistanceTo(pt_Sel)
+        trim = objref.Trim()
+        if trim is None:
+            edge = objref.Edge()
+            if edge is None:
+                raise ValueError("{} not valid.".format(printObjRefObjs(objref)))
+            iTs = edge.TrimIndices()
+            if len(iTs) != 1:
+                raise ValueError("Edge has {} trims.".format(len(iTs)))
+            trim = edge.Brep.Trims[iTs[0]]
+
+        if trim.IsoStatus in (rg.IsoStatus.X, rg.IsoStatus.Y, rg.IsoStatus.None):
+            crv = objref.Curve()
+            return crv.PointAtStart.DistanceTo(pt_Sel) < crv.PointAtEnd.DistanceTo(pt_Sel)
+
+        pts_Side = getSidePoints_AnySrfType(
+            trim.Face.UnderlyingSurface(),
+            trim.IsoStatus)
+        return pts_Side[0].DistanceTo(pt_Sel) < pts_Side[1].DistanceTo(pt_Sel)
+
+    if None in (objref_A.SelectionPoint(), objref_B.SelectionPoint()): return
+
+    bPickedAtSideStart_A = isPickCloserToT0(objref_A)
+    if bPickedAtSideStart_A is None: return
+
+    bPickedAtSideStart_R = isPickCloserToT0(objref_B)
+    if bPickedAtSideStart_R is None: return
+
+    return bPickedAtSideStart_A == bPickedAtSideStart_R
+
+
+def createTanSrfFromEdge(rgTrim):
+    """
+    """
+
+    rgEdge = rgTrim.Edge
+    srf = rgTrim.Face.UnderlyingSurface().ToNurbsSurface()
+
+    ncA = rgEdge.ToNurbsCurve()
+
+    ts = ncA.GrevilleParameters()
+
+    pts_on_ncA = ncA.GrevillePoints()
+    pts_on_ncB = []
+
+    angle = Rhino.RhinoMath.ToRadians(90.0)
+
+    dist = 10.0 * sc.doc.ModelAbsoluteTolerance
+
+
+    def createEndPt(i, angle):
+        t = ts[i]
+        #pt_Start = ncA.PointAt(t)
+        pt_Start = pts_on_ncA[i]
+
+        bSuccess, u, v = srf.ClosestPoint(pt_Start)
+        if not bSuccess:
+            print "ClosestPoint failed." \
+                "  Continuity increase will not occur on an edge."
             return
-    
-    return idxAsBs
+
+        vNormal = srf.NormalAt(u, v)
+        bSuccess, frame = ncA.PerpendicularFrameAt(t)
+        if not bSuccess:
+            print "PerpendicularFrameAt failed." \
+                "  Continuity increase will not occur on an edge."
+            return
+        
+        pt_Normal = pt_Start + vNormal * dist
+
+        pt_End = rg.Point3d(pt_Normal)
+
+        xform_Rotation = rg.Transform.Rotation(
+                angleRadians=angle,
+                rotationAxis=frame.ZAxis,
+                rotationCenter=frame.Origin)
+
+        pt_End.Transform(xform_Rotation)
+
+        return pt_End
+
+    # Create points that are over the Face (-angel vs. angle).
+    pt_Mid_Neg = createEndPt(len(ts)//2, -angle)
+    pt_Mid_Pos = createEndPt(len(ts)//2,  angle)
+
+    rc = srf.ClosestPoint(pt_Mid_Neg)
+    if not rc[0]:
+        raise Exception("ClosestPoint failed.")
+    pfrel_Neg = rgTrim.Face.IsPointOnFace(*rc[1:])
+
+    rc = srf.ClosestPoint(pt_Mid_Pos)
+    if not rc[0]:
+        raise Exception("ClosestPoint failed.")
+    pfrel_Pos = rgTrim.Face.IsPointOnFace(*rc[1:])
+
+    if pfrel_Neg == rg.PointFaceRelation.Interior and pfrel_Pos == rg.PointFaceRelation.Exterior:
+        pts_on_ncB = [createEndPt(i, -angle) for i in range(len(ts))]
+    elif pfrel_Neg == rg.PointFaceRelation.Exterior and pfrel_Pos == rg.PointFaceRelation.Interior:
+        pts_on_ncB = [createEndPt(i,  angle) for i in range(len(ts))]
+    else:
+        raise Exception("PointFaceRelations are {} and {}".format(pfrel_Neg, pfrel_Pos))
+
+    ncB = ncA.DuplicateCurve()
+    ncB.SetGrevillePoints(pts_on_ncB)
+
+    rgB_Loft = rg.Brep.CreateFromLoft(
+            curves=[ncA, ncB],
+            start=rg.Point3d.Unset,
+            end=rg.Point3d.Unset,
+            loftType=rg.LoftType.Straight,
+            closed=False)
+
+    if len(rgB_Loft) != 1:
+        print "{} breps resulted from one curve." \
+            "  Continuity increase will not occur on an edge."
+
+    #sc.doc.Objects.AddBrep(rgB_Loft[0]); sc.doc.Views.Redraw()
+
+    return rgB_Loft[0].Surfaces[0]
 
 
 def getIsoCurveOfSide(isoStatus, srf):
@@ -447,6 +601,181 @@ def getIsoCurveOfSide(isoStatus, srf):
             isoStatus))
 
 
+def findMatchingCurveByEndPoints(curvesA, curvesB, bEcho=True):
+    """ Returns list(int(Indices of B per order of A)) """
+
+    idxBs_per_As = []
+
+    fTol = 2.0 * sc.doc.ModelAbsoluteTolerance
+
+    for iA, cA in enumerate(curvesA):
+
+        ptsA = [cA.PointAtStart, cA.PointAtEnd]
+
+        for iB, cB in enumerate(curvesB):
+            if iB in idxBs_per_As:
+                continue
+
+            ptsB = [cB.PointAtStart, cB.PointAtEnd]
+
+            if (
+                cA.PointAtStart.DistanceTo(cB.PointAtStart) <= fTol
+                and
+                cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= fTol
+            ):
+                idxBs_per_As.append(iB)
+                break # to next curveA.
+
+            if (
+                cA.PointAtStart.DistanceTo(cB.PointAtEnd) <= fTol
+                and
+                cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= fTol
+            ):
+                idxBs_per_As.append(iB)
+                break # to next curveA.
+        else:
+            if bEcho:
+                print "Matching curve not found."
+            return
+    
+    return idxBs_per_As
+
+
+def isFaceOnT1SideOfXYIsoCrv(rgTrim):
+    """
+    Return:
+        True if face is on surface domain's T1 of the X or Y.
+        False if face is on T0 side.
+    """
+
+    if rgTrim.IsoStatus not in (rg.IsoStatus.X, rg.IsoStatus.Y):
+        return
+
+    max_edge_tol = max(edge.Tolerance for edge in rgTrim.Brep.Edges)
+    tol = max((max_edge_tol, sc.doc.ModelAbsoluteTolerance))
+
+    b, frame = rgTrim.Edge.PerpendicularFrameAt(rgTrim.Edge.Domain.Mid)
+    circle = rg.Circle(plane=frame, radius=10.0*tol)
+    arcCrv = rg.ArcCurve(circle=circle)
+    #sc.doc.Objects.AddCurve(arcCrv)
+
+    b, crvs, pts = rg.Intersect.Intersection.CurveBrepFace(
+        arcCrv, rgTrim.Face, tolerance=0.1*tol)
+    if len(pts) == 0:
+        return
+
+    #for pt in pts:
+    #    sc.doc.Objects.AddPoint(pt)
+
+    if len(pts) > 1:
+        for i in range(len(pts)-1):
+            ptA = pts[i]
+            for j in range(i+1, len(pts)):
+                ptB = pts[j]
+                if ptA.DistanceTo(ptB) > max_edge_tol:
+                    print "Points non-coincident within edge tolerance found.  Check results."
+
+    pt = pts[0]
+    pt_Mid = rgTrim.Edge.PointAt(rgTrim.Edge.Domain.Mid)
+    b, uOnCrv, vOnCrv = rgTrim.Face.UnderlyingSurface().ClosestPoint(pt_Mid)
+
+    b, uOnCircle, vOnCircle = rgTrim.Face.UnderlyingSurface().ClosestPoint(pt)
+
+    if rgTrim.IsoStatus == rg.IsoStatus.X:
+        # X is 'parallel' with West and East.
+        return uOnCircle > uOnCrv
+    else:
+        return vOnCircle > vOnCrv
+
+
+def getSrfDomainsWithinIsoCrvEdgeEnds(rgTrim):
+    """
+    Returns (IsoStatus, NurbsSurface) or None
+    """
+
+    edge = rgTrim.Edge
+    srf = rgTrim.Face.UnderlyingSurface()
+
+    tol0 = Rhino.RhinoMath.ZeroTolerance
+
+    if rgTrim.IsoStatus in (W, E, rg.IsoStatus.X):
+        # X is with West and East because u parameter is constant.
+        b, u, v = srf.ClosestPoint(edge.PointAtStart)
+        t_Start = v
+        if abs(t_Start-srf.Domain(1).T0) <= tol0:
+            t_Start = srf.Domain(1).T0 # For Trim if it occurs.
+            b, u, v = srf.ClosestPoint(edge.PointAtEnd)
+            t_End = v
+            if abs(t_End-srf.Domain(1).T1) <= tol0:
+                srf.Dispose()
+                return
+        else:
+            b, u, v = srf.ClosestPoint(edge.PointAtEnd)
+            t_End = v
+            if abs(t_End-srf.Domain(1).T1) <= tol0:
+                t_End = srf.Domain(1).T1 # For Trim.
+        return srf.Domain(0), rg.Interval(t_Start, t_End)
+        trimmed = srf.Trim(srf.Domain(0), rg.Interval(t_Start, t_End))
+
+    if rgTrim.IsoStatus in (S, N, rg.IsoStatus.Y):
+        # Y is with South North because v parameter is constant.
+        b, u, v = srf.ClosestPoint(edge.PointAtStart)
+        t_Start = u
+        if abs(t_Start-srf.Domain(0).T0) <= tol0:
+            t_Start = srf.Domain(0).T0 # For Trim if it occurs.
+            b, u, v = srf.ClosestPoint(edge.PointAtEnd)
+            t_End = u
+            if abs(t_End-srf.Domain(0).T1) <= tol0:
+                srf.Dispose()
+                return
+        else:
+            b, u, v = srf.ClosestPoint(edge.PointAtEnd)
+            t_End = u
+            if abs(t_End-srf.Domain(0).T1) <= tol0:
+                t_End = srf.Domain(0).T1 # For Trim.
+        return rg.Interval(t_Start, t_End), srf.Domain(1)
+        trimmed = srf.Trim(rg.Interval(t_Start, t_End), srf.Domain(1))
+
+    return rgTrim.IsoStatus, trimmed
+
+
+def getNurbsGeomFromGeom(In, bEcho=True):
+    """
+    Returns 4-item list containing any combination of tuples of:
+        (IsoStatus, NurbsSurface),
+        (NurbsCurve, plane)
+        (NurbsCurve, None)
+    """
+
+    if not isinstance(In, rg.GeometryBase):
+        raise ValueError("{} not accepted.".format(In.GetType().Name))
+
+    if not isinstance(In, rg.BrepTrim):
+        return In.ToNurbsCurve(), None
+
+    trim = In
+    srf = trim.Face.UnderlyingSurface()
+
+    if trim.IsoStatus not in (W,S,E,N):
+        b, plane = srf.TryGetPlane(tolerance=1e-6)
+        if b:
+            return trim.Edge.ToNurbsCurve(), plane
+
+    if trim.IsoStatus in (W,S,E,N):
+        return trim.IsoStatus, srf.ToNurbsSurface()
+
+    if trim.IsoStatus in (rg.IsoStatus.X, rg.IsoStatus.Y):
+        print "TODO: Add routine for X or Y IsoStatus."
+
+    # Try to create tangent surface for IsoStatus of None (and temporarily X and Y).
+    ns_Tan = createTanSrfFromEdge(trim)
+    if ns_Tan is None:
+        return In.ToNurbsCurve(), None
+    ncs_TanNS = [getIsoCurveOfSide(side, ns_Tan) for side in (W,S,E,N)]
+    idxB = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bEcho=bEcho)[0]
+    return (W,S,E,N)[idxB], ns_Tan
+
+
 def createAlignedRefGeom(geom_R_In, ns_M, side_M, bMatchWithParamsAligned):
     """
     Returns either
@@ -456,7 +785,7 @@ def createAlignedRefGeom(geom_R_In, ns_M, side_M, bMatchWithParamsAligned):
 
 
     def createAlignedRefSrfs(side_M, ns_R, side_R):
-        print side_M, side_R
+        #print side_M, side_R
         if side_M == side_R:
             pass
         elif side_M in (S, N) and side_R in (S, N):
@@ -490,7 +819,7 @@ def createAlignedRefGeom(geom_R_In, ns_M, side_M, bMatchWithParamsAligned):
 
 
     geom_R = geom_R_In
-
+    #print geom_R
     if isinstance(geom_R[1], rg.NurbsSurface):
         side_R, ns_R = geom_R
         rc = createAlignedRefSrfs(side_M, ns_R, side_R)
@@ -600,16 +929,32 @@ def transferUniqueKnotVector(nurbsA, nurbsB, sideA=None, sideB=None, paramTol=No
     return knotCount(nurbsB, sideB) > knotCt_In
 
 
-def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, iContinuity=2, iPreserveOtherEnd=2, bMaintainDegree=True, bDebug=False):
+def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):# iContinuity=1, iPreserveOtherEnd=1, bUseUnderlyingIsoCrvs=False, bMaintainDegree=True, bDebug=False):
     """
     Parameters:
         ns_M: NurbsSurface to modify.
-        geom_R: BrepTrim or Curve for wire
+        side_M=side_M,
+        geom_R: BrepTrim or Curve for wire=geom_R_In,
         bMatchWithParamsAligned: bool
+        iContinuity=iContinuity,
+        iPreserveOtherEnd=iPreserveOtherEnd,
+        bUseUnderlyingIsoCrvs=bUseUnderlyingIsoCrvs,
+        bMaintainDegree=bMaintainDegree,
+        bDebug=bDebug,
 
     Returns on success: rg.NurbsSurface
     Returns on fail: None
     """
+
+    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
+
+    iContinuity = getOpt('iContinuity')
+    iPreserveOtherEnd = getOpt('iPreserveOtherEnd')
+    bUseUnderlyingIsoCrvs = getOpt('bUseUnderlyingIsoCrvs')
+    bMaintainDegree = getOpt('bMaintainDegree')
+    bEcho = getOpt('bEcho')
+    bDebug = getOpt('bDebug')
+    bAddPts = getOpt('bAddPts')
 
 
     geom_R_In = geom_R
@@ -618,43 +963,73 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, iContinuit
     if not bValid: print sLog; return
 
 
-    if not side_M.value__ in (3,4,5,6):
+    if side_M not in (W,S,E,N):
         return
 
+    geom_R_Nurbs = None
 
-    def getNurbsGeomFromGeom(In):
-        """
-        Returns 4-item list containing any combination of tuples of:
-            (IsoStatus, NurbsSurface),
-            (NurbsCurve, plane)
-            (NurbsCurve, None)
-        """
+    if isinstance(geom_R_In, rg.BrepTrim):
+        trim_In = geom_R_In
 
-        if not isinstance(In, rg.GeometryBase):
-            raise ValueError("{} not accepted.".format(In.GetType().Name))
+        domU, domV = None, None
 
-        if not isinstance(In, rg.BrepTrim):
-            return In.ToNurbsCurve(), None
+        if (
+            not bUseUnderlyingIsoCrvs and
+            trim_In.IsoStatus != rg.IsoStatus.None
+        ):
+            rc = getSrfDomainsWithinIsoCrvEdgeEnds(trim_In)
+            if rc is not None:
+                domU, domV = rc
 
-        trim = In
+        #sc.doc.Objects.AddCurve(trim_In)
 
-        srf = trim.Face.UnderlyingSurface()
-        b, plane = srf.TryGetPlane(tolerance=1e-6)
-        if b:
-            return trim.Edge.ToNurbsCurve(), plane
+        iso_Out = trim_In.IsoStatus
+
+        if trim_In.IsoStatus == rg.IsoStatus.X:
+            rc = isFaceOnT1SideOfXYIsoCrv(trim_In)
+            if rc is not None:
+                if rc:
+                    domU = rg.Interval(
+                        trim_In.PointAt(trim_In.Domain.Mid).X,
+                        trim_In.Face.UnderlyingSurface().Domain(0).T1,
+                        )
+                    iso_Out = W
+                else:
+                    domU = rg.Interval(
+                        trim_In.Face.UnderlyingSurface().Domain(0).T0,
+                        trim_In.PointAt(trim_In.Domain.Mid).X,
+                        )
+                    iso_Out = E
+        if trim_In.IsoStatus == rg.IsoStatus.Y:
+            rc = isFaceOnT1SideOfXYIsoCrv(trim_In)
+            if rc is not None:
+                if rc:
+                    domV = rg.Interval(
+                        trim_In.PointAt(trim_In.Domain.Mid).Y,
+                        trim_In.Face.UnderlyingSurface().Domain(0).T1,
+                        )
+                    iso_Out = S
+                else:
+                    domV = rg.Interval(
+                        trim_In.Face.UnderlyingSurface().Domain(0).T0,
+                        trim_In.PointAt(trim_In.Domain.Mid).Y,
+                        )
+                    iso_Out = N
+
+        if domU is None and domV is None:
+            # No trimming.
+            geom_R_Nurbs = getNurbsGeomFromGeom(geom_R_In)
         else:
-            if trim.IsoStatus in (W,S,E,N):
-                return trim.IsoStatus, srf.ToNurbsSurface()
-            # Try to create tangent surface.
-            ns_Tan = createTanSrfFromEdge(trim)
-            if ns_Tan is None:
-                return In.ToNurbsCurve(), None
-            ncs_TanNS = [getIsoCurveOfSide(side, ns_Tan) for side in (W,S,E,N)]
-            idxB = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bEcho=bEcho)[0]
-            return (W,S,E,N)[idxB], ns_Tan
+            if domU is None:
+                domU = trim_In.Face.UnderlyingSurface().Domain(0)
+            if domV is None:
+                domV = trim_In.Face.UnderlyingSurface().Domain(1)
+            trimmed = trim_In.Face.UnderlyingSurface().Trim(domU, domV)
+            geom_R_Nurbs = iso_Out, trimmed.ToNurbsSurface()
 
-    geom_R_Nurbs = getNurbsGeomFromGeom(geom_R_In)
-    if not geom_R_Nurbs: return
+    if geom_R_Nurbs is None:
+        geom_R_Nurbs = getNurbsGeomFromGeom(geom_R_In)
+        if not geom_R_Nurbs: return
 
 
     rc = createAlignedRefGeom(
@@ -819,7 +1194,7 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, iContinuit
     iPtCt_FromMSide_A = getPtCt(ns_M_Out, iDir_FromMSide_A)
 
 
-    iPtCt_FromMSide_A_Min = iContinuity + 1 + iPreserveOtherEnd
+    iPtCt_FromMSide_A_Min = iContinuity + 1 + iPreserveOtherEnd + 1
 
     if not bMaintainDegree:# and ns_M_Out.SpanCount(iDir_FromMSide_A) == 1:
         # Create single-spanned at minimal degree.
@@ -1160,77 +1535,6 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, iContinuit
     return ns_M_Out
 
 
-def areParamsAlignedPerPickPts(objref_A, objref_B):
-    """
-    For ObjRefs with non-planar Surfaces,
-        use U parameterization direction per South and North picks, V for West and East.
-    Otherwise, use Curve's parameterization direction.
-    """
-
-    def getSidePoints_AnySrfType(srf, side):
-        """ Returns tuple(Point3d at start of NS side, Point3d at end) """
-        pt_SW = srf.PointAt(srf.Domain(0).T0, srf.Domain(1).T0)
-        pt_SE = srf.PointAt(srf.Domain(0).T1, srf.Domain(1).T0)
-        pt_NW = srf.PointAt(srf.Domain(0).T0, srf.Domain(1).T1)
-        pt_NE = srf.PointAt(srf.Domain(0).T1, srf.Domain(1).T1)
-        if side == E:
-            return pt_SE, pt_NE
-        elif side == W:
-            return pt_SW, pt_NW
-        elif side == S:
-            return pt_SW, pt_SE
-        elif side == N:
-            return pt_NW, pt_NE
-        else:
-            raise ValueError("{} is not a valid IsoStatus.".format(side))
-
-
-    def getSidePoints_NurbsSrf(ns, side):
-        """ Returns tuple(Point3d at start of NS side, Point3d at end) """
-        cps = ns.Points
-        pt_SW = cps.GetControlPoint(           0,            0).Location
-        pt_SE = cps.GetControlPoint(cps.CountU-1,            0).Location
-        pt_NW = cps.GetControlPoint(           0, cps.CountV-1).Location
-        pt_NE = cps.GetControlPoint(cps.CountU-1, cps.CountV-1).Location
-        if side == E:
-            return pt_SE, pt_NE
-        elif side == W:
-            return pt_SW, pt_NW
-        elif side == S:
-            return pt_SW, pt_SE
-        elif side == N:
-            return pt_NW, pt_NE
-        else:
-            raise ValueError("{} is not a valid IsoStatus.".format(side))
-
-
-    def isPickCloserToT0(objref):
-        pt_Sel = objref.SelectionPoint()
-        rdObj = objref.Object()
-        if rdObj == rd.CurveObject:
-            crv = objref.Curve()
-            return crv.PointAtStart.DistanceTo(pt_Sel) < crv.PointAtEnd.DistanceTo(pt_Sel)
-        trim = objref.Trim()
-        if trim is None:
-            edge = objref.Edge()
-            if edge is None:
-                raise ValueError("{} not valid.".format(printObjRefObjs(objref)))
-            iTs = edge.TrimIndices()
-            if len(iTs) != 1:
-                raise ValueError("Edge has {} trims.".format(len(iTs)))
-            trim = edge.Brep.Trims[iTs[0]]
-        pts_Side = getSidePoints_AnySrfType(
-            trim.Face.UnderlyingSurface(),
-            trim.IsoStatus)
-        return pts_Side[0].DistanceTo(pt_Sel) < pts_Side[1].DistanceTo(pt_Sel)
-
-    if None not in (objref_A.SelectionPoint(), objref_B.SelectionPoint()):
-        bPickedAtSideStart_A = isPickCloserToT0(objref_A)
-        bPickedAtSideStart_R = isPickCloserToT0(objref_B)
-
-    return bPickedAtSideStart_A == bPickedAtSideStart_R
-
-
 def processObjRefs(objref_M, objref_R, **kwargs):
     """
     """
@@ -1240,42 +1544,12 @@ def processObjRefs(objref_M, objref_R, **kwargs):
 
     iContinuity = getOpt('iContinuity')
     iPreserveOtherEnd = getOpt('iPreserveOtherEnd')
+    bUseUnderlyingIsoCrvs = getOpt('bUseUnderlyingIsoCrvs')
     bMaintainDegree = getOpt('bMaintainDegree')
     bReplace = getOpt('bReplace')
+    bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
     bAddPts = getOpt('bAddPts')
-
-
-    def getGeomFromObjRef(objref):
-        """ Returns BrepFace, BrepTrim, Curve for wire, or None """
-
-        if not isinstance(objref, rd.ObjRef): return
-
-        trim = objref.Trim()
-        if trim is not None:
-            if trim.IsoStatus in (W, S, N, E):
-                # TODO: Include X, Y when G2 continuity support is added.  Then later trim surface to them.
-                return trim
-            else:
-                # Try to create tangent-from surface.
-                return trim
-
-
-        edge = objref.Edge()
-        if edge is not None:
-            if len(edge.TrimIndices()) == 1:
-                trim = edge.Brep.Trims[edge.TrimIndices()[0]]
-                if trim.IsoStatus in (W, S, N, E):
-                    return trim
-                else:
-                    # Try to create tangent-from surface.
-                    return trim
-
-        srf = objref.Face()
-        if srf is not None:
-            return srf
-
-        return objref.Curve()
 
 
     geom_M_In = getGeomFromObjRef(objref_M)
@@ -1284,7 +1558,7 @@ def processObjRefs(objref_M, objref_R, **kwargs):
         return
     if isinstance(geom_M_In, rg.BrepTrim):
         side_M = geom_M_In.IsoStatus
-        ns_M = geom_M_In.Face.UnderlyingSurface()
+        ns_M = geom_M_In.Face.UnderlyingSurface().ToNurbsSurface()
     else:
         print geom_M_In
         raise ValueError("{} not supported.".format(geom_M_In))
@@ -1302,14 +1576,10 @@ def processObjRefs(objref_M, objref_R, **kwargs):
 
 
     bMatchWithParamsAligned = areParamsAlignedPerPickPts(objref_M, objref_R)
-    sEval = "bMatchWithParamsAligned"; print sEval+':',eval(sEval)
+    #sEval = "bMatchWithParamsAligned"; print sEval+':',eval(sEval)
 
     # ns_R.Reverse(int direction, bool inPlace)
     # Transpose(bool inPlace)
-
-
-
-
 
     ns_Ret = createSurface(
         ns_M=ns_M,
@@ -1318,8 +1588,11 @@ def processObjRefs(objref_M, objref_R, **kwargs):
         bMatchWithParamsAligned=bMatchWithParamsAligned,
         iContinuity=iContinuity,
         iPreserveOtherEnd=iPreserveOtherEnd,
+        bUseUnderlyingIsoCrvs=bUseUnderlyingIsoCrvs,
         bMaintainDegree=bMaintainDegree,
+        bEcho=bEcho,
         bDebug=bDebug,
+        bAddPts=bAddPts,
         )
 
     if ns_Ret is None:
@@ -1407,6 +1680,7 @@ def main():
         objref_R,
         iContinuity,
         iPreserveOtherEnd,
+        bUseUnderlyingIsoCrvs,
         bMaintainDegree,
         bReplace,
         bEcho,
@@ -1421,8 +1695,10 @@ def main():
         objref_R,
         iContinuity=iContinuity,
         iPreserveOtherEnd=iPreserveOtherEnd,
+        bUseUnderlyingIsoCrvs=bUseUnderlyingIsoCrvs,
         bMaintainDegree=bMaintainDegree,
         bReplace=bReplace,
+        bEcho=bEcho,
         bDebug=bDebug,
         bAddPts=bAddPts,
         )

@@ -1,4 +1,9 @@
 """
+As an alternative to _EdgeSrf, this script:
+1. Matches unionizes knot vectors more exactly.
+2. Offers face-face continuity above G0.
+"""
+"""
 211013-21: Created.
 
 TODO:
@@ -14,7 +19,7 @@ import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
 
-import spb_NurbsSrf_matchTo1
+import spb_NurbsSrf_MatchSrf_1Edge
 
 
 W = rg.IsoStatus.West
@@ -551,7 +556,7 @@ def createAlignedRefGeom(geom_R_In, ns_Coons, side_C, bEcho=True):
     c_C = getIsoCurveOfSide(side_C, ns_Coons)
     #cs_R = getCurveOfNurbs(geom_R_In)
 
-    #idx_R_per_A = spb_NurbsSrf_matchTo1.findMatchingCurveByEndPoints(cs_C, cs_R, bEcho)
+    #idx_R_per_A = spb_NurbsSrf_MatchSrf_1Edge.findMatchingCurveByEndPoints(cs_C, cs_R, bEcho)
     #if idx_R_per_A is None: return
 
 
@@ -700,7 +705,7 @@ def createSurface(rhCrvs_In, **kwargs):
     geoms_In = []
     for rhCrv_In in rhCrvs_In:
         if isinstance(rhCrv_In, rd.ObjRef):
-            rc = spb_NurbsSrf_matchTo1.getGeomFromObjRef(rhCrv_In)
+            rc = spb_NurbsSrf_MatchSrf_1Edge.getGeomFromObjRef(rhCrv_In)
             if rc is None: return
             geoms_In.append(rc)
         else:
@@ -735,7 +740,7 @@ def createSurface(rhCrvs_In, **kwargs):
         return None, "2 edges of the same isostatus of the same surface were selected."
 
 
-    geoms_Nurbs = [spb_NurbsSrf_matchTo1.getNurbsGeomFromGeom(geom) for geom in geoms_In]
+    geoms_Nurbs = [spb_NurbsSrf_MatchSrf_1Edge.getNurbsGeomFromGeom(geom) for geom in geoms_In]
     if not geoms_Nurbs: return
 
     #for nc in [getCurveOfNurbs(geom) for geom in geoms_As_Nurbs]:
@@ -843,7 +848,7 @@ def createSurface(rhCrvs_In, **kwargs):
     cs_C = [getIsoCurveOfSide(s, ns_Coons) for s in (W,S,E,N)]
     cs_R = [getCurveOfNurbs(geom) for geom in geoms_Nurbs_ClosedLoop]
 
-    idx_R_per_CoonsWSEN = spb_NurbsSrf_matchTo1.findMatchingCurveByEndPoints(
+    idx_R_per_CoonsWSEN = spb_NurbsSrf_MatchSrf_1Edge.findMatchingCurveByEndPoints(
         cs_C, cs_R, bEcho)
     if idx_R_per_CoonsWSEN is None: return
 
@@ -864,7 +869,7 @@ def createSurface(rhCrvs_In, **kwargs):
 
     bResults = []
     for side in W,S,E,N:
-        bResult = spb_NurbsSrf_matchTo1.transferHigherDegree(
+        bResult = spb_NurbsSrf_MatchSrf_1Edge.transferHigherDegree(
             ns_Coons, geoms_Nurbs_AR[side], side, side)
     bResults.append(bResult)
     if bDebug: print bResults
@@ -877,7 +882,7 @@ def createSurface(rhCrvs_In, **kwargs):
     # Match reference srf relevant domains to Coons patch srf.
     bResults = []
     for side in W,S,E,N:
-        bResult = spb_NurbsSrf_matchTo1.transferDomain(
+        bResult = spb_NurbsSrf_MatchSrf_1Edge.transferDomain(
             ns_Coons, geoms_Nurbs_AR[side], side, side)
     bResults.append(bResult)
     if bDebug: print bResults

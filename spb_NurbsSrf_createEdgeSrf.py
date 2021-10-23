@@ -2,9 +2,11 @@
 As an alternative to _EdgeSrf, this script:
 1. Matches unionizes knot vectors more exactly.
 2. Offers face-face continuity above G0.
+
+Send any questions, comments, or business inquiries to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 """
-211013-21: Created.
+211013-22: Created.
 
 TODO:
     Add support for G2 continuity.
@@ -971,6 +973,7 @@ def createSurface(rhCrvs_In, **kwargs):
 
     ptsA_Start = [cp.Location for cp in ns_Coons.Points]
 
+    ns_M_WIP = ns_Coons.Duplicate()
 
     for side in (W, S, E, N):
 
@@ -978,24 +981,35 @@ def createSurface(rhCrvs_In, **kwargs):
         plane = planes_AR[side]
 
         if plane is None and isinstance(geom_AR, rg.Curve):
-            continue
+            continue # Since surface is already G0.
 
-        ns_AR = geom_AR
+        ns_R = geom_AR
+
+        # Positional row is already set.
+
+        # Set tangential row.
+        ns_M_WIP = setContinuity(
+            ns_M_In=ns_M_Out,
+            side_M=side_Both,
+            nurbs_R=nurbs_R,
+            plane_R=plane,
+            side_R=side_Both,
+            iG=1,
+            )
+
+        if ns_M_WIP is None: return
+
 
         idxPts_G0_A = getG0PtIndices(ns_Coons, side)
-        #print idxPts_G0_A
-        idxPts_G0_R = getG0PtIndices(ns_AR, side) if plane is None else None
-        #print idxPts_G0_R
+        idxPts_G0_R = getG0PtIndices(ns_R, side) if plane is None else None
 
 
         idxPts_G1_A = getG1PtIndices(ns_Coons, side)
-        #print idxPts_G1_A
-        idxPts_G1_R = getG1PtIndices(ns_AR, side) if plane is None else None
-        #print idxPts_G1_R
+        idxPts_G1_R = getG1PtIndices(ns_R, side) if plane is None else None
 
         # Points-only lists for shorter subsquent code.
         ptsA = [cp.Location for cp in ns_Coons.Points]
-        ptsR = [cp.Location for cp in ns_AR.Points] if plane is None else None
+        ptsR = [cp.Location for cp in ns_R.Points] if plane is None else None
 
         # Points are ordered u0 v0, u0 v1, ..., un vn.
 
@@ -1010,7 +1024,6 @@ def createSurface(rhCrvs_In, **kwargs):
         bValid, sLog = ns_Coons.IsValidWithLog()
         if not bValid: print sLog; return
 
-        # Positional row is already set.
 
         if plane is None:
             # Set tangential row colinear with reference at closest point.
@@ -1049,9 +1062,6 @@ def createSurface(rhCrvs_In, **kwargs):
 
             # Set tangential row using the multiple of the average ratio
             # to the G0-G1 point distances of reference surface.
-            # Do not modify the ends of the row.  They must remain G0-matched with adjacent surfaces.
-            # Do not modify the second to the ends of the row at this time.
-            pts_G1_A_Out = [] # Saving points for future possible implementation of G2.
             for idx in range(len(idxPts_G1_A)):# iG1_A, iG0_A, iG1_R in zip(idxPts_G1_A, idxPts_G0_A, idxPts_G1_R):
                 iG1_A = idxPts_G1_A[idx]
                 iG0_A = idxPts_G0_A[idx]
@@ -1059,31 +1069,25 @@ def createSurface(rhCrvs_In, **kwargs):
                 vG1G0_R = ptsA[iG0_A] - ptsR[iG1_R]
                 vG0G1_A_Start = ptsA[iG0_A] - ptsA[iG1_A]
                 vG0G1_A_toSet = fAvgDistRatio * vG1G0_R
-                if vG1G0_R * vG0G1_A_Start > 0.0:
-                    vG0G1_A_toSet.Reverse()
+                #if vG1G0_R * vG0G1_A_Start > 0.0:
+                #    vG0G1_A_toSet.Reverse()
                 pt_To = ptsA[iG0_A] + vG0G1_A_toSet
                 iUT_A, iVT_A = getUvFrom1dList(ns_Coons, iG1_A)
                 ns_Coons.Points.SetPoint(
                     iUT_A, iVT_A, pt_To,
                     weight=ns_Coons.Points.GetWeight(iUT_A, iVT_A))
-                pts_G1_A_Out.append(pt_To)
 
 
             #sc.doc.Objects.AddSurface(ns_Coons); sc.doc.Views.Redraw(); return
 
         else:
             # Project tangential row to plane.
-            for idx in range(len(idxPts_G1_A)):# iG1_A, iG0_A, iG1_R in zip(idxPts_G1_A, idxPts_G0_A, idxPts_G1_R):
+            for idx in range(len(idxPts_G1_A)):
                 iG1_A = idxPts_G1_A[idx]
-                iG0_A = idxPts_G0_A[idx]
 
                 pt_To = plane.ClosestPoint(ptsA[iG1_A])
                 if pt_To == rg.Point3d.Unset:
                     raise ValueError("Plane.ClosestPoint failed.")
-
-                #iG1_R = idxPts_G1_R[idx]
-                #rgLine = rg.Line(ptsA[iG0_A], ptsR[iG1_R])
-                #pt_To = rgLine.ClosestPoint(ptsA[iG1_A], limitToFiniteSegment=False)
 
                 iUT_A, iVT_A = getUvFrom1dList(ns_Coons, iG1_A)
                 ns_Coons.Points.SetPoint(

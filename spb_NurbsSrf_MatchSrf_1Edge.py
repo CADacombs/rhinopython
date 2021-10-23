@@ -14,6 +14,8 @@ Limitations:
     None of the following _MatchSrf options:
         ChainEdges, OnSurface, MatchByClosestPoints, RefineMatch,
         AverageSurfaces, Tolerances, IsocurveDirection
+
+Send any questions, comments, or business inquiries to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 """
 200626: Started and 1st working version.
@@ -26,8 +28,8 @@ Limitations:
         Now matches to surface of lesser degree.
         Bug fixes.
 211003: Changed verbage of a command option.
-211008-21: Bug fix when transferring knot vector.
-        Refactored for easier use as module by other scripts.
+211008-22: Bug fix when transferring knot vector.
+        Refactored for easier use as a module by other scripts.
 
 TODO:
     Check continuity before modifying surface.  Need method for this.
@@ -550,9 +552,11 @@ def createTanSrfFromEdge(rgTrim):
     """
 
     rgEdge = rgTrim.Edge
-    srf = rgTrim.Face.UnderlyingSurface().ToNurbsSurface()
+    ns = rgTrim.Face.UnderlyingSurface().ToNurbsSurface()
 
     ncA = rgEdge.ToNurbsCurve()
+    if ncA.Degree == 1:
+        ncA.IncreaseDegree(2)
 
     ts = ncA.GrevilleParameters()
 
@@ -569,17 +573,17 @@ def createTanSrfFromEdge(rgTrim):
         #pt_Start = ncA.PointAt(t)
         pt_Start = pts_on_ncA[i]
 
-        bSuccess, u, v = srf.ClosestPoint(pt_Start)
+        bSuccess, u, v = ns.ClosestPoint(pt_Start)
         if not bSuccess:
             print "ClosestPoint failed." \
-                "  Continuity increase will not occur on an edge."
+                "  G1+ will not occur on an edge."
             return
 
-        vNormal = srf.NormalAt(u, v)
+        vNormal = ns.NormalAt(u, v)
         bSuccess, frame = ncA.PerpendicularFrameAt(t)
         if not bSuccess:
             print "PerpendicularFrameAt failed." \
-                "  Continuity increase will not occur on an edge."
+                "  G1+ will not occur on an edge."
             return
         
         pt_Normal = pt_Start + vNormal * dist
@@ -599,22 +603,25 @@ def createTanSrfFromEdge(rgTrim):
     pt_Mid_Neg = createEndPt(len(ts)//2, -angle)
     pt_Mid_Pos = createEndPt(len(ts)//2,  angle)
 
-    rc = srf.ClosestPoint(pt_Mid_Neg)
+    rc = ns.ClosestPoint(pt_Mid_Neg)
     if not rc[0]:
         raise Exception("ClosestPoint failed.")
-    pfrel_Neg = rgTrim.Face.IsPointOnFace(*rc[1:])
+    pfrel_Neg = rgTrim.Face.IsPointOnFace(*rc[1:], tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
 
-    rc = srf.ClosestPoint(pt_Mid_Pos)
+    rc = ns.ClosestPoint(pt_Mid_Pos)
     if not rc[0]:
         raise Exception("ClosestPoint failed.")
-    pfrel_Pos = rgTrim.Face.IsPointOnFace(*rc[1:])
+    pfrel_Pos = rgTrim.Face.IsPointOnFace(*rc[1:], tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
 
-    if pfrel_Neg == rg.PointFaceRelation.Interior and pfrel_Pos == rg.PointFaceRelation.Exterior:
+    if pfrel_Neg == rg.PointFaceRelation.Interior and pfrel_Pos != rg.PointFaceRelation.Interior:
         pts_on_ncB = [createEndPt(i, -angle) for i in range(len(ts))]
-    elif pfrel_Neg == rg.PointFaceRelation.Exterior and pfrel_Pos == rg.PointFaceRelation.Interior:
+    elif pfrel_Neg != rg.PointFaceRelation.Interior and pfrel_Pos == rg.PointFaceRelation.Interior:
         pts_on_ncB = [createEndPt(i,  angle) for i in range(len(ts))]
     else:
-        raise Exception("PointFaceRelations are {} and {}".format(pfrel_Neg, pfrel_Pos))
+        map(sc.doc.Objects.AddPoint, (pt_Mid_Neg, pt_Mid_Pos))
+        sc.doc.Objects.AddBrep(rgTrim.Face.DuplicateFace(duplicateMeshes=False))
+        raise Exception(
+            "PointFaceRelations are {} and {}".format(pfrel_Neg, pfrel_Pos))
 
     ncB = ncA.DuplicateCurve()
     ncB.SetGrevillePoints(pts_on_ncB)
@@ -861,7 +868,6 @@ def getNurbsGeomFromGeom(In, bEcho=True):
     """
     Returns 4-item list containing any combination of tuples of:
         (IsoStatus, NurbsSurface),
-        (NurbsCurve, plane)
         (NurbsCurve, None)
     """
 
@@ -874,24 +880,20 @@ def getNurbsGeomFromGeom(In, bEcho=True):
     trim = In
     srf = trim.Face.UnderlyingSurface()
 
-    if trim.IsoStatus not in (W,S,E,N):
-        b, plane = srf.TryGetPlane(tolerance=1e-6)
-        if b:
-            return trim.Edge.ToNurbsCurve(), plane
+    if isinstance(srf, rg.PlaneSurface) or trim.IsoStatus == rg.IsoStatus.None:
+        ns_Tan = createTanSrfFromEdge(trim)
+        if ns_Tan is None:
+            return In.ToNurbsCurve(), None
+        ncs_TanNS = [getIsoCurveOfSide(side, ns_Tan) for side in (W,S,E,N)]
+        idxB = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bEcho=bEcho)[0]
+        return (W,S,E,N)[idxB], ns_Tan
 
-    if trim.IsoStatus in (W,S,E,N):
-        return trim.IsoStatus, srf.ToNurbsSurface()
+    #if trim.IsoStatus not in (W,S,E,N):
+    #    b, plane = srf.TryGetPlane(tolerance=1e-6)
+    #    if b:
+    #        return trim.Edge.ToNurbsCurve(), plane
 
-    if trim.IsoStatus in (rg.IsoStatus.X, rg.IsoStatus.Y):
-        print "TODO: Add routine for X or Y IsoStatus."
-
-    # Try to create tangent surface for IsoStatus of None (and temporarily X and Y).
-    ns_Tan = createTanSrfFromEdge(trim)
-    if ns_Tan is None:
-        return In.ToNurbsCurve(), None
-    ncs_TanNS = [getIsoCurveOfSide(side, ns_Tan) for side in (W,S,E,N)]
-    idxB = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bEcho=bEcho)[0]
-    return (W,S,E,N)[idxB], ns_Tan
+    return trim.IsoStatus, srf.ToNurbsSurface()
 
 
 def createAlignedRefGeom(geom_R_In, ns_M, side_M, bMatchWithParamsAligned):
@@ -941,23 +943,21 @@ def createAlignedRefGeom(geom_R_In, ns_M, side_M, bMatchWithParamsAligned):
             ns_R.Reverse(0 if side_M in (S, N) else 1, True)
 
 
-    geom_R = geom_R_In
-    #print geom_R
-    if isinstance(geom_R[1], rg.NurbsSurface):
-        side_R, ns_R = geom_R
+    if isinstance(geom_R_In[1], rg.NurbsSurface):
+        side_R, ns_R = geom_R_In
         rc = createAlignedRefSrfs(side_M, ns_R, side_R)
-        return ns_R, None
+        return ns_R
 
     # Reference alignment is per Edge.
     c_A = getIsoCurveOfSide(side_M, ns_M)
-    c_R = geom_R[0]
+    c_R = geom_R_In[0]
 
     #map(sc.doc.Objects.AddCurve, (c_A, c_R))
 
     if not bMatchWithParamsAligned:
         c_R.Reverse()
 
-    return c_R, geom_R[1]
+    return c_R
 
 
 def transferHigherDegree(nFrom, nTo, sideFrom, sideTo):
@@ -1056,6 +1056,317 @@ def transferUniqueKnotVector(nurbsA, nurbsB, sideA=None, sideB=None, paramTol=No
     return knotCount(nurbsB, sideB) > knotCt_In
 
 
+def getPtRowIndicesPerG(nurbsGeom, side, iG):
+    if isinstance(nurbsGeom, rg.NurbsCurve):
+        if iG == 0:
+            return range(nurbsGeom.Points.Count)
+        return
+
+    # NurbsSurface.
+    cps = list(nurbsGeom.Points)
+    ctV = nurbsGeom.Points.CountV
+    ctAll = len(cps)
+    if side == W:
+        return range(iG*ctV, (iG+1)*ctV)
+    elif side == E:
+        return range(ctAll-(iG+1)*ctV, ctAll-iG*ctV)
+    elif side == S:
+        return range(iG, ctAll, ctV)
+    elif side == N:
+        return range(ctV-(iG+1), ctAll, ctV)
+
+
+def getUvFrom1dList(ns, idxFlat):
+    """
+    Convert the 1-dimensional index of Points to the U and V indices for use .
+    """
+    return idxFlat // ns.Points.CountV, idxFlat % ns.Points.CountV
+
+
+def setContinuity_G0(**kwargs):
+    """
+    Parameters:
+        ns_M_In: NurbsSurface
+        side_M: IsoStatus
+        nurbs_R: NurbsSurface or NurbsCurve
+        side_R: IsoStatus
+    Returns
+    """
+
+    def get_kwarg(key):
+        if key not in kwargs:
+            raise ("{} missing from provided parameters.".format(key))
+        return kwargs[key] if key in kwargs else None
+
+    ns_M_In = get_kwarg('ns_M_In')
+    side_M = get_kwarg('side_M')
+    nurbs_R = get_kwarg('nurbs_R')
+    side_R = get_kwarg('side_R')
+
+
+    bValid, sLog = ns_M_In.IsValidWithLog()
+    if not bValid: print sLog; return
+
+
+    ns_M_Out = ns_M_In.Duplicate()
+    ptsR = [cp.Location for cp in nurbs_R.Points]
+
+    # Points are ordered (u0,v0), (u0,v1), ..., (un,vn).
+
+
+    idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
+    idxPts['M',0] = getPtRowIndicesPerG(ns_M_In, side_M, 0)
+    idxPts['R',0] = getPtRowIndicesPerG(nurbs_R, side_R, 0)
+
+
+    for i in range(len(idxPts['M',0])):
+        iU_G0_A, iV_G0_A = getUvFrom1dList(ns_M_Out, idxPts['M',0][i])
+        iR0 = idxPts['R',0][i]
+        if isinstance(nurbs_R, rg.NurbsSurface):
+            iU_0_R, iV_0_R = getUvFrom1dList(nurbs_R, iR0)
+            ns_M_Out.Points.SetPoint(
+                iU_G0_A, iV_G0_A,
+                point=ptsR[iR0],
+                weight=nurbs_R.Points.GetWeight(iU_0_R, iV_0_R))
+        else: # NurbsCurve.
+            ns_M_Out.Points.SetPoint(
+                iU_G0_A, iV_G0_A,
+                point=ptsR[iR0],
+                weight=nurbs_R.Points.GetWeight(iR0))
+
+    return ns_M_Out
+
+
+def project_C_Colinear_with_AB(ptA, ptB, ptC):
+    return rg.Line(ptA, ptB).ClosestPoint(ptC, limitToFiniteSegment=False)
+
+
+def setContinuity_G1(**kwargs):
+    """
+    Parameters:
+        ns_M_In: NurbsSurface
+        side_M: IsoStatus
+        nurbs_R: NurbsSurface or NurbsCurve (for planar surface)
+        plane_R: Plane or None
+        side_R: IsoStatus
+    Returns
+    """
+
+    def get_kwarg(key):
+        if key not in kwargs:
+            raise ("{} missing from provided parameters.".format(key))
+        return kwargs[key] if key in kwargs else None
+
+    ns_M_In = get_kwarg('ns_M_In')
+    side_M = get_kwarg('side_M')
+    nurbs_R = get_kwarg('nurbs_R')
+    side_R = get_kwarg('side_R')
+
+
+    if isinstance(nurbs_R, rg.NurbsCurve):
+        return ns_M_Out
+
+
+    bValid, sLog = ns_M_In.IsValidWithLog()
+    if not bValid: print sLog; return
+
+
+    ns_M_Out = ns_M_In.Duplicate()
+    ptsM_Start = [cp.Location for cp in ns_M_In.Points]
+    ptsM_Out = ptsM_Start[:]
+    ptsR = [cp.Location for cp in nurbs_R.Points]
+
+    # Points are ordered (u0,v0), (u0,v1), ..., (un,vn).
+
+
+    idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
+    for i in 0,1:
+        idxPts['M',i] = getPtRowIndicesPerG(ns_M_In, side_M, i)
+        idxPts['R',i] = getPtRowIndicesPerG(nurbs_R, side_R, i)
+
+    ns_R = nurbs_R
+
+    # Set G1 row colinear with reference.
+
+
+    for i in range(len(idxPts['M',0])):
+        iM0 = idxPts['M',0][i]
+        iM1 = idxPts['M',1][i]
+        iR1 = idxPts['R',1][i]
+        pt_To = project_C_Colinear_with_AB(ptsM_Out[iM0], ptsR[iR1], ptsM_Out[iM1])
+        iUT_A, iVT_A = getUvFrom1dList(ns_M_Out, iM1)
+        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, pt_To)
+
+
+    # Update.
+    ptsM_Out = [cp.Location for cp in ns_M_Out.Points]
+
+
+    # To obtain G1 continuity along edge, set the tangential row at a scale
+    # of the G0-G1 point distances of the reference surface.
+
+    # Determine the average ratio of the G0-G1 point distances of surface
+    # to match to the same of reference surface.
+    fDistRatios = []
+    for iM0, iA1, iR1 in zip(idxPts['M',0], idxPts['M',1], idxPts['R',1]):
+        fDistA = ptsM_Start[iA1].DistanceTo(ptsM_Start[iM0])
+        fDistR = ptsR[iR1].DistanceTo(ptsM_Out[iM0])
+        fRatio = fDistA / fDistR
+        fDistRatios.append(fRatio)
+    fAvgDistRatio = sum(fDistRatios) / float(len(fDistRatios))
+
+
+    # Set tangential row using the multiple of the average ratio
+    # to the G0-G1 point distances of reference surface.
+    for i, iG0_A in enumerate(idxPts['M',0]):
+        vG0G1_R = ptsM_Out[iG0_A] - ptsR[idxPts['R',1][i]]
+        vG0G1_A_toSet = fAvgDistRatio * vG0G1_R
+        pt_To = ptsM_Out[iG0_A] + vG0G1_A_toSet
+        iUT_A, iVT_A = getUvFrom1dList(ns_M_Out, idxPts['M',1][i])
+        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, pt_To)
+
+
+    return ns_M_Out
+
+
+def setContinuity_G2(**kwargs):
+    """
+    Parameters:
+        ns_M_In: NurbsSurface
+        side_M: IsoStatus
+        nurbs_R: NurbsSurface or NurbsCurve
+        plane_R: Plane or None
+        side_R: IsoStatus
+        bDebug: bool
+        bAddPts: bool
+    Returns
+    """
+
+    def get_kwarg(key):
+        if key not in kwargs and key != 'plane_R':
+            raise ("{} missing from provided parameters.".format(key))
+        return kwargs[key] if key in kwargs else None
+
+    ns_M_In = get_kwarg('ns_M_In')
+    side_M = get_kwarg('side_M')
+    nurbs_R = get_kwarg('nurbs_R')
+    plane_R = get_kwarg('plane_R')
+    side_R = get_kwarg('side_R')
+    bDebug = get_kwarg('bDebug')
+    bAddPts = get_kwarg('bAddPts')
+
+
+    bValid, sLog = ns_M_In.IsValidWithLog()
+    if not bValid: print sLog; return
+
+
+    ns_M_Out = ns_M_In.Duplicate()
+    ptsM_Start = [cp.Location for cp in ns_M_In.Points]
+    ptsM_Out = ptsM_Start[:]
+    ptsR = [cp.Location for cp in nurbs_R.Points]
+
+    # Points are ordered (u0,v0), (u0,v1), ..., (un,vn).
+
+
+    # Check and if necessary, match point indices of reference surface.
+
+
+
+    idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
+    for i in 0,1,2:
+        idxPts['M',i] = getPtRowIndicesPerG(ns_M_In, side_M, iG=i)
+        idxPts['R',i] = getPtRowIndicesPerG(nurbs_R, side_R, iG=i)
+
+    ns_R = nurbs_R
+
+
+    if ns_R.Degree(int(side_R in (S,N))) == 1:
+        # Move G2 points of A to be colinear with G0 and G1 points.
+
+        for iG0, iG1, iG2 in zip(idxPts['M',0], idxPts['M',1], idxPts['M',2]):
+            pt_To = project_C_Colinear_with_AB(ptsM_Out[iG0], ptsM_Out[iG1], ptsM_Out[iG2])
+            iUT, iVT = getUvFrom1dList(ns_M_Out, iG2)
+            ns_M_Out.Points.SetPoint(iUT, iVT, pt_To)
+
+        return ns_M_Out
+
+
+    def multiplierForDegree(ns, side_Match):
+        degree = ns.Degree(int(side_Match in (S,N)))
+        return (degree - 1) / degree
+
+    
+    mA_Deg = multiplierForDegree(ns_M_Out, side_M)
+
+    mR_Deg = multiplierForDegree(ns_R, side_R)
+
+
+    def multiplierForAdjacentSimpleKnots(ns, side_Match):
+
+        iDir_FromMatch = int(side_Match in (S,N))
+
+        iCt_Span = ns.SpanCount(iDir_FromMatch)
+        if iCt_Span == 1:
+            m_ForKnots = 1.0
+        else:
+            knots = ns.KnotsV if iDir_FromMatch else ns.KnotsU
+            iDeg_FromMSide_A = ns.Degree(iDir_FromMatch)
+
+            if side_Match in (E, N):
+                iKnot_NextToEnd = knots.Count - iDeg_FromMSide_A - 1
+            else:
+                iKnot_NextToEnd = iDeg_FromMSide_A
+
+            multy_AdjKnot = knots.KnotMultiplicity(iKnot_NextToEnd)
+
+            if multy_AdjKnot > 1:
+                m_ForKnots = 1.0
+            else:
+                t_Knots_Span = ns.GetSpanVector(iDir_FromMatch)
+
+                if side_Match in (E, N):
+                    fLen_spanEnd = t_Knots_Span[iCt_Span] - t_Knots_Span[iCt_Span-1]
+                    fLen_spanAdj = t_Knots_Span[iCt_Span-1] - t_Knots_Span[iCt_Span-2]
+                else:
+                    fLen_spanEnd = t_Knots_Span[1] - t_Knots_Span[0]
+                    fLen_spanAdj = t_Knots_Span[2] - t_Knots_Span[1]
+
+                m_ForKnots = (fLen_spanEnd + fLen_spanAdj) / fLen_spanEnd
+        return m_ForKnots
+
+    mA_Knots = multiplierForAdjacentSimpleKnots(ns_M_Out, side_M)
+    mR_Knots = multiplierForAdjacentSimpleKnots(ns_R, side_R)
+
+
+    for i in range(len(idxPts['M',0])):
+        a0 = r0 = ptsR[idxPts['R',0][i]]
+        a1 = ptsM_Out[idxPts['M',1][i]]
+        r1 = ptsR[idxPts['R',1][i]]
+        r2 = ptsR[idxPts['R',2][i]]
+
+        m = ((a1 - r0).Length/(r1 - r0).Length)**2.0
+
+        a2 = 2.0*a1 + -a0 + (
+            m * (mA_Knots / mR_Knots) *
+            (mR_Deg / mA_Deg) *
+            (-2.0*r1 + r2 + r0)
+            )
+
+        if bDebug and bAddPts:
+            sc.doc.Objects.AddPoint(r0)
+            sc.doc.Objects.AddPoint(a1)
+            sc.doc.Objects.AddPoint(a2)
+            sc.doc.Objects.AddPoint(r1)
+            sc.doc.Objects.AddPoint(r2)
+
+        #sc.doc.Objects.AddPoint(a2)
+
+        iUT_A, iVT_A = getUvFrom1dList(ns_M_Out, idxPts['M',2][i])
+        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, a2)
+
+    return ns_M_Out
+
+
 def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
     """
     Parameters:
@@ -1111,7 +1422,7 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
     rc = createAlignedRefGeom(
         geom_R_Nurbs, ns_M, side_M, bMatchWithParamsAligned)
     if rc is None: return
-    nurbs_R, plane = rc
+    nurbs_R = rc
 
     #if isinstance(nurbs_R, rg.NurbsSurface): sc.doc.Objects.AddSurface(nurbs_R)
     #else: sc.doc.Objects.AddCurve(nurbs_R)
@@ -1130,7 +1441,6 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
 
 
 
-    ns_M_In = ns_M # Need this?
     ns_M_Out = ns_M.Duplicate()
 
     ns_R_In = nurbs_R.Duplicate()
@@ -1153,10 +1463,10 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
 
 
 
-    iDir_MatchSide_R = int(side_Both in (rg.IsoStatus.East, rg.IsoStatus.West))
+    iDir_MatchSide_R = int(side_Both in (E, W))
     #iDeg_MatchSide_R = ns_R.Degree(iDir_MatchSide_R)
 
-    iDir_MatchSide_A = int(side_Both in (rg.IsoStatus.East, rg.IsoStatus.West))
+    iDir_MatchSide_A = int(side_Both in (E, W))
     #iDeg_MatchSide_A = ns_M_Out.Degree(iDir_MatchSide_A)
 
 
@@ -1260,8 +1570,6 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
     # From side of surface, increase point count as needed.
     # Points needed for continuity change: iContinuity + 1
     # Points needed to preserve other side: iPreserveOtherEnd
-    iDir_FromMSide_R = int(not iDir_MatchSide_R)
-
     iDir_FromMSide_A = int(not iDir_MatchSide_A)
     iDeg_FromMSide_A = ns_M_Out.Degree(iDir_FromMSide_A)
 
@@ -1322,295 +1630,38 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
             #    print "Increase degree of surface in V direction from {} to {}.".format(
             #        iDeg_FromMSide_A, iDegIncr)
 
+    #ns_M_WIP = ns_M_Out.Duplicate()
 
-    ptsA_Start = [cp.Location for cp in ns_M_Out.Points]
-    ptsM = ptsA_Start[:]
-    ptsR = [cp.Location for cp in nurbs_R.Points]
+    ns_M_WIP = setContinuity_G0(
+        ns_M_In=ns_M_Out,
+        side_M=side_Both,
+        nurbs_R=nurbs_R,
+        side_R=side_Both,
+        )
 
-    # Points are ordered u0 v0, u0 v1, ..., un vn.
+    if iContinuity == 0 or ns_M_WIP is None:
+        return ns_M_WIP
 
-    #for pt in ptsM:
-    #    sc.doc.Objects.AddPoint(pt)
-    #sc.doc.Views.Redraw()
-    #return
+    ns_M_WIP = setContinuity_G1(
+        ns_M_In=ns_M_WIP,
+        side_M=side_Both,
+        nurbs_R=nurbs_R,
+        side_R=side_Both,
+        )
 
+    if iContinuity == 1 or ns_M_WIP is None:
+        return ns_M_WIP
 
+    ns_M_WIP = setContinuity_G2(
+        ns_M_In=ns_M_WIP,
+        side_M=side_Both,
+        nurbs_R=nurbs_R,
+        side_R=side_Both,
+        bDebug=bDebug,
+        bAddPts=bAddPts,
+        )
 
-    # Check and if necessary, match point indices of reference surface.
-
-    def getUvFrom1dList(ns, idxFlat):
-        """
-        Convert the 1-dimensional index of Points to the U and V indices for use .
-        """
-        return idxFlat // ns.Points.CountV, idxFlat % ns.Points.CountV
-
-    bValid, sLog = ns_M_Out.IsValidWithLog()
-    if not bValid: print sLog; return
-    #sc.doc.Objects.AddSurface(ns_M_Out); sc.doc.Views.Redraw(); return
-
-
-    # Set positional row.
-
-    def getG0PtIndices(nurbsObj, side):
-        # Position.
-        if isinstance(nurbsObj, rg.NurbsSurface):
-            cps = list(nurbsObj.Points)
-            ctV = nurbsObj.Points.CountV
-            ctAll = len(cps)
-            if side == rg.IsoStatus.West:
-                return range(ctV)
-            elif side == rg.IsoStatus.East:
-                return range(ctAll-ctV, ctAll)
-            elif side == rg.IsoStatus.South:
-                return range(0, ctAll, ctV)
-            elif side == rg.IsoStatus.North:
-                return range(ctV-1, ctAll, ctV)
-        else: # NurbsCurve
-            return range(nurbsObj.Points.Count)
-
-    idxPts_G0_A = getG0PtIndices(ns_M_Out, side_Both)
-    #print idxPts_G0_A
-    idxPts_G0_R = getG0PtIndices(nurbs_R, side_Both)
-    #print idxPts_G0_R
-
-    for iG0_A, idxG0_R in zip(idxPts_G0_A, idxPts_G0_R):
-        iU_G0_A, iV_G0_A = getUvFrom1dList(ns_M_Out, iG0_A)
-
-        if isinstance(nurbs_R, rg.NurbsSurface):
-            iU_0_R, iV_0_R = getUvFrom1dList(nurbs_R, idxG0_R)
-            ns_M_Out.Points.SetPoint(
-                iU_G0_A, iV_G0_A,
-                point=ptsR[idxG0_R],
-                weight=nurbs_R.Points.GetWeight(iU_0_R, iV_0_R))
-        else:
-            ns_M_Out.Points.SetPoint(
-                iU_G0_A, iV_G0_A,
-                point=ptsR[idxG0_R],
-                weight=nurbs_R.Points.GetWeight(idxG0_R))
-
-
-    #sc.doc.Objects.AddSurface(ns_M_Out); sc.doc.Views.Redraw(); return
-
-
-    if iContinuity < 1:
-        return ns_M_Out
-
-    if plane is None and isinstance(nurbs_R, rg.NurbsCurve):
-        return ns_M_Out
-
-
-    # Update.
-    ptsM = [cp.Location for cp in ns_M_Out.Points]
-
-    #for pt in ptsM:
-    #    sc.doc.Objects.AddPoint(pt)
-    #sc.doc.Views.Redraw(); return
-
-
-    # Set tangential row.
-
-    ns_R = nurbs_R
-
-    def getG1PtIndices(ns, side):
-        # Tangency.
-        cps = list(ns.Points)
-        ctV = ns.Points.CountV
-        ctAll = len(cps)
-        if side == rg.IsoStatus.West:
-            return range(ctV, 2*ctV)
-        elif side == rg.IsoStatus.East:
-            return range(ctAll-2*ctV, ctAll-ctV)
-        elif side == rg.IsoStatus.South:
-            return range(1, ctAll, ctV)
-        elif side == rg.IsoStatus.North:
-            return range(ctV-2, ctAll, ctV)
-
-
-    idxPts_G1_A = getG1PtIndices(ns_M_Out, side_M)
-    #print idxPts_G1_A
-
-
-    if plane is not None:
-        # Project tangential row to plane.
-        for idx in range(len(idxPts_G1_A)):# iG1_A, iG0_A, iG1_R in zip(idxPts_G1_A, idxPts_G0_A, idxPts_G1_R):
-            iG1_A = idxPts_G1_A[idx]
-
-            pt_To = plane.ClosestPoint(ptsM[iG1_A])
-
-            if pt_To == rg.Point3d.Unset:
-                raise ValueError("Plane.ClosestPoint failed.")
-
-            iUT_A, iVT_A = getUvFrom1dList(ns_M_Out, iG1_A)
-            ns_M_Out.Points.SetPoint(
-                iUT_A, iVT_A, pt_To,
-                weight=ns_M_Out.Points.GetWeight(iUT_A, iVT_A))
-
-        return ns_M_Out
-
-    # Set tangential row colinear with reference.
-
-    idxPts_G1_R = getG1PtIndices(ns_R, side_R) if plane is None else None
-    #print idxPts_G1_R
-
-    for iG1_A, iG0_A, iG1_R in zip(idxPts_G1_A, idxPts_G0_A, idxPts_G1_R):
-        rgLine = rg.Line(ptsM[iG0_A], ptsR[iG1_R])
-        pt_To = rgLine.ClosestPoint(ptsM[iG1_A], limitToFiniteSegment=False)
-        iUT_A, iVT_A = getUvFrom1dList(ns_M_Out, iG1_A)
-        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, pt_To)
-
-
-    # Update.
-    ptsM = [cp.Location for cp in ns_M_Out.Points]
-
-
-    # To obtain G1 continuity along edge, set the tangential row at a scale
-    # of the G0-G1 point distances of the reference surface.
-
-    # Determine the average ratio of the G0-G1 point distances of surface
-    # to match to the same of reference surface.
-    fDistRatios = []
-    for iG1_A, iG0_A, iG1_R in zip(idxPts_G1_A, idxPts_G0_A, idxPts_G1_R):
-        fDistA = ptsA_Start[iG1_A].DistanceTo(ptsA_Start[iG0_A])
-        fDistR = ptsR[iG1_R].DistanceTo(ptsM[iG0_A])
-        fRatio = fDistA / fDistR
-        fDistRatios.append(fRatio)
-    fAvgDistRatio = sum(fDistRatios) / float(len(fDistRatios))
-
-
-    # Set tangential row using the multiple of the average ratio
-    # to the G0-G1 point distances of reference surface.
-    pts_G1_A_Out = []
-    for iG1_A, iG0_A, iG1_R in zip(idxPts_G1_A, idxPts_G0_A, idxPts_G1_R):
-        vG0G1_R = ptsM[iG0_A] - ptsR[iG1_R]
-        vG0G1_A_toSet = fAvgDistRatio * vG0G1_R
-        pt_To = ptsM[iG0_A] + vG0G1_A_toSet
-        iUT_A, iVT_A = getUvFrom1dList(ns_M_Out, iG1_A)
-        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, pt_To)
-        pts_G1_A_Out.append(pt_To)
-
-
-    if iContinuity < 2:
-        return ns_M_Out
-
-    # Update.
-    ptsM = [cp.Location for cp in ns_M_Out.Points]
-
-
-    # G2 continuity.
-    iDeg_FromMSide_R = ns_R.Degree(iDir_FromMSide_R)
-    m_ForDeg_A = (iDeg_FromMSide_A - 1) / iDeg_FromMSide_A
-    m_ForDeg_R = (iDeg_FromMSide_R - 1) / iDeg_FromMSide_R
-    
-    # Replaced by above.
-    #    def multiplierForDegreeDifference(iDeg_FromMSide_A, iDeg_FromMSide_R):
-    #        m_ForDegs = 1.0
-    #        if iDeg_FromMSide_A < iDeg_FromMSide_R:
-    #            for i in range(iDeg_FromMSide_A, iDeg_FromMSide_R):
-    #                mDeg = (float(i)**2) / (float(i)**2 - 1.0)
-    #                m_ForDegs *= mDeg
-    #        elif iDeg_FromMSide_R < iDeg_FromMSide_A:
-    #            for i in range(iDeg_FromMSide_R, iDeg_FromMSide_A):
-    #                mDeg = (float(i)**2 - 1.0) / (float(i)**2)
-    #                m_ForDegs *= mDeg
-    #        else:
-    #            # iDeg_FromMSide_A == iDeg_FromMSide_R
-    #            pass
-    #        return m_ForDegs
-    #
-    #    m_ForDegs = multiplierForDegreeDifference(iDeg_FromMSide_A, iDeg_FromMSide_R)
-
-
-    def multiplierForAdjacentSimpleKnots(ns, side):
-        
-        iDir = bool(side in (rg.IsoStatus.South, rg.IsoStatus.North))
-        
-        # Calculate multiplier for knot vector.
-        iCt_Span = ns.SpanCount(iDir)
-        if iCt_Span == 1:
-            m_ForKnots = 1.0
-        else:
-            knots = ns.KnotsV if iDir else ns.KnotsU
-    
-            if side in (rg.IsoStatus.East, rg.IsoStatus.North):
-                iKnot_NextToEnd = knots.Count - iDeg_FromMSide_A - 1
-            else:
-                iKnot_NextToEnd = iDeg_FromMSide_A
-    
-            multy_AdjKnot = knots.KnotMultiplicity(iKnot_NextToEnd)
-            
-            if multy_AdjKnot > 1:
-                m_ForKnots = 1.0
-            else:
-                t_Knots_Span = ns.GetSpanVector(iDir)
-    
-                if side in (rg.IsoStatus.East, rg.IsoStatus.North):
-                    fLen_spanEnd = t_Knots_Span[iCt_Span] - t_Knots_Span[iCt_Span-1]
-                    fLen_spanAdj = t_Knots_Span[iCt_Span-1] - t_Knots_Span[iCt_Span-2]
-                else:
-                    fLen_spanEnd = t_Knots_Span[1] - t_Knots_Span[0]
-                    fLen_spanAdj = t_Knots_Span[2] - t_Knots_Span[1]
-    
-                m_ForKnots = (fLen_spanEnd + fLen_spanAdj) / fLen_spanEnd
-        return m_ForKnots
-
-    m_ForKnots_A = multiplierForAdjacentSimpleKnots(ns_M_Out, side_M)
-    m_ForKnots_R = multiplierForAdjacentSimpleKnots(ns_R, side_R)
-
-
-    def getG2PtIndices(ns, side):
-        # Curvature.
-        cps = list(ns.Points)
-        ctV = ns.Points.CountV
-        ctAll = len(cps)
-        if side == rg.IsoStatus.West:
-            return range(2*ctV, 3*ctV)
-        elif side == rg.IsoStatus.East:
-            return range(ctAll-3*ctV, ctAll-2*ctV)
-        elif side == rg.IsoStatus.South:
-            return range(2, ctAll, ctV)
-        elif side == rg.IsoStatus.North:
-            return range(ctV-3, ctAll, ctV)
-
-    idxPts_G2_A = getG2PtIndices(ns_M_Out, side_M)
-    #print idxPts_G2_R
-    idxPts_G2_R = getG2PtIndices(ns_R, side_R)
-    #print idxPts_G2_R
-
-    for i in range(len(idxPts_G1_A)):
-        iG1_A = idxPts_G1_A[i]
-        iG0_R = idxPts_G0_R[i]
-        iG1_R = idxPts_G1_R[i]
-        iG2_R = idxPts_G2_R[i]
-        iG2_A = idxPts_G2_A[i]
-
-        a0 = r0 = ptsR[iG0_R]
-        a1 = pts_G1_A_Out[i]
-        r1 = ptsR[iG1_R]
-        r2 = ptsR[iG2_R]
-        m = ((a1 - r0).Length/(r1 - r0).Length)**2.0
-
-        a2 = 2.0*a1 + -a0 + (
-            m *
-            (m_ForKnots_A / m_ForKnots_R) *
-            (m_ForDeg_R / m_ForDeg_A) *
-            (-2.0*r1 + r2 + r0)
-            )
-
-        if bDebug and bAddPts:
-            sc.doc.Objects.AddPoint(r0)
-            sc.doc.Objects.AddPoint(a1)
-            sc.doc.Objects.AddPoint(a2)
-            sc.doc.Objects.AddPoint(r1)
-            sc.doc.Objects.AddPoint(r2)
-
-        #sc.doc.Objects.AddPoint(a2)
-
-        iUT_A, iVT_A = getUvFrom1dList(ns_M_Out, iG2_A)
-        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, a2)
-
-    #sc.doc.Views.Redraw()
-
-    return ns_M_Out
+    return ns_M_WIP
 
 
 def processObjRefs(objref_M, objref_R, **kwargs):

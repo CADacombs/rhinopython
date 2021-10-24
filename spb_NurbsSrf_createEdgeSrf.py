@@ -2,11 +2,12 @@
 As an alternative to _EdgeSrf, this script:
 1. Matches unionizes knot vectors more exactly.
 2. Offers face-face continuity above G0.
+3. Creates a surface from 3 input curves that form an open loop.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 """
-211013-23: Created.
+211013-24: Created.
 
 TODO:
     Add support for 3-curve input.
@@ -117,7 +118,7 @@ class Opts:
 
 def getInput():
     """
-    Get edges with optional input.
+    Get edges or (wire) curves with optional input.
     """
 
     go = ri.Custom.GetObject()
@@ -146,7 +147,7 @@ def getInput():
 
         sc.doc.Views.Redraw()
 
-        res = go.GetMultiple(minimumNumber=4, maximumNumber=4)
+        res = go.GetMultiple(minimumNumber=3, maximumNumber=4)
 
         if res == ri.GetResult.Cancel:
             go.Dispose()
@@ -179,6 +180,13 @@ def getFormattedDistance(fDistance):
         return "{:.2e}".format(fDistance)
     else:
         return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
+
+
+def getR3CurveOfGeom(geom):
+    if isinstance(geom, rg.BrepTrim):
+        return geom.Edge.DuplicateCurve()
+    else:
+        return geom
 
 
 def getIsoCurveOfSide(isoStatus, srf):
@@ -227,22 +235,18 @@ def isPointAtEitherCrvEnd(pt, cA):
     return False
 
 
-def doTrimsFormAClosedLoop(geoms):
+def doCrvsFormAClosedLoop(cs):
     """
-    Trims must
-        Be of full surface edge.
-        Form a closed loop.
     """
 
-    cs = [getCurveOfNurbs(geom) for geom in geoms]
-    found = [[False, False] for i in 0,1,2,3]
+    found = [[False, False] for i in range(len(cs))]
     tol = 2.0 * sc.doc.ModelAbsoluteTolerance
 
-    for iA in 0,1,2:
+    for iA in range(len(cs)-1):
         cA = cs[iA]
         if not found[iA][0]:
             ptA = cA.PointAtStart
-            for iB in range(1+iA,4):
+            for iB in range(1+iA,len(cs)):
                 cB = cs[iB]
                 if ptA.DistanceTo(cB.PointAtStart) <= tol:
                     #print "Start of [{}] matches start of [{}].".format(iA, iB)
@@ -264,7 +268,7 @@ def doTrimsFormAClosedLoop(geoms):
 
         if not found[iA][1]:
             ptA = cA.PointAtEnd
-            for iB in range(1+iA,4):
+            for iB in range(1+iA,len(cs)):
                 cB = cs[iB]
                 if ptA.DistanceTo(cB.PointAtStart) <= tol:
                     #print "End of [{}] matches start of [{}].".format(iA, iB)
@@ -290,21 +294,23 @@ def doTrimsFormAClosedLoop(geoms):
 def getTrimInterval_NurbsSrf(iso, ns, pt_Ends_ToRemain, pts_Xs):
     """
     """
-
-    b, u, v = ns.ClosestPoint(pt_Ends_ToRemain)
-    if not b:
-        raise Exception("ClosestPoint failed.")
-
-    if (abs(u - ns.Domain(0).T0) <= 1e-6) and (abs(v - ns.Domain(1).T0) <= 1e-6):
-        uvs_DomainEndsToKeep = (u,v)
-    elif (abs(u - ns.Domain(0).T1) <= 1e-6) and (abs(v - ns.Domain(1).T0) <= 1e-6):
-        uvs_DomainEndsToKeep = (u,v)
-    elif (abs(u - ns.Domain(0).T1) <= 1e-6) and (abs(v - ns.Domain(1).T1) <= 1e-6):
-        uvs_DomainEndsToKeep = (u,v)
-    elif (abs(u - ns.Domain(0).T0) <= 1e-6) and (abs(v - ns.Domain(1).T1) <= 1e-6):
-        uvs_DomainEndsToKeep = (u,v)
-    else:
+    if pt_Ends_ToRemain is None:
         uvs_DomainEndsToKeep = None
+    else:
+        b, u, v = ns.ClosestPoint(pt_Ends_ToRemain)
+        if not b:
+            raise Exception("ClosestPoint failed.")
+
+        if (abs(u - ns.Domain(0).T0) <= 1e-6) and (abs(v - ns.Domain(1).T0) <= 1e-6):
+            uvs_DomainEndsToKeep = (u,v)
+        elif (abs(u - ns.Domain(0).T1) <= 1e-6) and (abs(v - ns.Domain(1).T0) <= 1e-6):
+            uvs_DomainEndsToKeep = (u,v)
+        elif (abs(u - ns.Domain(0).T1) <= 1e-6) and (abs(v - ns.Domain(1).T1) <= 1e-6):
+            uvs_DomainEndsToKeep = (u,v)
+        elif (abs(u - ns.Domain(0).T0) <= 1e-6) and (abs(v - ns.Domain(1).T1) <= 1e-6):
+            uvs_DomainEndsToKeep = (u,v)
+        else:
+            uvs_DomainEndsToKeep = None
 
     #sEval = "t_DomainEndToKeep"; print sEval+':',eval(sEval)
 
@@ -360,11 +366,9 @@ def getTrimInterval_NurbsCrv(nc, pt_Ends_ToRemain, pts_Xs):
     return rg.Interval(ts[0], ts[1])
 
 
-def trimNurbsAsNeededToCloseLoop(ngs):
+def trimNurbsAtCrvIntersections(ngs):
     """
-    Trims must
-        Be of full surface edge.
-        Form a closed loop.
+    At this time, only len(ngs) == 4.
     """
 
     ngs_In = ngs
@@ -372,16 +376,14 @@ def trimNurbsAsNeededToCloseLoop(ngs):
     cs = [getCurveOfNurbs(geom) for geom in ngs_In]
     tol = 2.0 * sc.doc.ModelAbsoluteTolerance
 
-    #bTrims_NeedIntersect = [False]*4
-
-    bFounds = [[False, False] for i in 0,1,2,3]
+    bFounds = [[False, False] for i in range(len(ngs))]
 
     def findEndsWithMatches():
-        for iA in 0,1,2:
+        for iA in range(len(ngs)-1):
             cA = cs[iA]
             if not bFounds[iA][0]:
                 ptA = cA.PointAtStart
-                for iB in range(1+iA,4):
+                for iB in range(1+iA,len(ngs)):
                     cB = cs[iB]
                     if ptA.DistanceTo(cB.PointAtStart) <= tol:
                         #print "Start of [{}] matches start of [{}].".format(iA, iB)
@@ -400,7 +402,7 @@ def trimNurbsAsNeededToCloseLoop(ngs):
     
             if not bFounds[iA][1]:
                 ptA = cA.PointAtEnd
-                for iB in range(1+iA,4):
+                for iB in range(1+iA,len(ngs)):
                     cB = cs[iB]
                     if ptA.DistanceTo(cB.PointAtStart) <= tol:
                         #print "End of [{}] matches start of [{}].".format(iA, iB)
@@ -419,7 +421,7 @@ def trimNurbsAsNeededToCloseLoop(ngs):
 
     findEndsWithMatches() # Modifies bFounds.
 
-    bTrims_NeedIntersect = [not (bFounds[i][0] and bFounds[i][1]) for i in 0,1,2,3]
+    bTrims_NeedIntersect = [not (bFounds[i][0] and bFounds[i][1]) for i in range(len(ngs))]
 
     if not any(bTrims_NeedIntersect):
         raise Exception("No trims can be split to create good input for surface.")
@@ -433,11 +435,11 @@ def trimNurbsAsNeededToCloseLoop(ngs):
     pts_Xs = [[],[],[],[]]
 
     def getIntersectsForTrimming():
-        for iA in 0,1,2:
+        for iA in range(len(ngs)-1):
             if not bTrims_NeedIntersect[iA]:
                 continue
             cA = cs[iA]
-            for iB in range(1+iA,4):
+            for iB in range(1+iA,len(ngs)):
                 if not bTrims_NeedIntersect[iB]:
                     continue
                 cB = cs[iB]
@@ -464,7 +466,7 @@ def trimNurbsAsNeededToCloseLoop(ngs):
 
     ngs_Out = []
 
-    for i in 0,1,2,3:
+    for i in range(len(ngs)):
         ng_In = ngs_In[i]
         if len(pts_Xs[i]) == 0:
             ngs_Out.append(ng_In)
@@ -692,21 +694,70 @@ def createSurface(rhCrvs_In, **kwargs):
     bDebug = getOpt('bDebug')
 
 
-    if len(rhCrvs_In) != 4:
-        return None, "{} curves provided.  Need exactly 4.".format(len(geoms_Nurbs))
+    if len(rhCrvs_In) not in (3,4):
+        return None, "{} curves provided.  Need 3 or 4.".format(len(geoms_Nurbs))
 
 
     tol0 = Rhino.RhinoMath.ZeroTolerance
 
 
-    geoms_In = []
-    for rhCrv_In in rhCrvs_In:
-        if isinstance(rhCrv_In, rd.ObjRef):
-            rc = spb.getGeomFromObjRef(rhCrv_In)
-            if rc is None: return
-            geoms_In.append(rc)
-        else:
-            geoms_In.append(rhCrv_In)
+    def getGeomFromIn(In):
+        """ Returns BrepTrim, (wire) Curve, or None """
+
+        def getMostUsefulGeomFromEdge(edge):
+            if len(edge.TrimIndices()) == 1:
+                trim = edge.Brep.Trims[edge.TrimIndices()[0]]
+                return trim
+            print "Edge with more than one face selected." \
+                "  Only G0 continuity will result for it."
+            return edge.DuplicateCurve()
+
+        def getTrimFromGeom(geom):
+            if isinstance(geom, rg.BrepTrim):
+                return geom
+            if isinstance(geom, rg.BrepEdge):
+                return getMostUsefulGeomFromEdge(geom)
+
+        def getMostUsefulGeomFromCrv(geom):
+            if isinstance(geom, rg.BrepEdge):
+                return getMostUsefulGeomFromEdge(geom)
+            if isinstance(geom, rg.Curve):
+                return geom
+            raise ValueError(
+                "{} provided instead of something from which a curve can derive.".format(
+                    geom.GetType().Name))
+
+        def getMostUsefulGeomFromObjRef(objref):
+            """ Returns BrepTrim, (wire) Curve, or None """
+
+            if not isinstance(objref, rd.ObjRef): return
+
+            trim = objref.Trim()
+
+            if trim is not None:
+                return trim
+
+            edge = objref.Edge()
+
+            if edge is not None:
+                return getMostUsefulGeomFromEdge(edge)
+
+            crv = objref.Curve()
+            if crv is not None:
+                return crv
+
+            raise ValueError("{} provided instead of something from which a curve can derive.".format(
+                    objref.Geometry().GetType().Name))
+
+        if isinstance(In, rd.ObjRef):
+            return getMostUsefulGeomFromObjRef(In)
+
+        if isinstance(In, rg.Curve):
+            return getMostUsefulGeomFromCrv(In)
+
+        raise ValueError("{} passed as input.".format(In.GetType().Name))
+
+    geoms_In = [getGeomFromIn(In) for In in rhCrvs_In]
 
 
     def areAllBrepTrimsUnique(geoms):
@@ -736,28 +787,20 @@ def createSurface(rhCrvs_In, **kwargs):
     if not areAllBrepTrimsUnique(geoms_In):
         return None, "2 edges of the same isostatus of the same surface were selected."
 
+    cs_In = [getR3CurveOfGeom(g) for g in geoms_In]
 
-    geoms_Nurbs = [spb.getNurbsGeomFromGeom(geom) for geom in geoms_In]
-    if not geoms_Nurbs: return
-
-    #for nc in [getCurveOfNurbs(geom) for geom in geoms_As_Nurbs]:
-    #    sc.doc.Objects.AddCurve(nc)
-    #return
-
-
-    def doAnyCurvesCompletelyOverlap(geoms):
+    def doAnyCrvsCompletelyOverlap(cs):
         """
         """
 
-        cs = [getCurveOfNurbs(geom) for geom in geoms]
-        found = [[False, False] for i in 0,1,2,3]
+        found = [[False, False] for i in range(len(cs))]
         tol = 2.0 * sc.doc.ModelAbsoluteTolerance
 
-        for iA in 0,1,2:
+        for iA in range(len(cs)-1):
             cA = cs[iA]
             if not found[iA][0]:
                 ptA = cA.PointAtStart
-                for iB in range(1+iA,4):
+                for iB in range(1+iA, len(cs)):
                     cB = cs[iB]
                     if ptA.DistanceTo(cB.PointAtStart) <= tol:
                         found[iA][0] = True
@@ -774,7 +817,7 @@ def createSurface(rhCrvs_In, **kwargs):
 
             if not found[iA][1]:
                 ptA = cA.PointAtEnd
-                for iB in range(1+iA,4):
+                for iB in range(1+iA, len(cs)):
                     cB = cs[iB]
                     if ptA.DistanceTo(cB.PointAtStart) <= tol:
                         found[iA][1] = True
@@ -791,32 +834,81 @@ def createSurface(rhCrvs_In, **kwargs):
 
         return False
 
-    if doAnyCurvesCompletelyOverlap(geoms_Nurbs):
+    if doAnyCrvsCompletelyOverlap(cs_In):
         return None, "Some edges/trims completely overlap."
 
-    if not doTrimsFormAClosedLoop(geoms_Nurbs):
-        print "No matching endpoint of some curves found,",
-        rc = trimNurbsAsNeededToCloseLoop(geoms_Nurbs)
-        geoms_Nurbs_ClosedLoop = rc
-        if not doTrimsFormAClosedLoop(geoms_Nurbs_ClosedLoop):
-            print " and attempt ot split some trims at intersections failed."
+
+    geoms_Nurbs = [spb.getNurbsGeomFromGeom(geom, iContinuity, bEcho) for geom in geoms_In]
+    if not geoms_Nurbs: return
+
+    #for nc in [getCurveOfNurbs(geom) for geom in geoms_As_Nurbs]:
+    #    sc.doc.Objects.AddCurve(nc)
+    #return
+
+
+    def addGeoms(geoms, bRedraw=True):
+        try: geoms = list(geoms)
+        except: geoms = [geoms]
+        for geom in geoms:
+            if isinstance(geom, tuple):
+                sc.doc.Objects.AddSurface(geom[1])
+            if isinstance(geom, rg.Curve):
+                sc.doc.Objects.AddCurve(geom)
+        if bRedraw: sc.doc.Views.Redraw()
+
+
+    cs_R = [getCurveOfNurbs(geom) for geom in geoms_Nurbs]
+
+    if (len(rhCrvs_In) == 4):
+        if not doCrvsFormAClosedLoop(cs_R):
+            s = "No matching endpoint of some curves found, "
+            geoms_Nurbs = trimNurbsAtCrvIntersections(geoms_Nurbs)
+            cs_R = [getCurveOfNurbs(geom) for geom in geoms_Nurbs]
+            if not doCrvsFormAClosedLoop(cs_R):
+                print s + "and attempt ot split some trims at intersections failed."
+                return
+            print s + "but attempt ot split some trims at intersections succeeded."
+    else: # 3 curves.
+        pCrvs = rg.Curve.JoinCurves(cs_R, sc.doc.ModelAbsoluteTolerance)
+
+        if len(pCrvs) == 1 and pCrvs[0].IsClosed:
+            print "3-curve input join into a closed loop.  This is not (yet) supported."
             return
-        print " but attempt ot split some trims at intersections succeeded."
-    else:
-        geoms_Nurbs_ClosedLoop = geoms_Nurbs
 
+        if len(pCrvs) > 1:
+            if len(pCrvs) == 1 and pCrvs[0].IsClosed:
+                print "Input forms a Single, closed loop."
+                return
 
+            s = "Curve do not form a single open loop, "
+            geoms_Nurbs = trimNurbsAtCrvIntersections(geoms_Nurbs)
+            cs_R = [getCurveOfNurbs(geom) for geom in geoms_Nurbs]
 
-    cs = [getCurveOfNurbs(geom) for geom in geoms_Nurbs_ClosedLoop]
+            pCrvs = rg.Curve.JoinCurves(cs_R, sc.doc.ModelAbsoluteTolerance)
 
-    #for c in cs:
-    #    sc.doc.Objects.AddCurve(c)
-    #sc.doc.Views.Redraw(); return
+            if len(pCrvs) != 1:
+                print s + "and attempt ot split some trims at intersections failed."
+                return
+            print s + "but attempt ot split some trims at intersections succeeded."
 
+        # TODO: Clean this.
+        #addGeoms(geoms_Nurbs); return
+        joined = rg.Curve.JoinCurves(cs_R, sc.doc.ModelAbsoluteTolerance)
+        polyCrv = joined[0]
+        #print polyCrv.SegmentCount
+        nc_4th = rg.LineCurve(polyCrv.PointAtStart, polyCrv.PointAtEnd).ToNurbsCurve()
+        #print new_NC
+        cs_R.append(nc_4th)
+        geoms_Nurbs.append((nc_4th, None))
+        #addGeoms(new_NC); return
 
-    rgB_Res = rg.Brep.CreateEdgeSurface(cs)
+    rgB_Res = rg.Brep.CreateEdgeSurface(cs_R)
     if rgB_Res is None:
-        raise ValueError("CreateEdgeSurface returned None.")
+        return None, "CreateEdgeSurface returned None."
+
+    if rgB_Res.Surfaces.Count != 1:
+        sc.doc.Objects.AddBrep(rgB_Res)
+        return None, "Polyface brep with no continuity matching added to document."
 
     ns_Coons = rgB_Res.Surfaces[0]
 
@@ -835,13 +927,21 @@ def createSurface(rhCrvs_In, **kwargs):
 
     # Match references to the Coons.
     cs_C = [getIsoCurveOfSide(s, ns_Coons) for s in (W,S,E,N)]
-    cs_R = [getCurveOfNurbs(geom) for geom in geoms_Nurbs_ClosedLoop]
 
     idx_R_per_CoonsWSEN = spb.findMatchingCurveByEndPoints(
         cs_C, cs_R, bEcho)
     if idx_R_per_CoonsWSEN is None: return
 
-    geoms_Nurbs_SideMatched = [geoms_Nurbs_ClosedLoop[i] for i in idx_R_per_CoonsWSEN]
+    if len(rhCrvs_In) == 3:
+        # Last item in geoms_Nurbs_SideMatched is the added NC.
+        side_Loose = (W,S,E,N)[idx_R_per_CoonsWSEN.index(3)]
+        if bDebug: print "Side of EdgeSrf with open input: {}".format(side_Loose)
+        sides_Loose = side_Loose,
+    else:
+        sides_Loose = ()
+
+
+    geoms_Nurbs_SideMatched = [geoms_Nurbs[i] for i in idx_R_per_CoonsWSEN]
 
     # Align each reference to the Coons by side and parameterization.
     # This results in opposite u x v directions between each Refernce and the Coons.
@@ -852,7 +952,6 @@ def createSurface(rhCrvs_In, **kwargs):
             geoms_Nurbs_SideMatched[i], ns_Coons, side)
         if rc is None: return
         geoms_Nurbs_AR[side] = rc
-
 
     # Match reference curve or surface degrees to Coons patch surface in relevant direction.
 
@@ -956,6 +1055,19 @@ def createSurface(rhCrvs_In, **kwargs):
         iRowLn = len(idxPts['M',0])
 
 
+        def setModifyRowEnd(side, sides_loose):
+            if side in (W,E):
+                bModifyRowEnd_T0 = S in sides_loose
+                bModifyRowEnd_T1 = N in sides_Loose
+            else:
+                bModifyRowEnd_T0 = W in sides_loose
+                bModifyRowEnd_T1 = E in sides_Loose
+            return bModifyRowEnd_T0, bModifyRowEnd_T1
+
+
+        rc = setModifyRowEnd(side, sides_Loose)
+        bModifyRowEnd_T0, bModifyRowEnd_T1 = rc
+
         # G0 row is already set.
 
         ns_M_G1 = spb.setContinuity_G1(
@@ -964,7 +1076,8 @@ def createSurface(rhCrvs_In, **kwargs):
             side_M=side,
             nurbs_R=ns_R,
             side_R=side,
-            bModifyRowEnds=False,
+            bModifyRowEnd_T0=bModifyRowEnd_T0,
+            bModifyRowEnd_T1=bModifyRowEnd_T1,
             )
 
         if ns_M_G1 is None:
@@ -995,7 +1108,8 @@ def createSurface(rhCrvs_In, **kwargs):
                 side_M=side,
                 nurbs_R=ns_R,
                 side_R=side,
-                bModifyRowEnds=False,
+                bModifyRowEnd_T0=bModifyRowEnd_T0,
+                bModifyRowEnd_T1=bModifyRowEnd_T1,
                 bDebug=bDebug,
                 bAddPts=True,
                 )

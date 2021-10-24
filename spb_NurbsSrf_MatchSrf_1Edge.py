@@ -29,7 +29,7 @@ Send any questions, comments, or script development service needs to @spb on the
         Now matches to surface of lesser degree.
         Bug fixes.
 211003: Changed verbage of a command option.
-211008-23: Bug fix when transferring knot vector.
+211008-24: Bug fix when transferring knot vector.
         Refactored for easier use as a module by other scripts.
 """
 
@@ -413,27 +413,6 @@ def getInput_Ref(objref_SrfToMod):
             if go.Option().Index == idxs_Opt[key]:
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
-
-
-def getGeomFromObjRef(objref):
-    """ Returns BrepTrim, (wire) Curve, or None """
-
-    if not isinstance(objref, rd.ObjRef): return
-
-    trim = objref.Trim()
-
-    if trim is not None:
-        return trim
-
-    edge = objref.Edge()
-    if edge is not None:
-        if len(edge.TrimIndices()) == 1:
-            trim = edge.Brep.Trims[edge.TrimIndices()[0]]
-            return trim
-            #if trim.IsoStatus in (W, S, N, E):
-            #    return trim
-
-    return objref.Curve()
 
 
 def makeNonRational(nurbsGeom, tol=1e-9):
@@ -887,7 +866,7 @@ def getShrunkNurbsSrfFromGeom(geom_R_In, bUseUnderlyingIsoCrvs):
     return iso_Out, trimmed.ToNurbsSurface()
 
 
-def getNurbsGeomFromGeom(In, bEcho=True):
+def getNurbsGeomFromGeom(In, iContinuity, bEcho=True):
     """
     Returns 4-item list containing any combination of tuples of:
         (IsoStatus, NurbsSurface),
@@ -909,6 +888,15 @@ def getNurbsGeomFromGeom(In, bEcho=True):
             return In.ToNurbsCurve(), None
         ncs_TanNS = [getIsoCurveOfSide(side, ns_Tan) for side in (W,S,E,N)]
         idxB = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bEcho=bEcho)[0]
+        if bEcho:
+            if not srf.IsPlanar(1e-9):
+                s = "Non-isocurve trim of a non-planar surface picked."
+                if iContinuity == 2:
+                    s += "  G2 will probably not be achieved"
+                if iContinuity > 0:
+                    s += "  G1 may only be approximately achieved."
+                    s += "  Use _EdgeContinuity to check results."
+                print s
         return (W,S,E,N)[idxB], ns_Tan
 
     return trim.IsoStatus, srf.ToNurbsSurface()
@@ -1166,7 +1154,8 @@ def setContinuity_G1(**kwargs):
         side_M: IsoStatus
         nurbs_R: NurbsSurface or NurbsCurve (for planar surface)
         side_R: IsoStatus
-        bModifyRowEnds: bool
+        bModifyRowEnd_T0: bool
+        bModifyRowEnd_T1: bool
     Returns
     """
 
@@ -1180,11 +1169,13 @@ def setContinuity_G1(**kwargs):
     side_M = get_kwarg('side_M')
     nurbs_R = get_kwarg('nurbs_R')
     side_R = get_kwarg('side_R')
-    bModifyRowEnds = get_kwarg('bModifyRowEnds')
+    bModifyRowEnd_T0 = get_kwarg('bModifyRowEnd_T0')
+    bModifyRowEnd_T1 = get_kwarg('bModifyRowEnd_T1')
 
 
-    if isinstance(nurbs_R, rg.NurbsCurve):
-        return
+    if isinstance(nurbs_R, rg.NurbsCurve): return
+
+    ns_R = nurbs_R
 
     bValid, sLog = ns_M_In.IsValidWithLog()
     if not bValid: print sLog; return
@@ -1193,25 +1184,24 @@ def setContinuity_G1(**kwargs):
     ns_M_Out = ns_M_In.Duplicate()
     ptsM_BeforeAnyMatching = [cp.Location for cp in ns_M_BeforeAnyMatching.Points]
     ptsM_Out = [cp.Location for cp in ns_M_In.Points]
-    ptsR = [cp.Location for cp in nurbs_R.Points]
+    ptsR = [cp.Location for cp in ns_R.Points]
 
     # Points are ordered (u0,v0), (u0,v1), ..., (un,vn).
-
-    ns_R = nurbs_R
 
 
     idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
     for i in 0,1:
-        idxPts['M',i] = getPtRowIndicesPerG(ns_M_In, side_M, i)
-        idxPts['R',i] = getPtRowIndicesPerG(nurbs_R, side_R, i)
-
+        idxPts['M',i] = getPtRowIndicesPerG(ns_M_In, side_M, iG=i)
+        idxPts['R',i] = getPtRowIndicesPerG(ns_R, side_R, iG=i)
 
     iRowLn = len(idxPts['M',0])
 
 
     # Set G1 row colinear with reference.
-    if bModifyRowEnds: Range = range(0, iRowLn-1+1)
-    else:              Range = range(1, iRowLn-2+1)
+
+    range_start = 0 if bModifyRowEnd_T0 else 1
+    range_stop = iRowLn-1+1 if bModifyRowEnd_T1 else iRowLn-2+1
+    Range = range(range_start, range_stop)
 
     for i in Range:
         iM0 = idxPts['M',0][i]
@@ -1232,7 +1222,13 @@ def setContinuity_G1(**kwargs):
     # Determine the average ratio of the G0-G1 point distances of surface
     # to match to the same of reference surface.
     fDistRatios = []
-    for i in 0, iRowLn-1:
+
+    if bModifyRowEnd_T0 != bModifyRowEnd_T1:
+        sample = (0,) if not bModifyRowEnd_T0 else (iRowLn-1,)
+    else:
+        sample = 0, iRowLn-1
+
+    for i in sample:
         iM0 = idxPts['M',0][i]
         iM1 = idxPts['M',1][i]
         iR1 = idxPts['R',1][i]
@@ -1242,27 +1238,16 @@ def setContinuity_G1(**kwargs):
         fDistRatios.append(fRatio)
     fAvgDistRatio = sum(fDistRatios) / float(len(fDistRatios))
 
-    if bModifyRowEnds:
-        # Set tangential row using the multiple of the average ratio
-        # to the G0-G1 point distances of reference surface.
-        for i in range(0, iRowLn):
-            iM0 = idxPts['M',0][i]
-            vG0G1_R = ptsM_Out[iM0] - ptsR[idxPts['R',1][i]]
-            vG0G1_A_toSet = fAvgDistRatio * vG0G1_R
-            pt_To = ptsM_Out[iM0] + vG0G1_A_toSet
-            iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, idxPts['M',1][i])
-            ns_M_Out.Points.SetPoint(iUT_A, iVT_A, pt_To)
-    else:
-        for i in range(1, iRowLn-2+1):
-            iM0 = idxPts['M',0][i]
-            iM1 = idxPts['M',1][i]
-            iR1 = idxPts['R',1][i]
-            vG0G1_R = ptsM_Out[iM0] - ptsR[iR1]
-            vG0G1_A_toSet = fAvgDistRatio * vG0G1_R
-            pt_To = ptsM_Out[iM0] + vG0G1_A_toSet
-            #sc.doc.Objects.AddPoint(pt_To)
-            iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, iM1)
-            ns_M_Out.Points.SetPoint(iUT_A, iVT_A, pt_To)
+    # Set tangential row using the multiple of the average G0-G1 point distance(s) ratio
+    for i in Range:
+        iM0 = idxPts['M',0][i]
+        iM1 = idxPts['M',1][i]
+        iR1 = idxPts['R',1][i]
+        vG0G1_R = ptsM_Out[iM0] - ptsR[iR1]
+        vG0G1_A_toSet = fAvgDistRatio * vG0G1_R
+        pt_To = ptsM_Out[iM0] + vG0G1_A_toSet
+        iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, iM1)
+        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, pt_To)
 
     return ns_M_Out
 
@@ -1275,14 +1260,15 @@ def setContinuity_G2(**kwargs):
         side_M: IsoStatus
         nurbs_R: NurbsSurface or NurbsCurve
         side_R: IsoStatus
-        bModifyRowEnds: bool
+        bModifyRowEnd_T0: bool
+        bModifyRowEnd_T1: bool
         bDebug: bool
         bAddPts: bool
     Returns
     """
 
     def get_kwarg(key):
-        if key not in kwargs and key != 'plane_R':
+        if key not in kwargs:
             raise ValueError("{} missing from provided parameters.".format(key))
         return kwargs[key] if key in kwargs else None
 
@@ -1291,12 +1277,12 @@ def setContinuity_G2(**kwargs):
     side_M = get_kwarg('side_M')
     nurbs_R = get_kwarg('nurbs_R')
     side_R = get_kwarg('side_R')
-    bModifyRowEnds = get_kwarg('bModifyRowEnds')
+    bModifyRowEnd_T0 = get_kwarg('bModifyRowEnd_T0')
+    bModifyRowEnd_T1 = get_kwarg('bModifyRowEnd_T1')
     bDebug = get_kwarg('bDebug')
     bAddPts = get_kwarg('bAddPts')
 
-    if isinstance(nurbs_R, rg.NurbsCurve):
-        return
+    if isinstance(nurbs_R, rg.NurbsCurve): return
 
     ns_R = nurbs_R
 
@@ -1307,7 +1293,7 @@ def setContinuity_G2(**kwargs):
     ns_M_Out = ns_M_In.Duplicate()
     ptsM_BeforeAnyMatching = [cp.Location for cp in ns_M_BeforeAnyMatching.Points]
     ptsM_Out = [cp.Location for cp in ns_M_In.Points]
-    ptsR = [cp.Location for cp in nurbs_R.Points]
+    ptsR = [cp.Location for cp in ns_R.Points]
 
     # Points are ordered (u0,v0), (u0,v1), ..., (un,vn).
 
@@ -1315,7 +1301,7 @@ def setContinuity_G2(**kwargs):
     idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
     for i in 0,1,2:
         idxPts['M',i] = getPtRowIndicesPerG(ns_M_In, side_M, iG=i)
-        idxPts['R',i] = getPtRowIndicesPerG(nurbs_R, side_R, iG=i)
+        idxPts['R',i] = getPtRowIndicesPerG(ns_R, side_R, iG=i)
 
     iRowLn = len(idxPts['M',0])
 
@@ -1337,7 +1323,7 @@ def setContinuity_G2(**kwargs):
         degree = ns.Degree(int(side_Match in (S,N)))
         return float(degree - 1) / float(degree)
 
-    
+
     mA_Deg = multiplierForDegree(ns_M_Out, side_M)
 
     mR_Deg = multiplierForDegree(ns_R, side_R)
@@ -1379,9 +1365,9 @@ def setContinuity_G2(**kwargs):
     mA_Knots = multiplierForAdjacentSimpleKnots(ns_M_Out, side_M)
     mR_Knots = multiplierForAdjacentSimpleKnots(ns_R, side_R)
 
-    if bModifyRowEnds: Range = range(0, iRowLn-1+1)
-    else:              Range = range(2, iRowLn-3+1)
-
+    range_start = 0 if bModifyRowEnd_T0 else 2
+    range_stop = iRowLn-1+1 if bModifyRowEnd_T1 else iRowLn-3+1
+    Range = range(range_start, range_stop)
 
     for i in Range:
         a0 = r0 = ptsR[idxPts['R',0][i]]
@@ -1412,10 +1398,10 @@ def setContinuity_G2(**kwargs):
     return ns_M_Out
 
 
-def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
+def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kwargs):
     """
     Parameters:
-        ns_M: NurbsSurface to modify.
+        ns_M_In: NurbsSurface to modify (duplicate).
         side_M=side_M,
         geom_R: BrepTrim or Curve for wire=geom_R_In,
         bMatchWithParamsAligned: bool
@@ -1425,7 +1411,7 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
         bMaintainDegree=bMaintainDegree,
         bDebug=bDebug,
 
-    Returns on success: rg.NurbsSurface
+    Returns on success: New rg.NurbsSurface, int(continuity processed, not necessarily fully achieved)
     Returns on fail: None
     """
 
@@ -1440,9 +1426,12 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
     bAddPts = getOpt('bAddPts')
 
 
-    geom_R_In = geom_R
+    if iContinuity == 2:
+        if isinstance(geom_R_In, rg.BrepTrim):
+           if geom_R_In.IsoStatus == rg.IsoStatus.None:
+                iContinuity = 1
 
-    bValid, sLog = ns_M.IsValidWithLog()
+    bValid, sLog = ns_M_In.IsValidWithLog()
     if not bValid: print sLog; return
 
 
@@ -1455,7 +1444,7 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
     geom_R_Nurbs = getShrunkNurbsSrfFromGeom(geom_R_In, bUseUnderlyingIsoCrvs)
 
     if geom_R_Nurbs is None:
-        geom_R_Nurbs = getNurbsGeomFromGeom(geom_R_In)
+        geom_R_Nurbs = getNurbsGeomFromGeom(geom_R_In, iContinuity, bEcho)
         if not geom_R_Nurbs: return
 
         if isinstance(geom_R_Nurbs[1], rg.NurbsSurface):
@@ -1479,7 +1468,7 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
 
 
     rc = createAlignedRefGeom(
-        geom_R_Nurbs, ns_M, side_M, bMatchWithParamsAligned)
+        geom_R_Nurbs, ns_M_In, side_M, bMatchWithParamsAligned)
     if rc is None: return
     nurbs_R = rc
 
@@ -1500,7 +1489,7 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
 
 
 
-    ns_WIP = ns_M.Duplicate()
+    ns_WIP = ns_M_In.Duplicate()
 
     ns_R_In = nurbs_R.Duplicate()
 
@@ -1665,6 +1654,24 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
 
     ns_M_BeforeAnyMatching = ns_WIP.Duplicate()
 
+
+    def areInOutEpsilonEqual(In, Out):
+        epsilon = 1e-6
+        if Out.EpsilonEquals(In, epsilon):
+            while True:
+                eps_prev = epsilon
+                epsilon /= 10.0
+                if not Out.EpsilonEquals(In, epsilon):
+                    sc.escape_test()
+                    break
+            if bEcho:
+                print "Input and output NURBS surfaces are EpsilonEqual within {}." \
+                    "  No change.".format(eps_prev)
+            Out.Dispose()
+            return True
+        return False
+
+
     ns_M_G0 = setContinuity_G0(
         ns_M_In=ns_M_BeforeAnyMatching,
         side_M=side_Both,
@@ -1677,7 +1684,8 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
 
     if iContinuity == 0:
         if bEcho: print "Modified surface toward G0."
-        return ns_M_G0
+        if areInOutEpsilonEqual(ns_M_BeforeAnyMatching, ns_M_G0): return
+        return ns_M_G0, 0
 
     ns_M_G1 = setContinuity_G1(
         ns_M_BeforeAnyMatching=ns_M_BeforeAnyMatching,
@@ -1685,14 +1693,17 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
         side_M=side_Both,
         nurbs_R=nurbs_R,
         side_R=side_Both,
-        bModifyRowEnds=True,
+        bModifyRowEnd_T0=True,
+        bModifyRowEnd_T1=True,
         )
 
     if ns_M_G1 is None:
+        if areInOutEpsilonEqual(ns_M_BeforeAnyMatching, ns_M_G0): return
         return ns_M_G0, 0
 
     if iContinuity == 1:
-       return ns_M_G1, 1
+        if areInOutEpsilonEqual(ns_M_BeforeAnyMatching, ns_M_G1): return
+        return ns_M_G1, 1
 
 
     ns_M_G2 = setContinuity_G2(
@@ -1701,14 +1712,17 @@ def createSurface(ns_M, side_M, geom_R, bMatchWithParamsAligned=True, **kwargs):
         side_M=side_Both,
         nurbs_R=nurbs_R,
         side_R=side_Both,
-        bModifyRowEnds=True,
+        bModifyRowEnd_T0=True,
+        bModifyRowEnd_T1=True,
         bDebug=bDebug,
         bAddPts=bAddPts,
         )
 
     if ns_M_G2 is None:
+        if areInOutEpsilonEqual(ns_M_BeforeAnyMatching, ns_M_G1): return
         return ns_M_G1, 1
 
+    if areInOutEpsilonEqual(ns_M_BeforeAnyMatching, ns_M_G1): return
     return ns_M_G2, 2
 
 
@@ -1727,6 +1741,25 @@ def processObjRefs(objref_M, objref_R, **kwargs):
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
     bAddPts = getOpt('bAddPts')
+
+
+    def getGeomFromObjRef(objref):
+        """ Returns BrepTrim, (wire) Curve, or None """
+
+        if not isinstance(objref, rd.ObjRef): return
+
+        trim = objref.Trim()
+
+        if trim is not None:
+            return trim
+
+        edge = objref.Edge()
+        if edge is not None:
+            if len(edge.TrimIndices()) == 1:
+                trim = edge.Brep.Trims[edge.TrimIndices()[0]]
+                return trim
+
+        return objref.Curve()
 
 
     geom_M_In = getGeomFromObjRef(objref_M)
@@ -1752,9 +1785,9 @@ def processObjRefs(objref_M, objref_R, **kwargs):
 
 
     rc = createSurface(
-        ns_M=ns_M,
+        ns_M_In=ns_M,
         side_M=side_M,
-        geom_R=geom_R_In,
+        geom_R_In=geom_R_In,
         bMatchWithParamsAligned=bMatchWithParamsAligned,
         iContinuity=iContinuity,
         iPreserveOtherEnd=iPreserveOtherEnd,
@@ -1765,27 +1798,14 @@ def processObjRefs(objref_M, objref_R, **kwargs):
         bAddPts=bAddPts,
         )
 
-    if rc[0] is None:
+    if rc is None:
         print "Surface could not be created."
         return
 
     ns_Ret, iG = rc
 
-    epsilon = 1e-6
-    if ns_Ret.EpsilonEquals(ns_M, epsilon):
-        while True:
-            eps_prev = epsilon
-            epsilon /= 10.0
-            if not ns_Ret.EpsilonEquals(ns_M, epsilon):
-                sc.escape_test()
-                break
-        print "Output surface EpsilonEquals input within {}.  No change.".format(eps_prev)
-        ns_Ret.Dispose()
-        return
-
     if bEcho:
-        print "Output continuity is near G{}, if not exact." \
-            "  Use _EdgeContinuity to check results.".format(iG)
+        print "Continuity was modified toward G{}.".format(iG)
 
     if not bReplace:
         gB_Out = sc.doc.Objects.AddSurface(ns_Ret)

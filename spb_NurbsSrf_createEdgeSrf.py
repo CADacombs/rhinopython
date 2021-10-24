@@ -3,13 +3,12 @@ As an alternative to _EdgeSrf, this script:
 1. Matches unionizes knot vectors more exactly.
 2. Offers face-face continuity above G0.
 
-Send any questions, comments, or business inquiries to @spb on the McNeel Forums: https://discourse.mcneel.com/
+Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 """
-211013-22: Created.
+211013-23: Created.
 
 TODO:
-    Add support for G2 continuity.
     Add support for 3-curve input.
     Improve continuity when input includes edges of rational surfaces.
     Allow continuity choice per edge with preview.
@@ -21,7 +20,7 @@ import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
 
-import spb_NurbsSrf_MatchSrf_1Edge
+import spb_NurbsSrf_MatchSrf_1Edge as spb
 
 
 W = rg.IsoStatus.West
@@ -41,9 +40,9 @@ class Opts:
 
 
     key = 'iContinuity'; keys.append(key)
-    values[key] = 1
+    values[key] = 2
     names[key] = 'ContinuityTarget'
-    listValues[key] = 'G0', 'G1'
+    listValues[key] = 'G0', 'G1', 'G2'
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
@@ -497,129 +496,121 @@ def trimNurbsAsNeededToCloseLoop(ngs):
     return ngs_Out
 
 
-def areSrfParamsAlignedAlongMatchingSides(ns_A, side_A, ns_B, side_B):
+def createAlignedRefGeom_PerStart(geom_R_In, ns_M, side_M):
     """
-    """
+    Variation to a function in spb_Match1 in that
+    the start locations of the edges are used to determine whether
+    NS or NC needs to be reversed.
 
-    def getSideEndPtsInAscendingSrfParam(ns, side):
-        cps = ns.Points
-        pt_SW = cps.GetControlPoint(           0,            0).Location
-        pt_SE = cps.GetControlPoint(cps.CountU-1,            0).Location
-        pt_NE = cps.GetControlPoint(cps.CountU-1, cps.CountV-1).Location
-        pt_NW = cps.GetControlPoint(           0, cps.CountV-1).Location
-        if side == E:
-            return pt_SE, pt_NE
-        elif side == W:
-            return pt_SW, pt_NW
-        elif side == S:
-            return pt_SW, pt_SE
-        elif side == N:
-            return pt_NW, pt_NE
-        else:
-            raise ValueError("{} is not a valid side.".format(side))
-
-
-    pts_A = getSideEndPtsInAscendingSrfParam(ns_A, side_A)
-    pts_B = getSideEndPtsInAscendingSrfParam(ns_B, side_B)
-
-    #for pt in pts_A: sc.doc.Objects.AddPoint(pt)
-    #for pt in pts_B: sc.doc.Objects.AddPoint(pt)
-
-    tol = 2.0 * sc.doc.ModelAbsoluteTolerance
-
-    if (
-        (pts_A[0].DistanceTo(pts_B[0]) < tol) and 
-        (pts_A[1].DistanceTo(pts_B[1]) < tol)
-    ):
-        return True
-
-    if (
-        (pts_A[0].DistanceTo(pts_B[1]) < tol) and 
-        (pts_A[1].DistanceTo(pts_B[0]) < tol)
-    ):
-        return False
-
-    #sc.doc.Objects.AddSurface(ns_A)
-    #sc.doc.Objects.AddSurface(ns_B)
-    #sc.doc.Views.Redraw()
-
-
-    raise Exception("The 2 sides' positions do not match.")
-
-
-def createAlignedRefGeom(geom_R_In, ns_Coons, side_C, bEcho=True):
-    """
     Returns either
-        NurbsSurface with parameterizations aligned or
-        NurbsCurve with parameterization aligned with Coons
-    with working NS.
+        NurbsSurface with parameterizations aligned with ns_M along side_M or
+        NurbsCurve with parameterization aligned with ns_M
     """
 
-    c_C = getIsoCurveOfSide(side_C, ns_Coons)
-    #cs_R = getCurveOfNurbs(geom_R_In)
 
-    #idx_R_per_A = spb_NurbsSrf_MatchSrf_1Edge.findMatchingCurveByEndPoints(cs_C, cs_R, bEcho)
-    #if idx_R_per_A is None: return
+    def areSrfParamsAlignedAlongMatchingSides(ns_A, side_A, ns_B, side_B):
+        """
+        """
+
+        def getSideEndPtsInAscendingSrfParam(ns, side):
+            cps = ns.Points
+            pt_SW = cps.GetControlPoint(           0,            0).Location
+            pt_SE = cps.GetControlPoint(cps.CountU-1,            0).Location
+            pt_NE = cps.GetControlPoint(cps.CountU-1, cps.CountV-1).Location
+            pt_NW = cps.GetControlPoint(           0, cps.CountV-1).Location
+            if side == E:
+                return pt_SE, pt_NE
+            elif side == W:
+                return pt_SW, pt_NW
+            elif side == S:
+                return pt_SW, pt_SE
+            elif side == N:
+                return pt_NW, pt_NE
+            else:
+                raise ValueError("{} is not a valid side.".format(side))
 
 
-    def createAlignedRefSrfs(side_C, ns_R, side_R):
-        if side_C == side_R:
+        pts_A = getSideEndPtsInAscendingSrfParam(ns_A, side_A)
+        pts_B = getSideEndPtsInAscendingSrfParam(ns_B, side_B)
+
+        #for pt in pts_A: sc.doc.Objects.AddPoint(pt)
+        #for pt in pts_B: sc.doc.Objects.AddPoint(pt)
+
+        tol = 2.0 * sc.doc.ModelAbsoluteTolerance
+
+        if (
+            (pts_A[0].DistanceTo(pts_B[0]) < tol) and 
+            (pts_A[1].DistanceTo(pts_B[1]) < tol)
+        ):
+            return True
+
+        if (
+            (pts_A[0].DistanceTo(pts_B[1]) < tol) and 
+            (pts_A[1].DistanceTo(pts_B[0]) < tol)
+        ):
+            return False
+
+        #sc.doc.Objects.AddSurface(ns_A)
+        #sc.doc.Objects.AddSurface(ns_B)
+        #sc.doc.Views.Redraw()
+
+
+        raise Exception("The 2 sides' positions do not match.")
+
+
+    def createAlignedRefSrfs(side_M, ns_R, side_R):
+        """
+        Notes:
+        ns_R.Reverse(int direction, bool inPlace)
+        Transpose(bool inPlace)
+        """
+
+        if side_M == side_R:
             pass
-        elif side_C in (S, N) and side_R in (S, N):
-            if isinstance(ns_R.Reverse(1, True), rg.NurbsSurface):
-                pass
-        elif side_C in (W, E) and side_R in (W, E):
-            if isinstance(ns_R.Reverse(0, True), rg.NurbsSurface):
-                pass
+        elif side_M in (S, N) and side_R in (S, N):
+            ns_R.Reverse(1, True)
+        elif side_M in (W, E) and side_R in (W, E):
+            ns_R.Reverse(0, True)
         else:
-            if isinstance(ns_R.Transpose(True), rg.NurbsSurface):
-                if side_C == W and side_R == S:
-                    pass
-                elif side_C == W and side_R == N:
-                    if isinstance(ns_R.Reverse(0, True), rg.NurbsSurface):
-                        pass
-                elif side_C == S and side_R == E:
-                    if isinstance(ns_R.Reverse(1, True), rg.NurbsSurface):
-                        pass
-                elif side_C == S and side_R == W:
-                    pass
-                elif side_C == E and side_R == N:
-                    pass
-                elif side_C == E and side_R == S:
-                    if isinstance(ns_R.Reverse(0, True), rg.NurbsSurface):
-                        pass
-                elif side_C == N and side_R == W:
-                    if isinstance(ns_R.Reverse(1, True), rg.NurbsSurface):
-                        pass
-                elif side_C == N and side_R == E:
-                    pass
-                else:
-                    raise Exception("What happened?")
+            ns_R.Transpose(True)
 
+            if side_M == S and side_R == E:
+                ns_R.Reverse(1, True)
+            elif side_M == S and side_R == W:
+                pass
+            elif side_M == E and side_R == N:
+                pass
+            elif side_M == E and side_R == S:
+                ns_R.Reverse(0, True)
+            elif side_M == N and side_R == W:
+                ns_R.Reverse(1, True)
+            elif side_M == N and side_R == E:
+                pass
+            elif side_M == W and side_R == S:
+                pass
+            elif side_M == W and side_R == N:
+                ns_R.Reverse(0, True)
+            else:
+                raise Exception("What happened?")
 
         if (not areSrfParamsAlignedAlongMatchingSides(
-            ns_Coons, side_C, ns_R, side_C)
+            ns_M, side_M, ns_R, side_M)
         ):
-            if side_C in (S, N):
-                if isinstance(ns_R.Reverse(0, True), rg.NurbsSurface):
-                    pass
-            else:
-                if isinstance(ns_R.Reverse(1, True), rg.NurbsSurface):
-                    pass
+            ns_R.Reverse(0 if side_M in (S, N) else 1, True)
 
 
-    geom_R = geom_R_In
+    if isinstance(geom_R_In[1], rg.NurbsSurface):
+        side_R, ns_R = geom_R_In
+        rc = createAlignedRefSrfs(side_M, ns_R, side_R)
+        return ns_R # Don't bother returning IsoStatus since R now matches that of M.
 
-    if isinstance(geom_R[1], rg.NurbsSurface):
-        side_R, ns_R = geom_R
-        rc = createAlignedRefSrfs(side_C, ns_R, side_R)
-        return ns_R, None
-
-    c_R = geom_R[0]
-    if not rg.Curve.DoDirectionsMatch(c_C, c_R):
+    # Reference alignment is per Edge.
+    c_M = getIsoCurveOfSide(side_M, ns_M)
+    c_R = geom_R_In[0]
+    if not rg.Curve.DoDirectionsMatch(c_M, c_R):
         c_R.Reverse()
 
-    return c_R, geom_R[1]
+    return c_R # Don't bother returning tuple since none is needed for NS.
 
 
 def transferUniqueKnotVector(nurbsA, nurbsB, sideA=None, sideB=None, paramTol=None):
@@ -683,6 +674,10 @@ def transferUniqueKnotVector(nurbsA, nurbsB, sideA=None, sideB=None, paramTol=No
     return knotCount(nurbsB, sideB) > knotCt_In
 
 
+def getUvIdxFromNsPoint1dIdx(ns, idxFlat):
+    return idxFlat // ns.Points.CountV, idxFlat % ns.Points.CountV
+
+
 def createSurface(rhCrvs_In, **kwargs):
     """
     rhCrvs_In: Can be ObjRefs or Geometry of any Curve, including BrepEdge.
@@ -707,7 +702,7 @@ def createSurface(rhCrvs_In, **kwargs):
     geoms_In = []
     for rhCrv_In in rhCrvs_In:
         if isinstance(rhCrv_In, rd.ObjRef):
-            rc = spb_NurbsSrf_MatchSrf_1Edge.getGeomFromObjRef(rhCrv_In)
+            rc = spb.getGeomFromObjRef(rhCrv_In)
             if rc is None: return
             geoms_In.append(rc)
         else:
@@ -742,7 +737,7 @@ def createSurface(rhCrvs_In, **kwargs):
         return None, "2 edges of the same isostatus of the same surface were selected."
 
 
-    geoms_Nurbs = [spb_NurbsSrf_MatchSrf_1Edge.getNurbsGeomFromGeom(geom) for geom in geoms_In]
+    geoms_Nurbs = [spb.getNurbsGeomFromGeom(geom) for geom in geoms_In]
     if not geoms_Nurbs: return
 
     #for nc in [getCurveOfNurbs(geom) for geom in geoms_As_Nurbs]:
@@ -826,16 +821,8 @@ def createSurface(rhCrvs_In, **kwargs):
     ns_Coons = rgB_Res.Surfaces[0]
 
 
-    def makeNonRationalIfNear(ns):
-        weights = []
-        for iU in range(ns.Points.CountU):
-            for iV in range(ns.Points.CountV):
-                weights.append(ns.Points.GetWeight(iU, iV))
-        if abs(1.0 - max(weights)) < 1e-9:
-            ns.MakeNonRational()
-
     if ns_Coons.IsRational:
-        makeNonRationalIfNear(ns_Coons)
+        spb.makeNonRational(ns_Coons)
 
 
     # Brep.CreateEdgeSurface (always?) produces a surface with the
@@ -850,7 +837,7 @@ def createSurface(rhCrvs_In, **kwargs):
     cs_C = [getIsoCurveOfSide(s, ns_Coons) for s in (W,S,E,N)]
     cs_R = [getCurveOfNurbs(geom) for geom in geoms_Nurbs_ClosedLoop]
 
-    idx_R_per_CoonsWSEN = spb_NurbsSrf_MatchSrf_1Edge.findMatchingCurveByEndPoints(
+    idx_R_per_CoonsWSEN = spb.findMatchingCurveByEndPoints(
         cs_C, cs_R, bEcho)
     if idx_R_per_CoonsWSEN is None: return
 
@@ -859,19 +846,19 @@ def createSurface(rhCrvs_In, **kwargs):
     # Align each reference to the Coons by side and parameterization.
     # This results in opposite u x v directions between each Refernce and the Coons.
     geoms_Nurbs_AR = {}
-    planes_AR = {}
 
     for i, side in enumerate((W,S,E,N)):
-        rc = createAlignedRefGeom(geoms_Nurbs_SideMatched[i], ns_Coons, side)
+        rc = createAlignedRefGeom_PerStart(
+            geoms_Nurbs_SideMatched[i], ns_Coons, side)
         if rc is None: return
-        geoms_Nurbs_AR[side], planes_AR[side] = rc
+        geoms_Nurbs_AR[side] = rc
 
 
     # Match reference curve or surface degrees to Coons patch surface in relevant direction.
 
     bResults = []
     for side in W,S,E,N:
-        bResult = spb_NurbsSrf_MatchSrf_1Edge.transferHigherDegree(
+        bResult = spb.transferHigherDegree(
             ns_Coons, geoms_Nurbs_AR[side], side, side)
     bResults.append(bResult)
     if bDebug: print bResults
@@ -884,7 +871,7 @@ def createSurface(rhCrvs_In, **kwargs):
     # Match reference srf relevant domains to Coons patch srf.
     bResults = []
     for side in W,S,E,N:
-        bResult = spb_NurbsSrf_MatchSrf_1Edge.transferDomain(
+        bResult = spb.transferDomain(
             ns_Coons, geoms_Nurbs_AR[side], side, side)
     bResults.append(bResult)
     if bDebug: print bResults
@@ -892,7 +879,6 @@ def createSurface(rhCrvs_In, **kwargs):
     #for ns in geoms_ARs:
     #    sc.doc.Objects.AddSurface(ns)
     #sc.doc.Views.Redraw()
-
 
 
 
@@ -916,221 +902,148 @@ def createSurface(rhCrvs_In, **kwargs):
     if iContinuity == 0:
         return ns_Coons
 
-    if not any(isinstance(geoms_Nurbs_AR[key], rg.NurbsSurface) for key in geoms_Nurbs_AR):
-        if not any(planes_AR[key] for key in geoms_Nurbs_AR):
-            if bEcho: print "No underlying surface borders picked for reference to modify continuity."
-            return ns_Coons
-
-    if ns_Coons.Points.CountU == 3 and ns_Coons.Points.CountV == 3:
+    if ns_Coons.Points.CountU < 4 and ns_Coons.Points.CountV < 4:
         if bEcho: print "Not enough points to modify continuity."
         return ns_Coons
 
     if bEcho:
         iCt = sum(isinstance(geoms_Nurbs_AR[key], rg.NurbsSurface) for key in geoms_Nurbs_AR)
-        iCt += sum(bool(planes_AR[key]) for key in geoms_Nurbs_AR)
         print "Modifying continuity of up to {} sides.".format(iCt)
 
 
-    def getG0PtIndices(ns, side):
-        # Position.
-        cps = list(ns.Points)
-        ctV = ns.Points.CountV
-        ctAll = len(cps)
-        if side == W:
-            return range(ctV)
-        elif side == E:
-            return range(ctAll-ctV, ctAll)
-        elif side == S:
-            return range(0, ctAll, ctV)
-        elif side == N:
-            return range(ctV-1, ctAll, ctV)
 
-
-    def getG1PtIndices(ns, side):
-        # Tangency.
-        cps = list(ns.Points)
-        ctV = ns.Points.CountV
-        ctAll = len(cps)
-        if side == W:
-            return range(ctV, 2*ctV)
-        elif side == E:
-            return range(ctAll-2*ctV, ctAll-ctV)
-        elif side == S:
-            return range(1, ctAll, ctV)
-        elif side == N:
-            return range(ctV-2, ctAll, ctV)
-
-
-    def getUvFrom1dList(ns, idxFlat):
-        """
-        Convert the 1-dimensional index of Points to the U and V indices for use .
-        """
-        return idxFlat // ns.Points.CountV, idxFlat % ns.Points.CountV
-
+    ptsM_PreG1 = [cp.Location for cp in ns_Coons.Points]
 
     pts_G1_corners = {}
+    pts_G2_corners = {}
+
+    ns_WIP = ns_Coons.Duplicate()
 
 
-    ptsA_Start = [cp.Location for cp in ns_Coons.Points]
+    def areThereEnoughPtsToModify(side, iG):
+        if side in (W,E):
+            if ns_Coons.Points.CountU < 2*(iG+1):
+                if side == W:
+                    print "Not enough CPs to modify to G{} along U.".format(iG)
+                return False
+        else:
+            if ns_Coons.Points.CountV < 2*(iG+1):
+                if side == S:
+                    print "Not enough CPs to modify to G{} along V.".format(iG)
+                return False
+        return True
 
-    ns_M_WIP = ns_Coons.Duplicate()
 
-    for side in (W, S, E, N):
+    for side in W,S,E,N:
+
+        if not areThereEnoughPtsToModify(side, 1):
+            continue
 
         geom_AR = geoms_Nurbs_AR[side]
-        plane = planes_AR[side]
 
-        if plane is None and isinstance(geom_AR, rg.Curve):
+        if isinstance(geom_AR, rg.Curve):
             continue # Since surface is already G0.
 
         ns_R = geom_AR
 
-        # Positional row is already set.
+        #sc.doc.Objects.AddSurface(ns_R)
 
-        # Set tangential row.
-        ns_M_WIP = setContinuity(
-            ns_M_In=ns_M_Out,
-            side_M=side_Both,
-            nurbs_R=nurbs_R,
-            plane_R=plane,
-            side_R=side_Both,
-            iG=1,
+        idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
+        for i in range(iContinuity+1):
+            idxPts['M',i] = spb.getPtRowIndicesPerG(ns_Coons, side, i)
+            idxPts['R',i] = spb.getPtRowIndicesPerG(ns_R, side, i)
+
+        iRowLn = len(idxPts['M',0])
+
+
+        # G0 row is already set.
+
+        ns_M_G1 = spb.setContinuity_G1(
+            ns_M_BeforeAnyMatching=ns_Coons,
+            ns_M_In=ns_WIP,
+            side_M=side,
+            nurbs_R=ns_R,
+            side_R=side,
+            bModifyRowEnds=False,
             )
 
-        if ns_M_WIP is None: return
+        if ns_M_G1 is None:
+            continue
 
-
-        idxPts_G0_A = getG0PtIndices(ns_Coons, side)
-        idxPts_G0_R = getG0PtIndices(ns_R, side) if plane is None else None
-
-
-        idxPts_G1_A = getG1PtIndices(ns_Coons, side)
-        idxPts_G1_R = getG1PtIndices(ns_R, side) if plane is None else None
-
-        # Points-only lists for shorter subsquent code.
-        ptsA = [cp.Location for cp in ns_Coons.Points]
-        ptsR = [cp.Location for cp in ns_R.Points] if plane is None else None
-
-        # Points are ordered u0 v0, u0 v1, ..., un vn.
-
-        #for pt in ptsA:
-        #    sc.doc.Objects.AddPoint(pt)
-        #sc.doc.Views.Redraw()
-        #return
-
-
-        # Check and if necessary, match point indices of reference surface.
-
-        bValid, sLog = ns_Coons.IsValidWithLog()
-        if not bValid: print sLog; return
-
-
-        if plane is None:
-            # Set tangential row colinear with reference at closest point.
-            # Do not modify the ends of the row.  They must remain G0-matched with adjacent surfaces.
-            for idx in range(len(idxPts_G1_A)):# iG1_A, iG0_A, iG1_R in zip(idxPts_G1_A, idxPts_G0_A, idxPts_G1_R):
-                iG1_A = idxPts_G1_A[idx]
-                iG0_A = idxPts_G0_A[idx]
-                iG1_R = idxPts_G1_R[idx]
-                rgLine = rg.Line(ptsA[iG0_A], ptsR[iG1_R])
-                pt_To = rgLine.ClosestPoint(ptsA[iG1_A], limitToFiniteSegment=False)
-                iUT_A, iVT_A = getUvFrom1dList(ns_Coons, iG1_A)
-                ns_Coons.Points.SetPoint(
-                    iUT_A, iVT_A, pt_To, weight=ns_Coons.Points.GetWeight(iUT_A, iVT_A))
-
-
-            # Update.
-            ptsA = [cp.Location for cp in ns_Coons.Points]
-
-
-            # To obtain G1 continuity along edge, set the tangential row at a scale
-            # of the G0-G1 point distances of the reference surface.
-
-            # Determine the average ratio of the 2 end point G0-G1 point distances of surface
-            # to match to the same of reference surface.
-            fDistRatios = []
-            for idx in 0, len(idxPts_G1_A)-1:
-                iG1_A = idxPts_G1_A[idx]
-                iG0_A = idxPts_G0_A[idx]
-                iG1_R = idxPts_G1_R[idx]
-                fDistA = ptsA[iG1_A].DistanceTo(ptsA[iG0_A])
-                fDistR = ptsR[iG1_R].DistanceTo(ptsA[iG0_A])
-                fRatio = fDistA / fDistR
-                fDistRatios.append(fRatio)
-            fAvgDistRatio = sum(fDistRatios) / float(len(fDistRatios))
-
-
-            # Set tangential row using the multiple of the average ratio
-            # to the G0-G1 point distances of reference surface.
-            for idx in range(len(idxPts_G1_A)):# iG1_A, iG0_A, iG1_R in zip(idxPts_G1_A, idxPts_G0_A, idxPts_G1_R):
-                iG1_A = idxPts_G1_A[idx]
-                iG0_A = idxPts_G0_A[idx]
-                iG1_R = idxPts_G1_R[idx]
-                vG1G0_R = ptsA[iG0_A] - ptsR[iG1_R]
-                vG0G1_A_Start = ptsA[iG0_A] - ptsA[iG1_A]
-                vG0G1_A_toSet = fAvgDistRatio * vG1G0_R
-                #if vG1G0_R * vG0G1_A_Start > 0.0:
-                #    vG0G1_A_toSet.Reverse()
-                pt_To = ptsA[iG0_A] + vG0G1_A_toSet
-                iUT_A, iVT_A = getUvFrom1dList(ns_Coons, iG1_A)
-                ns_Coons.Points.SetPoint(
-                    iUT_A, iVT_A, pt_To,
-                    weight=ns_Coons.Points.GetWeight(iUT_A, iVT_A))
-
-
-            #sc.doc.Objects.AddSurface(ns_Coons); sc.doc.Views.Redraw(); return
-
-        else:
-            # Project tangential row to plane.
-            for idx in range(len(idxPts_G1_A)):
-                iG1_A = idxPts_G1_A[idx]
-
-                pt_To = plane.ClosestPoint(ptsA[iG1_A])
-                if pt_To == rg.Point3d.Unset:
-                    raise ValueError("Plane.ClosestPoint failed.")
-
-                iUT_A, iVT_A = getUvFrom1dList(ns_Coons, iG1_A)
-                ns_Coons.Points.SetPoint(
-                    iUT_A, iVT_A, pt_To,
-                    weight=ns_Coons.Points.GetWeight(iUT_A, iVT_A))
-
+        #if side == S:
+        #    sc.doc.Objects.AddSurface(ns_M_G1); sc.doc.Views.Redraw(); return
 
         # Update.
-        ptsA = [cp.Location for cp in ns_Coons.Points]
+        ns_WIP.Dispose()
+        ns_WIP = ns_M_G1
+        pts_WIP = [cp.Location for cp in ns_WIP.Points]
 
-
-        # Record the G1 point from each end for later average.
-        #print idxPts_G1_A[1], idxPts_G1_A[len(idxPts_G1_A)-2]
-        for idx in (1, len(idxPts_G1_A)-2):
-            iG1_A = idxPts_G1_A[idx]
-            if iG1_A in pts_G1_corners.keys():
-                pts_G1_corners[iG1_A].append(ptsA[iG1_A])
+        # Record the G1 point from each 2nd from end for later average.
+        for i in (1, iRowLn-2):
+            iM1 = idxPts['M',1][i]
+            if iM1 in pts_G1_corners.keys():
+                pts_G1_corners[iM1].append(pts_WIP[iM1])
             else:
-                pts_G1_corners[iG1_A] = [ptsA[iG1_A]]
-        #sc.doc.Objects.AddPoint(ptsA[idxPts_G1_A[1]])
-        #sc.doc.Objects.AddPoint(ptsA[idxPts_G1_A[len(idxPts_G1_A)-2]])
+                pts_G1_corners[iM1] = [pts_WIP[iM1]]
+        #sc.doc.Objects.AddPoint(pts_WIP[idxPts['M',1][1]])
+        #sc.doc.Objects.AddPoint(pts_WIP[idxPts['M',1][len(idxPts['M',1])-2]])
+
+        if iContinuity == 2 and areThereEnoughPtsToModify(side, 2):
+            ns_M_G2 = spb.setContinuity_G2(
+                ns_M_BeforeAnyMatching=ns_Coons,
+                ns_M_In=ns_WIP,
+                side_M=side,
+                nurbs_R=ns_R,
+                side_R=side,
+                bModifyRowEnds=False,
+                bDebug=bDebug,
+                bAddPts=True,
+                )
+
+            # Update.
+            ns_WIP.Dispose()
+            ns_WIP = ns_M_G2
+            pts_WIP = [cp.Location for cp in ns_M_G2.Points]
+
+            # Record the G2 point from each 2nd from end for later average.
+            for i in (2, iRowLn-3):
+                iM2 = idxPts['M',2][i]
+                if iM2 in pts_G2_corners.keys():
+                    pts_G1_corners[iM2].append(pts_WIP[iM2])
+                else:
+                    pts_G1_corners[iM2] = [pts_WIP[iM2]]
+            #sc.doc.Objects.AddPoint(pts_WIP[idxPts['M',1][1]])
+            #sc.doc.Objects.AddPoint(pts_WIP[idxPts['M',1][len(idxPts['M',1])-2]])
+
+            # Return the 3rd G2 points on each end to their original positions.
+            for idx in (2, iRowLn-3):
+                iM2 = idxPts['M',2][idx]
+                iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_Coons, iM2)
+                ns_WIP.Points.SetPoint(
+                    iUT_A, iVT_A, ptsM_PreG1[iM2],
+                    weight=ns_Coons.Points.GetWeight(iUT_A, iVT_A))
 
 
-        # Return the 2 points on each end to their original positions.
-        for idx in (0, 1, len(idxPts_G1_A)-2, len(idxPts_G1_A)-1):
-            iG1_A = idxPts_G1_A[idx]
-            iUT_A, iVT_A = getUvFrom1dList(ns_Coons, iG1_A)
-            ns_Coons.Points.SetPoint(
-                iUT_A, iVT_A, ptsA_Start[iG1_A],
+        # Return the 2nd G1 points on each end to their original positions.
+        for idx in (1, iRowLn-2):
+            iM1 = idxPts['M',1][idx]
+            iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_Coons, iM1)
+            ns_WIP.Points.SetPoint(
+                iUT_A, iVT_A, ptsM_PreG1[iM1],
                 weight=ns_Coons.Points.GetWeight(iUT_A, iVT_A))
 
 
     # Average the corner G1 locations.
     for key in pts_G1_corners:
-        iG1_A = key
-        iUT_A, iVT_A = getUvFrom1dList(ns_Coons, iG1_A)
+        iM1 = key
+        iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_Coons, iM1)
         if len(pts_G1_corners[key]) == 1:
-            ns_Coons.Points.SetPoint(
+            ns_WIP.Points.SetPoint(
                 iUT_A, iVT_A, pts_G1_corners[key][0],
                 weight=ns_Coons.Points.GetWeight(iUT_A, iVT_A))
         elif len(pts_G1_corners[key]) == 2:
             pt_Avg = (pts_G1_corners[key][0] + pts_G1_corners[key][1]) / 2.0
-            ns_Coons.Points.SetPoint(
+            ns_WIP.Points.SetPoint(
                 iUT_A, iVT_A, pt_Avg,
                 weight=ns_Coons.Points.GetWeight(iUT_A, iVT_A))
         else:
@@ -1138,11 +1051,13 @@ def createSurface(rhCrvs_In, **kwargs):
                 "{} corner points recorded at one corner.".format(
                     len(pts_G1_corners[key])))
 
+    # TODO: Average the corner G1 locations.
 
-    # Update.
-    ptsA = [cp.Location for cp in ns_Coons.Points]
 
-    return ns_Coons
+
+    #pts_WIP = [cp.Location for cp in ns_Coons.Points]
+
+    return ns_WIP
 
 
 def main():
@@ -1178,13 +1093,25 @@ def main():
     if rc is None:
         sc.doc.Views.RedrawEnabled = True
         return
+    if isinstance(rc, rg.NurbsSurface):
+        ns_Res = rc
+    elif isinstance(rc, tuple):
+        ns_Res, sLog = rc
+        print sLog
+        if ns_Res is None:
+            sc.doc.Views.RedrawEnabled = True
+            return
+    else:
+        raise ValueError("Bad output: {}".format(rc))
 
-    ns_Res, sLog = rc if isinstance(rc, list) else rc, None
-
+    if ns_Res.IsRational:
+        print "Resultant surface is rational.  Check results."
 
     gB_Res = sc.doc.Objects.AddSurface(ns_Res)
     if gB_Res == gB_Res.Empty:
         print "Brep could not be added to the document."
+    #else:
+    #    print gB_Res
     sc.doc.Views.Redraw()
     sc.doc.Views.RedrawEnabled = True
 

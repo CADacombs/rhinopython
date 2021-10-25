@@ -1,6 +1,9 @@
 """
-As an alternative to _MatchSrf, this script:
-Often produces simpler and more accurate output when only natural edges are the input.
+Complement to _MatchSrf.
+This script, when provided only inputs of natural (underlying surface) edges,
+produces a surfaces that follow the input knot and point structures closely,
+with continuity priority G0 then G1 then G2.
+
 
 To reduce command options, a MultipleMatches option will be implemented in another script.
 
@@ -29,7 +32,7 @@ Send any questions, comments, or script development service needs to @spb on the
         Now matches to surface of lesser degree.
         Bug fixes.
 211003: Changed verbage of a command option.
-211008-24: Bug fix when transferring knot vector.
+211008-25: Bug fix when transferring knot vector.
         Refactored for easier use as a module by other scripts.
 """
 
@@ -38,8 +41,6 @@ import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
-
-from System import Enum
 
 
 W = rg.IsoStatus.West
@@ -553,6 +554,7 @@ def createTanSrfFromEdge(rgTrim):
     """
     """
 
+    rgTrim.Brep.Faces.ShrinkFaces()
     rgEdge = rgTrim.Edge
     ns = rgTrim.Face.UnderlyingSurface().ToNurbsSurface()
 
@@ -692,10 +694,12 @@ def findMatchingCurveByEndPoints(curvesA, curvesB, bEcho=True):
                 idxBs_per_As.append(iB)
                 break # to next curveA.
         else:
-            if bEcho:
-                print "Matching curve not found."
-            return
-    
+            if len(curvesA) == len(curvesB):
+                if bEcho:
+                    print "Matching curve not found."
+                return
+            idxBs_per_As.append(None)
+
     return idxBs_per_As
 
 
@@ -1631,7 +1635,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
 
             iKnotCt_FromSide_A_Required = iPtCt_FromMSide_A_ToAdd + coll_Knots.Count
 
-            # TODO: Use the following only to keep uniformity.  Otherwise, only add knots as needed.
+            # TODO: Use the following only to maintain knot uniformity.  Otherwise, only add knots as needed.
             tsK_New = []
             iCt_Knot_Start = coll_Knots.Count
 

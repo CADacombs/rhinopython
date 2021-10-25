@@ -96,7 +96,7 @@ class Opts:
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'bAddPts'; keys.append(key)
+    key = 'bAddRefs'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
@@ -149,6 +149,27 @@ class Opts:
         else:
             return
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+
+
+def addGeoms(geoms, bRedraw=True):
+    """ For debugging. """
+
+    if not hasattr(geoms, '__iter__'):
+        geoms = [geoms]
+
+    for geom in geoms:
+        if isinstance(geom, tuple):
+            gOut = sc.doc.Objects.AddSurface(geom[1])
+        elif isinstance(geom, rg.Curve):
+            gOut = sc.doc.Objects.AddCurve(geom)
+        elif isinstance(geom, rg.Surface):
+            gOut = sc.doc.Objects.AddSurface(geom)
+        elif isinstance(geom, rg.Point3d):
+            gOut = sc.doc.Objects.AddPoint(geom)
+        else:
+            raise ValueError("Method to add {} missing from addGeoms.".format(geom))
+    if bRedraw: sc.doc.Views.Redraw()
+    return gOut
 
 
 def containsShortOrCollapsedBorders(srf, tol_short=None):
@@ -284,7 +305,7 @@ def getInput_ToModify():
         addOption('bEcho')
         addOption('bDebug')
         if Opts.values['bDebug']:
-            addOption('bAddPts')
+            addOption('bAddRefs')
 
         res = go.Get()
         
@@ -386,7 +407,7 @@ def getInput_Ref(objref_SrfToMod):
         addOption('bEcho')
         addOption('bDebug')
         if Opts.values['bDebug']:
-            addOption('bAddPts')
+            addOption('bAddRefs')
 
         res = go.Get()
         
@@ -406,7 +427,7 @@ def getInput_Ref(objref_SrfToMod):
                 Opts.values['bReplace'],
                 Opts.values['bEcho'],
                 Opts.values['bDebug'],
-                Opts.values['bAddPts'],
+                Opts.values['bAddRefs'],
                 )
 
         # An option was selected.
@@ -1267,7 +1288,7 @@ def setContinuity_G2(**kwargs):
         bModifyRowEnd_T0: bool
         bModifyRowEnd_T1: bool
         bDebug: bool
-        bAddPts: bool
+        bAddRefs: bool
     Returns
     """
 
@@ -1284,7 +1305,7 @@ def setContinuity_G2(**kwargs):
     bModifyRowEnd_T0 = get_kwarg('bModifyRowEnd_T0')
     bModifyRowEnd_T1 = get_kwarg('bModifyRowEnd_T1')
     bDebug = get_kwarg('bDebug')
-    bAddPts = get_kwarg('bAddPts')
+    bAddRefs = get_kwarg('bAddRefs')
 
     if isinstance(nurbs_R, rg.NurbsCurve): return
 
@@ -1313,7 +1334,8 @@ def setContinuity_G2(**kwargs):
     if ns_R.Degree(int(side_R in (S,N))) == 1:
         # Move G2 points of A to be colinear with G0 and G1 points.
 
-        for i, iM0 in enumerate(idxPts['M',0]):
+        for i in range(iRowLn):
+            iM0 = idxPts['M',0][i]
             iM1 = idxPts['M',1][i]
             iM2 = idxPts['M',2][i]
             pt_To = project_C_Colinear_with_AB(ptsM_Out[iM0], ptsM_Out[iM1], ptsM_Out[iM2])
@@ -1373,31 +1395,72 @@ def setContinuity_G2(**kwargs):
     range_stop = iRowLn-1+1 if bModifyRowEnd_T1 else iRowLn-3+1
     Range = range(range_start, range_stop)
 
+    m2s = {} # Collect initial m2 locations to use for smooth projections.
+
     for i in Range:
-        a0 = r0 = ptsR[idxPts['R',0][i]]
-        a1 = ptsM_Out[idxPts['M',1][i]]
+        m0 = r0 = ptsR[idxPts['R',0][i]]
+        m1 = ptsM_Out[idxPts['M',1][i]]
         r1 = ptsR[idxPts['R',1][i]]
         r2 = ptsR[idxPts['R',2][i]]
 
-        m = ((a1 - r0).Length/(r1 - r0).Length)**2.0
+        m = ((m1 - r0).Length/(r1 - r0).Length)**2.0
 
-        a2 = 2.0*a1 + -a0 + (
-            m * (mA_Knots / mR_Knots) *
-            (mR_Deg / mA_Deg) *
-            (-2.0*r1 + r2 + r0)
-            )
+        M = m * (mA_Knots / mR_Knots) * (mR_Deg / mA_Deg)
 
-        if bDebug and bAddPts:
-            sc.doc.Objects.AddPoint(r0)
-            sc.doc.Objects.AddPoint(a1)
-            sc.doc.Objects.AddPoint(a2)
-            sc.doc.Objects.AddPoint(r1)
-            sc.doc.Objects.AddPoint(r2)
+        m2 = 2.0*m1 + -m0 + M*(-2.0*r1 + r2 + r0)
 
-        #sc.doc.Objects.AddPoint(a2)
+        m2s[i] = m2
+
+        #if bDebug:
+        #    if ((m2-m1) * (r2-r1)) > 0.0:
+        #        print "m2 needs to be translated to other side of m0."
+
+        if bDebug and bAddRefs:
+            #addGeoms([r0, m1, m2, r1, r2], False)
+            addGeoms([m2], False)
+            #print m2
+
+
+    if bModifyRowEnd_T0 and bModifyRowEnd_T1:
+        iRefs = range(iRowLn)
+    elif not (bModifyRowEnd_T0 and bModifyRowEnd_T1):
+        iRefs = 0, iRowLn-1
+    elif not bModifyRowEnd_T0:
+        iRefs = 0,
+    elif not bModifyRowEnd_T1:
+        iRefs = iRowLn-1,
+
+
+    m0m1_ratios_sum = 0.0
+
+    for i in iRefs:
+        m0 = ptsM_BeforeAnyMatching[idxPts['M',0][i]]
+        m1 = ptsM_BeforeAnyMatching[idxPts['M',1][i]]
+        m2 = ptsM_BeforeAnyMatching[idxPts['M',2][i]]
+        plane = rg.Plane(origin=m0, normal=m1-m0)
+        p2 = plane.ClosestPoint(m2)
+        p2m2 = (m2 - p2)
+        ratio = p2m2.Length / (m1 - m0).Length
+        m0m1_ratios_sum += ratio
+
+    m0m1_avg_ratio = m0m1_ratios_sum / len(iRefs)
+
+
+    for i in Range:
+        m0 = ptsM_Out[idxPts['M',0][i]]
+        m1 = ptsM_Out[idxPts['M',1][i]]
+
+        plane = rg.Plane(origin=m0, normal=m1-m0)
+        plane.Translate(m0m1_avg_ratio * (m1 - m0))
+        m2 = plane.ClosestPoint(m2s[i])
+
 
         iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, idxPts['M',2][i])
-        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, a2)
+        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, m2)
+
+
+    if bDebug and bAddRefs: addGeoms(ns_R, False)
+
 
     return ns_M_Out
 
@@ -1427,7 +1490,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
     bMaintainDegree = getOpt('bMaintainDegree')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
-    bAddPts = getOpt('bAddPts')
+    bAddRefs = getOpt('bAddRefs')
 
 
     if iContinuity == 2:
@@ -1719,7 +1782,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
         bModifyRowEnd_T0=True,
         bModifyRowEnd_T1=True,
         bDebug=bDebug,
-        bAddPts=bAddPts,
+        bAddRefs=bAddRefs,
         )
 
     if ns_M_G2 is None:
@@ -1744,7 +1807,7 @@ def processObjRefs(objref_M, objref_R, **kwargs):
     bReplace = getOpt('bReplace')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
-    bAddPts = getOpt('bAddPts')
+    bAddRefs = getOpt('bAddRefs')
 
 
     def getGeomFromObjRef(objref):
@@ -1799,7 +1862,7 @@ def processObjRefs(objref_M, objref_R, **kwargs):
         bMaintainDegree=bMaintainDegree,
         bEcho=bEcho,
         bDebug=bDebug,
-        bAddPts=bAddPts,
+        bAddRefs=bAddRefs,
         )
 
     if rc is None:
@@ -1885,7 +1948,7 @@ def main():
         bReplace,
         bEcho,
         bDebug,
-        bAddPts,
+        bAddRefs,
         ) = rc
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
@@ -1900,7 +1963,7 @@ def main():
         bReplace=bReplace,
         bEcho=bEcho,
         bDebug=bDebug,
-        bAddPts=bAddPts,
+        bAddRefs=bAddRefs,
         )
 
     sc.doc.Views.RedrawEnabled = True

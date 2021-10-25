@@ -117,27 +117,6 @@ class Opts:
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-def addGeoms(geoms, bRedraw=True):
-    """ For debugging. """
-
-    if not hasattr(geoms, '__iter__'):
-        geoms = [geoms]
-
-    for geom in geoms:
-        if isinstance(geom, tuple):
-            gOut = sc.doc.Objects.AddSurface(geom[1])
-        elif isinstance(geom, rg.Curve):
-            gOut = sc.doc.Objects.AddCurve(geom)
-        elif isinstance(geom, rg.Surface):
-            gOut = sc.doc.Objects.AddSurface(geom)
-        elif isinstance(geom, rg.Point3d):
-            gOut = sc.doc.Objects.AddPoint(geom)
-        else:
-            raise ValueError("Method to add {} missing from addGeoms.".format(geom))
-    if bRedraw: sc.doc.Views.Redraw()
-    return gOut
-
-
 def getInput():
     """
     Get edges or (wire) curves with optional input.
@@ -933,9 +912,10 @@ def createSurface(rhCrvs_In, **kwargs):
                 cs_R[1].Reverse()
 
             sumsrf = rg.SumSurface.Create(cs_R[0], cs_R[1])
-            #addGeoms(sumsrf)
+            if bDebug: spb.addGeoms(sumsrf)
 
             ns_M_Start = sumsrf.ToNurbsSurface()
+            #spb.addGeoms(sumsrf)
 
             cs_C = [getIsoCurveOfSide(s, ns_M_Start) for s in (W,S,E,N)]
 
@@ -1189,7 +1169,7 @@ def createSurface(rhCrvs_In, **kwargs):
                 bModifyRowEnd_T0=bModifyRowEnd_T0,
                 bModifyRowEnd_T1=bModifyRowEnd_T1,
                 bDebug=bDebug,
-                bAddPts=True,
+                bAddRefs=True,
                 )
 
             # Update.
@@ -1241,10 +1221,25 @@ def createSurface(rhCrvs_In, **kwargs):
                 weight=ns_M_Start.Points.GetWeight(iUT_A, iVT_A))
         else:
             raise Exception(
-                "{} corner points recorded at one corner.".format(
-                    len(pts_G1_corners[iM1])))
+                "{} corner points recorded at index {}.".format(
+                    len(pts_G1_corners[iM1]), iM1))
 
-    print "TODO: Average the corner G2 locations."
+    # Average the corner G2 locations.
+    for iM2 in pts_G2_corners:
+        iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Start, iM2)
+        if len(pts_G2_corners[iM2]) == 1:
+            ns_WIP.Points.SetPoint(
+                iUT_A, iVT_A, pts_G2_corners[iM2][0],
+                weight=ns_M_Start.Points.GetWeight(iUT_A, iVT_A))
+        elif len(pts_G2_corners[iM2]) == 2:
+            pt_Avg = (pts_G2_corners[iM2][0] + pts_G2_corners[iM2][1]) / 2.0
+            ns_WIP.Points.SetPoint(
+                iUT_A, iVT_A, pt_Avg,
+                weight=ns_M_Start.Points.GetWeight(iUT_A, iVT_A))
+        else:
+            raise Exception(
+                "{} corner points recorded at index {}.".format(
+                    len(pts_G2_corners[iM2]), iM2))
 
 
 

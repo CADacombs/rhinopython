@@ -166,6 +166,10 @@ def addGeoms(geoms, bRedraw=True):
             gOut = sc.doc.Objects.AddSurface(geom)
         elif isinstance(geom, rg.Point3d):
             gOut = sc.doc.Objects.AddPoint(geom)
+        elif isinstance(geom, rg.Plane):
+            intrvl = rg.Interval(-sc.doc.ModelAbsoluteTolerance*1000.0, sc.doc.ModelAbsoluteTolerance*1000.0)
+            psrf = rg.PlaneSurface(geom, intrvl, intrvl)
+            gOut = sc.doc.Objects.AddSurface(psrf)
         else:
             raise ValueError("Method to add {} missing from addGeoms.".format(geom))
     if bRedraw: sc.doc.Views.Redraw()
@@ -444,7 +448,10 @@ def makeNonRational(nurbsGeom, tol=1e-9):
         for iU in range(ns.Points.CountU):
             for iV in range(ns.Points.CountV):
                 weights.append(ns.Points.GetWeight(iU, iV))
-        if abs(1.0 - max(weights)) <= tol:
+        if (
+            (abs(1.0 - max(weights)) <= tol) and
+            (abs(1.0 - min(weights)) <= tol)
+        ):
             ns.MakeNonRational()
             return True
         return False
@@ -1234,7 +1241,9 @@ def setContinuity_G1(**kwargs):
         iR1 = idxPts['R',1][i]
         pt_To = project_C_Colinear_with_AB(ptsM_Out[iM0], ptsR[iR1], ptsM_Out[iM1])
         iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, iM1)
-        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, pt_To)
+        ns_M_Out.Points.SetPoint(
+            iUT_A, iVT_A, pt_To,
+            weight=ns_M_BeforeAnyMatching.Points.GetWeight(iUT_A, iVT_A))
 
 
     # Update.
@@ -1272,7 +1281,9 @@ def setContinuity_G1(**kwargs):
         vG0G1_A_toSet = fAvgDistRatio * vG0G1_R
         pt_To = ptsM_Out[iM0] + vG0G1_A_toSet
         iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, iM1)
-        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, pt_To)
+        ns_M_Out.Points.SetPoint(
+            iUT_A, iVT_A, pt_To,
+            weight=ns_M_BeforeAnyMatching.Points.GetWeight(iUT_A, iVT_A))
 
     return ns_M_Out
 
@@ -1317,7 +1328,7 @@ def setContinuity_G2(**kwargs):
 
     ns_M_Out = ns_M_In.Duplicate()
     ptsM_BeforeAnyMatching = [cp.Location for cp in ns_M_BeforeAnyMatching.Points]
-    ptsM_Out = [cp.Location for cp in ns_M_In.Points]
+    ptsA_Out = [cp.Location for cp in ns_M_In.Points]
     ptsR = [cp.Location for cp in ns_R.Points]
 
     # Points are ordered (u0,v0), (u0,v1), ..., (un,vn).
@@ -1335,12 +1346,14 @@ def setContinuity_G2(**kwargs):
         # Move G2 points of A to be colinear with G0 and G1 points.
 
         for i in range(iRowLn):
-            iM0 = idxPts['M',0][i]
-            iM1 = idxPts['M',1][i]
-            iM2 = idxPts['M',2][i]
-            pt_To = project_C_Colinear_with_AB(ptsM_Out[iM0], ptsM_Out[iM1], ptsM_Out[iM2])
-            iUT, iVT = getUvIdxFromNsPoint1dIdx(ns_M_Out, iM2)
-            ns_M_Out.Points.SetPoint(iUT, iVT, pt_To)
+            iA0 = idxPts['M',0][i]
+            iA1 = idxPts['M',1][i]
+            iA2 = idxPts['M',2][i]
+            pt_To = project_C_Colinear_with_AB(ptsA_Out[iA0], ptsA_Out[iA1], ptsA_Out[iA2])
+            iUT, iVT = getUvIdxFromNsPoint1dIdx(ns_M_Out, iA2)
+            ns_M_Out.Points.SetPoint(
+                iUT, iVT, pt_To,
+                weight=ns_M_BeforeAnyMatching.Points.GetWeight(iUT, iVT))
 
         return ns_M_Out
 
@@ -1395,30 +1408,45 @@ def setContinuity_G2(**kwargs):
     range_stop = iRowLn-1+1 if bModifyRowEnd_T1 else iRowLn-3+1
     Range = range(range_start, range_stop)
 
-    m2s = {} # Collect initial m2 locations to use for smooth projections.
+    a2s = {} # Collect initial a2 locations to use for smooth projections.
+
+    b_trans_a2_thru_a1 = False
 
     for i in Range:
-        m0 = r0 = ptsR[idxPts['R',0][i]]
-        m1 = ptsM_Out[idxPts['M',1][i]]
+        a0 = r0 = ptsR[idxPts['R',0][i]]
+        a1 = ptsA_Out[idxPts['M',1][i]]
         r1 = ptsR[idxPts['R',1][i]]
         r2 = ptsR[idxPts['R',2][i]]
 
-        m = ((m1 - r0).Length/(r1 - r0).Length)**2.0
+        m = ((a1 - r0).Length/(r1 - r0).Length)**2.0
 
         M = m * (mA_Knots / mR_Knots) * (mR_Deg / mA_Deg)
 
-        m2 = 2.0*m1 + -m0 + M*(-2.0*r1 + r2 + r0)
+        a2 = 2.0*a1 + -a0 + M*(-2.0*r1 + r2 + r0)
 
-        m2s[i] = m2
+        a2s[i] = a2
 
-        #if bDebug:
-        #    if ((m2-m1) * (r2-r1)) > 0.0:
-        #        print "m2 needs to be translated to other side of m0."
+        plane = rg.Plane(origin=a0, normal=a1-a0)
+        #addGeoms(plane, False)
+        p2 = plane.ClosestPoint(a2)
+
+        if ((a2-p2) * (a1-a0)) < 0.0:
+            # a2 is on the wrong side of a1.
+            b_trans_a2_thru_a1 = True
+
+        iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, idxPts['M',2][i])
+        ns_M_Out.Points.SetPoint(
+            iUT_A, iVT_A, a2,
+            weight=ns_M_BeforeAnyMatching.Points.GetWeight(iUT_A, iVT_A))
 
         if bDebug and bAddRefs:
-            #addGeoms([r0, m1, m2, r1, r2], False)
-            addGeoms([m2], False)
-            #print m2
+            #addGeoms([r0, a1, a2, r1, r2], False)
+            addGeoms(a2, False)
+            #print a2
+
+
+    if not b_trans_a2_thru_a1:
+        return ns_M_Out
 
 
     if bModifyRowEnd_T0 and bModifyRowEnd_T1:
@@ -1434,29 +1462,31 @@ def setContinuity_G2(**kwargs):
     m0m1_ratios_sum = 0.0
 
     for i in iRefs:
-        m0 = ptsM_BeforeAnyMatching[idxPts['M',0][i]]
-        m1 = ptsM_BeforeAnyMatching[idxPts['M',1][i]]
-        m2 = ptsM_BeforeAnyMatching[idxPts['M',2][i]]
-        plane = rg.Plane(origin=m0, normal=m1-m0)
-        p2 = plane.ClosestPoint(m2)
-        p2m2 = (m2 - p2)
-        ratio = p2m2.Length / (m1 - m0).Length
+        a0 = ptsM_BeforeAnyMatching[idxPts['M',0][i]]
+        a1 = ptsM_BeforeAnyMatching[idxPts['M',1][i]]
+        a2 = ptsM_BeforeAnyMatching[idxPts['M',2][i]]
+        plane = rg.Plane(origin=a0, normal=a1-a0)
+        p2 = plane.ClosestPoint(a2)
+        p2m2 = (a2 - p2)
+        ratio = p2m2.Length / (a1 - a0).Length
         m0m1_ratios_sum += ratio
 
     m0m1_avg_ratio = m0m1_ratios_sum / len(iRefs)
 
 
     for i in Range:
-        m0 = ptsM_Out[idxPts['M',0][i]]
-        m1 = ptsM_Out[idxPts['M',1][i]]
+        a0 = ptsA_Out[idxPts['M',0][i]]
+        a1 = ptsA_Out[idxPts['M',1][i]]
 
-        plane = rg.Plane(origin=m0, normal=m1-m0)
-        plane.Translate(m0m1_avg_ratio * (m1 - m0))
-        m2 = plane.ClosestPoint(m2s[i])
+        plane = rg.Plane(origin=a0, normal=a1-a0)
+        plane.Translate(m0m1_avg_ratio * (a1 - a0))
+        a2 = plane.ClosestPoint(a2s[i])
 
 
         iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, idxPts['M',2][i])
-        ns_M_Out.Points.SetPoint(iUT_A, iVT_A, m2)
+        ns_M_Out.Points.SetPoint(
+            iUT_A, iVT_A, a2,
+            weight=ns_M_BeforeAnyMatching.Points.GetWeight(iUT_A, iVT_A))
 
 
     if bDebug and bAddRefs: addGeoms(ns_R, False)
@@ -1504,8 +1534,6 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
 
     if side_M not in (W,S,E,N):
         return
-
-    geom_R_Nurbs = None
 
 
     geom_R_Nurbs = getShrunkNurbsSrfFromGeom(geom_R_In, bUseUnderlyingIsoCrvs)

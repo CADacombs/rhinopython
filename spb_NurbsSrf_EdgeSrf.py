@@ -840,9 +840,16 @@ def createSurface(rhCrvs_In, **kwargs):
     if doAnyCrvsCompletelyOverlap(cs_In):
         return None, "Some edges/trims completely overlap."
 
-
-    geoms_Nurbs = [spb.getNurbsGeomFromGeom(geom, iContinuity, bEcho) for geom in geoms_In]
-    if not geoms_Nurbs: return
+    geoms_Nurbs = []
+    for geom in geoms_In:
+        geom_Nurbs = spb.getShrunkNurbsSrfFromGeom(geom, bUseUnderlyingIsoCrvs=False)
+        if geom_Nurbs is None:
+            geom_Nurbs = spb.getNurbsGeomFromGeom(geom, iContinuity, bEcho)
+            if geom_Nurbs is None:
+                if bEcho:
+                    print "NURBS geometry could not be obtained from input."
+                return
+        geoms_Nurbs.append(geom_Nurbs)
 
 
     cs_R = [getCurveOfNurbs(geom) for geom in geoms_Nurbs]
@@ -1286,7 +1293,7 @@ def main():
         raise ValueError("Bad output: {}".format(rc))
 
     if ns_Res.IsRational:
-        print "Resultant surface is rational.  Check results."
+        print "New surface is rational.  Check continuity."
 
     gB_Res = sc.doc.Objects.AddSurface(ns_Res)
     if gB_Res == gB_Res.Empty:

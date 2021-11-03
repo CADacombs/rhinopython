@@ -34,6 +34,7 @@ Send any questions, comments, or script development service needs to @spb on the
 211003: Changed verbage of a command option.
 211008-25: Bug fix when transferring knot vector.
         Refactored for easier use as a module by other scripts.
+211102: Now, simplification is attempted on non-uniform input curves in createTanSrfFromEdge.
 """
 
 import Rhino
@@ -578,7 +579,7 @@ def areParamsAlignedPerPickPts(objref_A, objref_B):
     return bPickedAtSideStart_A == bPickedAtSideStart_R
 
 
-def createTanSrfFromEdge(rgTrim):
+def createTanSrfFromEdge(rgTrim, bDebug=False):
     """
     """
 
@@ -586,9 +587,47 @@ def createTanSrfFromEdge(rgTrim):
     rgEdge = rgTrim.Edge
     ns = rgTrim.Face.UnderlyingSurface().ToNurbsSurface()
 
-    ncA = rgEdge.ToNurbsCurve()
+    ncA_Start = rgEdge.ToNurbsCurve()
+
+    if ncA_Start.SpanCount > 1:
+        def simplifyCrv(ncA_Start):
+            for d in 1, 2, 3, 5:
+                nc_WIP = ncA_Start.Rebuild(pointCount=d+1, degree=d, preserveTangents=True)
+                rc = rg.Curve.GetDistancesBetweenCurves(
+                    nc_WIP, ncA_Start, tolerance=0.01*sc.doc.ModelAbsoluteTolerance)
+                if not rc[0]: continue
+                if rc[1] > 0.5*sc.doc.ModelAbsoluteTolerance: continue
+                return nc_WIP
+            if bDebug: print ncA_Start.Knots.KnotStyle
+            if ncA_Start.Knots.KnotStyle != rg.KnotStyle.QuasiUniform:
+                # QuasiUniform ~ Open and uniform
+                # Try to at least make uniform.
+                for p in range(3, ncA_Start.Points.Count+1):
+                    for d in 2, 3, 5:
+                        if (p - d) < 1: continue
+                        nc_WIP = ncA_Start.Rebuild(pointCount=p, degree=d, preserveTangents=True)
+                        rc = rg.Curve.GetDistancesBetweenCurves(
+                            nc_WIP, ncA_Start, tolerance=0.01*sc.doc.ModelAbsoluteTolerance)
+                        if not rc[0]: continue
+                        if rc[1] > 0.5*sc.doc.ModelAbsoluteTolerance: continue
+                        return nc_WIP
+
+        rc = simplifyCrv(ncA_Start)
+        if rc is not None:
+            if bDebug:
+                print "Simplified starting curve for tangent surface from D{}P{} to D{}P{}.".format(
+                    ncA_Start.Degree, ncA_Start.Points.Count,
+                    rc.Degree, rc.Points.Count)
+            ncA_Start = rc
+
+
+    ncA = ncA_Start.DuplicateCurve()
+
+    # Do this in order to have a Greville point other than only at the ends.
     if ncA.Degree == 1:
-        ncA.IncreaseDegree(2)
+        bDegreeWasIncrFrom1To2 = ncA.IncreaseDegree(2)
+    else:
+        bDegreeWasIncrFrom1To2 = False
 
     ts = ncA.GrevilleParameters()
 
@@ -655,8 +694,13 @@ def createTanSrfFromEdge(rgTrim):
         raise Exception(
             "PointFaceRelations are {} and {}".format(pfrel_Neg, pfrel_Pos))
 
-    ncB = ncA.DuplicateCurve()
-    ncB.SetGrevillePoints(pts_on_ncB)
+    if bDegreeWasIncrFrom1To2:
+        ncA = ncA_Start
+        ncB = ncA.DuplicateCurve()
+        ncB.SetGrevillePoints([pts_on_ncB[0], pts_on_ncB[2]])
+    else:
+        ncB = ncA.DuplicateCurve()
+        ncB.SetGrevillePoints(pts_on_ncB)
 
     rgB_Loft = rg.Brep.CreateFromLoft(
             curves=[ncA, ncB],
@@ -669,9 +713,9 @@ def createTanSrfFromEdge(rgTrim):
         print "{} breps resulted from one curve." \
             "  Continuity increase will not occur on an edge."
 
-    #sc.doc.Objects.AddBrep(rgB_Loft[0]); sc.doc.Views.Redraw()
+    ns_Out = rgB_Loft[0].Surfaces[0]
 
-    return rgB_Loft[0].Surfaces[0]
+    return ns_Out
 
 
 def getIsoCurveOfSide(isoStatus, srf):
@@ -898,7 +942,7 @@ def getShrunkNurbsSrfFromGeom(geom_R_In, bUseUnderlyingIsoCrvs):
     return iso_Out, trimmed.ToNurbsSurface()
 
 
-def getNurbsGeomFromGeom(In, iContinuity, bEcho=True):
+def getNurbsGeomFromGeom(In, iContinuity, bEcho=True, bDebug=False):
     """
     Returns 4-item list containing any combination of tuples of:
         (IsoStatus, NurbsSurface),
@@ -915,7 +959,7 @@ def getNurbsGeomFromGeom(In, iContinuity, bEcho=True):
     srf = trim.Face.UnderlyingSurface()
 
     if trim.IsoStatus == rg.IsoStatus.None:
-        ns_Tan = createTanSrfFromEdge(trim)
+        ns_Tan = createTanSrfFromEdge(trim, bDebug)
         if ns_Tan is None:
             return In.ToNurbsCurve(), None
         ncs_TanNS = [getIsoCurveOfSide(side, ns_Tan) for side in (W,S,E,N)]
@@ -1539,7 +1583,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
     geom_R_Nurbs = getShrunkNurbsSrfFromGeom(geom_R_In, bUseUnderlyingIsoCrvs)
 
     if geom_R_Nurbs is None:
-        geom_R_Nurbs = getNurbsGeomFromGeom(geom_R_In, iContinuity, bEcho)
+        geom_R_Nurbs = getNurbsGeomFromGeom(geom_R_In, iContinuity, bEcho, bDebug)
         if not geom_R_Nurbs: return
 
         if isinstance(geom_R_Nurbs[1], rg.NurbsSurface):

@@ -9,11 +9,11 @@ Send any questions, comments, or script development service needs to @spb on the
 """
 """
 211013-25: Created.
+211102: Continuity can now be set per input curve.
+        Added options for single-click selection of continuity.
 
 TODO:
-    Allow continuity choice per edge.
-    Convert some rational input to non-rational degree 5?
-    Add preview?
+    Convert (some) rational input to non-rational degree 5?
 """
 
 import Rhino
@@ -41,9 +41,15 @@ class Opts:
     stickyKeys = {}
 
 
+    key = 'bSetMaxContPerCrv'; keys.append(key)
+    values[key] = False
+    names[key] = 'ApplyContTo'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'AllCrvs', 'NextCrv')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
     key = 'iContinuity'; keys.append(key)
     values[key] = 2
-    names[key] = 'ContinuityTarget'
+    #names[key] = 'CurrentCont'
     listValues[key] = 'G0', 'G1', 'G2'
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -51,7 +57,7 @@ class Opts:
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
+
     key = 'bDebug'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
@@ -122,57 +128,312 @@ def getInput():
     Get edges or (wire) curves with optional input.
     """
 
-    go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select 2, 3, or 4 open curves")
+    def getInput_Global():
+        """
+        Get edges or (wire) curves with optional input.
+        """
 
-    go.GeometryFilter = rd.ObjectType.Curve
-    go.GeometryAttributeFilter = go.GeometryAttributeFilter.OpenCurve
-    #    go.GeometryAttributeFilter.SurfaceBoundaryEdge |
-    #    go.GeometryAttributeFilter.WireCurve)
+        go = ri.Custom.GetObject()
 
-    go.EnableUnselectObjectsOnExit(False) # Do not unselect object when an option selected, a number is entered, etc.
+        go.GeometryFilter = rd.ObjectType.Curve
+        go.GeometryAttributeFilter = go.GeometryAttributeFilter.OpenCurve
 
-    idxs_Opt = {}
+        go.EnableUnselectObjectsOnExit(False) # Do not unselect object when an option selected, a number is entered, etc.
+
+        go.AcceptNumber(True, acceptZero=True)
+
+        idxs_Opt = {}
+
+        while True:
+            go.ClearCommandOptions()
+
+            idxs_Opt.clear()
+
+            def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
+
+            key = 'G0'; idxs_Opt[key] = go.AddOption(key)
+            key = 'G1'; idxs_Opt[key] = go.AddOption(key)
+            key = 'G2'; idxs_Opt[key] = go.AddOption(key)
+            addOption('bSetMaxContPerCrv')
+            #Opts.names['iContinuity'] = 'CurrentCont'
+            #addOption('iContinuity')
+            addOption('bEcho')
+            addOption('bDebug')
+
+            #sc.doc.Views.Redraw()
+
+
+            sCmdPrompt = "Select 2, 3, or 4 open curves"
+            sCmdPrompt += " (G{})".format(Opts.values['iContinuity'])
+            go.SetCommandPrompt(sCmdPrompt)
+
+
+            res = go.GetMultiple(minimumNumber=2, maximumNumber=4)
+
+            if res == ri.GetResult.Cancel:
+                go.Dispose()
+                return
+
+            if res == ri.GetResult.Object:
+                objrefs = go.Objects()
+                go.Dispose()
+                return (
+                    objrefs,
+                    Opts.values['bSetMaxContPerCrv'],
+                    Opts.values['iContinuity'],
+                    Opts.values['bEcho'],
+                    Opts.values['bDebug'],
+                    )
+
+            if res == ri.GetResult.Number:
+                if int(go.Number()) not in (0,1,2): continue
+                Opts.setValue('iContinuity', idxList=int(go.Number()))
+                continue
+
+            # An option was selected.
+            go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
+            go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
+            go.EnableClearObjectsOnEntry(False) # Do not clear objects in go on repeats of While loop.
+
+            if go.Option().Index == idxs_Opt['G0']:
+                Opts.setValue('iContinuity', idxList=0)
+            elif go.Option().Index == idxs_Opt['G1']:
+                Opts.setValue('iContinuity', idxList=1)
+            elif go.Option().Index == idxs_Opt['G2']:
+                Opts.setValue('iContinuity', idxList=2)
+
+            for key in idxs_Opt:
+                if go.Option().Index == idxs_Opt[key]:
+                    Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                    break
+
+            if go.Option().Index == idxs_Opt['bSetMaxContPerCrv']:
+                go.Dispose()
+                return (
+                    None,
+                    Opts.values['bSetMaxContPerCrv'],
+                    Opts.values['iContinuity'],
+                    Opts.values['bEcho'],
+                    Opts.values['bDebug'],
+                    )
+
+
+    def getInput_PerCrv(objrefs_AlreadySel):
+        """
+        Get edges or (wire) curves with optional input.
+        """
+
+        go = ri.Custom.GetObject()
+
+        gObjs_AlreadySel = []
+        idxEs_AlreadySel = []
+        for o in objrefs_AlreadySel:
+            gObjs_AlreadySel.append(o.ObjectId)
+            if o.Edge() is None:
+                idxEs_AlreadySel.append(None)
+                o.Object().Highlight(True)
+            else:
+                idxEs_AlreadySel.append(o.Edge().EdgeIndex)
+                o.Object().HighlightSubObject(o.GeometryComponentIndex, highlight=True)
+
+
+        if gObjs_AlreadySel:
+            sc.doc.Views.Redraw()
+
+        go.GeometryFilter = rd.ObjectType.Curve
+
+
+        def customGeometryFilter(rdObj, geom, compIdx):
+            #print rdObj, geom, compIdx.ComponentIndexType, compIdx.Index
+
+            if not isinstance(geom, rg.Curve):
+                return False
+
+            if geom.IsClosed:
+                return False
+
+            if compIdx.ComponentIndexType == rg.ComponentIndexType.BrepEdge:
+                if rdObj.Id in gObjs_AlreadySel:
+                    for g, iE in zip(gObjs_AlreadySel, idxEs_AlreadySel):
+                        if rdObj.Id and compIdx.Index == iE:
+                            return False
+
+                return True
+
+            else:
+                if rdObj.Id not in gObjs_AlreadySel:
+                    return True
+
+            return False
+
+        go.SetCustomGeometryFilter(customGeometryFilter)
+
+        go.EnableUnselectObjectsOnExit(False) # Do not unselect object when an option selected, a number is entered, etc.
+
+        go.AcceptNothing(True)
+
+        go.AcceptNumber(True, acceptZero=True)
+
+        idxs_Opt = {}
+
+        while True:
+            go.ClearCommandOptions()
+
+            idxs_Opt.clear()
+
+            def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
+
+            #addOption('iContinuity')
+            key = 'G0'; idxs_Opt[key] = go.AddOption(key)
+            key = 'G1'; idxs_Opt[key] = go.AddOption(key)
+            key = 'G2'; idxs_Opt[key] = go.AddOption(key)
+            Opts.names['iContinuity'] = 'NextCrvCont'
+            addOption('bSetMaxContPerCrv')
+            addOption('bEcho')
+            addOption('bDebug')
+
+            if len(objrefs_AlreadySel) == 0:
+                sCmdPrompt = "Select first open curve"
+            else:
+                sCmdPrompt = "Select next open curve"
+            sCmdPrompt += " (G{})".format(Opts.values['iContinuity'])
+
+            go.SetCommandPrompt(sCmdPrompt)
+
+            res = go.Get()
+
+            if res == ri.GetResult.Cancel:
+                go.Dispose()
+                return
+
+            if res == ri.GetResult.Nothing:
+                go.Dispose()
+                return (
+                    None,
+                    Opts.values['bSetMaxContPerCrv'],
+                    None,
+                    Opts.values['bEcho'],
+                    Opts.values['bDebug'],
+                    )
+
+
+            if res == ri.GetResult.Object:
+                objref = go.Object(0)
+                sc.doc.Objects.UnselectAll()
+                go.Dispose()
+                return (
+                    objref,
+                    Opts.values['bSetMaxContPerCrv'],
+                    Opts.values['iContinuity'],
+                    Opts.values['bEcho'],
+                    Opts.values['bDebug'],
+                    )
+
+            if res == ri.GetResult.Number:
+                if int(go.Number()) not in (0,1,2): continue
+                Opts.setValue('iContinuity', idxList=int(go.Number()))
+                continue
+
+            # An option was selected.
+            go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
+            go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
+            go.EnableClearObjectsOnEntry(False) # Do not clear objects in go on repeats of While loop.
+
+            if go.Option().Index == idxs_Opt['G0']:
+                Opts.setValue('iContinuity', idxList=0)
+            elif go.Option().Index == idxs_Opt['G1']:
+                Opts.setValue('iContinuity', idxList=1)
+            elif go.Option().Index == idxs_Opt['G2']:
+                Opts.setValue('iContinuity', idxList=2)
+
+            for key in idxs_Opt:
+                if go.Option().Index == idxs_Opt[key]:
+                    Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                    break
+
+            if go.Option().Index == idxs_Opt['bSetMaxContPerCrv']:
+                go.Dispose()
+                return (
+                    None,
+                    Opts.values['bSetMaxContPerCrv'],
+                    Opts.values['iContinuity'],
+                    Opts.values['bEcho'],
+                    Opts.values['bDebug'],
+                    )
+
 
     while True:
-        go.ClearCommandOptions()
+        if Opts.values['bSetMaxContPerCrv']:
+            objrefs = []
+            conts = []
+            while True:
+                rc = getInput_PerCrv(objrefs)
 
-        idxs_Opt.clear()
 
-        def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
+                for o in objrefs:
+                    if o.Edge() is None:
+                        o.Object().Highlight(False)
+                    else:
+                        o.Object().HighlightSubObject(
+                            o.GeometryComponentIndex, highlight=False)
 
-        addOption('iContinuity')
-        addOption('bEcho')
-        addOption('bDebug')
 
-        sc.doc.Views.Redraw()
+                if rc is None: return
+                if isinstance(rc, tuple):
+                    (
+                        objref,
+                        bSetMaxContPerCrv,
+                        iContinuity,
+                        bEcho,
+                        bDebug,
+                        ) = rc
 
-        res = go.GetMultiple(minimumNumber=2, maximumNumber=4)
+                    if not bSetMaxContPerCrv:
+                        break # out of while loop.
 
-        if res == ri.GetResult.Cancel:
-            go.Dispose()
-            return
+                    if objref is None:
+                        if len(objrefs) < 2:
+                            return
 
-        if res == ri.GetResult.Object:
-            objrefs = go.Objects()
-            go.Dispose()
+                        return (
+                            objrefs,
+                            conts,
+                            bEcho,
+                            bDebug)
+
+                    objrefs.append(objref)
+                    conts.append(iContinuity)
+
+                    if len(objrefs) == 4:
+                        return (
+                            objrefs,
+                            conts,
+                            bEcho,
+                            bDebug)
+
+        else:
+            rc = getInput_Global()
+            if rc is None: return
+
+            (
+                objrefs,
+                bSetMaxContPerCrv,
+                iContinuity,
+                bEcho,
+                bDebug,
+                ) = rc
+
+            if bSetMaxContPerCrv:
+                sc.doc.Objects.UnselectAll()
+                continue # in main while loop.
+
             return (
                 objrefs,
-                Opts.values['iContinuity'],
-                Opts.values['bEcho'],
-                Opts.values['bDebug'],
+                iContinuity,
+                bEcho,
+                bDebug,
                 )
-
-        # An option was selected.
-        go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
-        go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
-        go.EnableClearObjectsOnEntry(False) # Do not clear objects in go on repeats of While loop.
-
-        for key in idxs_Opt:
-            if go.Option().Index == idxs_Opt[key]:
-                Opts.setValue(key, go.Option().CurrentListOptionIndex)
-                break
 
 
 def getFormattedDistance(fDistance):
@@ -685,14 +946,22 @@ def transferUniqueKnotVector(nurbsA, nurbsB, sideA=None, sideB=None, paramTol=No
 
 def createSurface(rhCrvs_In, **kwargs):
     """
-    rhCrvs_In: Can be ObjRefs or Geometry of any Curve, including BrepEdge.
+    Parmeteters:
+        rhCrvs_In: Can be ObjRefs or Geometry of any Curve, including BrepEdge.
+        iContinuity_PerCrv
+        bEcho,
+        bDebug
     Returns NurbsSurface on success.
     """
 
 
+    if 'iContinuity_PerCrv' in kwargs: iContinuity_PerCrv = kwargs['iContinuity_PerCrv']
+    else: iContinuity_PerCrv = Opts.values['iContinuity']
+
+    iContinuity_PerCrv_Start = iContinuity_PerCrv[:]
+
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    iContinuity = getOpt('iContinuity')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -841,10 +1110,10 @@ def createSurface(rhCrvs_In, **kwargs):
         return None, "Some edges/trims completely overlap."
 
     geoms_Nurbs = []
-    for geom in geoms_In:
+    for geom, iContinuity in zip(geoms_In, iContinuity_PerCrv):
         geom_Nurbs = spb.getShrunkNurbsSrfFromGeom(geom, bUseUnderlyingIsoCrvs=False)
         if geom_Nurbs is None:
-            geom_Nurbs = spb.getNurbsGeomFromGeom(geom, iContinuity, bEcho)
+            geom_Nurbs = spb.getNurbsGeomFromGeom(geom, iContinuity, bEcho, bDebug)
             if geom_Nurbs is None:
                 if bEcho:
                     print "NURBS geometry could not be obtained from input."
@@ -899,6 +1168,7 @@ def createSurface(rhCrvs_In, **kwargs):
         nc_ToAdd = rg.LineCurve(polyCrv.PointAtStart, polyCrv.PointAtEnd).ToNurbsCurve()
         cs_R.append(nc_ToAdd)
         geoms_Nurbs.append((nc_ToAdd, None))
+        iContinuity_PerCrv.append(-1)
     elif len(rhCrvs_In) == 2:
         if any(getPtsAtNonEndIntersects(cs_R)):
             print "Input contains non-end-to-end intersections.  Split curves and rerun sctipt."
@@ -935,6 +1205,7 @@ def createSurface(rhCrvs_In, **kwargs):
                     nc_ToAdd = getIsoCurveOfSide(side, ns_M_Start)
                     cs_R.append(nc_ToAdd)
                     geoms_Nurbs.append((nc_ToAdd, None))
+                    iContinuity_PerCrv.append(-1)
 
         elif len(pCrvs) == 2:
             # Create blend surface.  Can optionally do this using Brep.CreateFromLoft.
@@ -948,9 +1219,10 @@ def createSurface(rhCrvs_In, **kwargs):
                     (cs_R[0].PointAtEnd, cs_R[1].PointAtStart))
             for i in 0,1:
                 nc_ToAdd = rg.LineCurve(pts[i][0], pts[i][1]).ToNurbsCurve()
-                nc_ToAdd.IncreaseDegree((iContinuity+1)*2-1)
+                nc_ToAdd.IncreaseDegree((iContinuity_PerCrv[i]+1)*2-1)
                 cs_R.append(nc_ToAdd)
                 geoms_Nurbs.append((nc_ToAdd, None))
+                iContinuity_PerCrv.append(-1)
 
 
     if ns_M_Start is None:
@@ -985,33 +1257,68 @@ def createSurface(rhCrvs_In, **kwargs):
         cs_C, cs_R, bEcho)
     if idx_R_per_Ms_WSEN is None: return
 
-    if len(rhCrvs_In) == 3:
-        # Last item in geoms_Nurbs_SideMatched is the added NC.
-        sides_Loose = (W,S,E,N)[idx_R_per_Ms_WSEN.index(3)],
-        if bDebug: print "Sides of EdgeSrf with open input: {}".format(sides_Loose)
-    elif len(rhCrvs_In) == 2:
-        # Last 2 items in geoms_Nurbs_SideMatched are the added NCs.
-        sides_Loose = (
-            (W,S,E,N)[idx_R_per_Ms_WSEN.index(2)],
-            (W,S,E,N)[idx_R_per_Ms_WSEN.index(3)])
-        if bDebug: print "Sides of EdgeSrf with open input: {}".format(sides_Loose)
-    else:
-        sides_Loose = ()
+    geoms_Nurbs_WSEN = [geoms_Nurbs[i] for i in idx_R_per_Ms_WSEN]
+    iConts_WSEN = [iContinuity_PerCrv[i] for i in idx_R_per_Ms_WSEN]
 
-
-    geoms_Nurbs_SideMatched = [geoms_Nurbs[i] for i in idx_R_per_Ms_WSEN]
 
     # Align each reference to the Coons by side and parameterization.
     # This results in opposite u x v directions between each Refernce and the Coons.
     geoms_Nurbs_AR = {}
+    iConts_Per_Side = {}
 
     for i, side in enumerate((W,S,E,N)):
         rc = createAlignedRefGeom_PerStart(
-            geoms_Nurbs_SideMatched[i], ns_M_Start, side)
+            geoms_Nurbs_WSEN[i], ns_M_Start, side)
         if rc is None: return
         geoms_Nurbs_AR[side] = rc
+        iConts_Per_Side[side] = iConts_WSEN[i]
 
-    # Match reference curve or surface degrees to Coons patch surface in relevant direction.
+
+    # Reduce continuities that are above maximum that reference objects can offer.
+    for side in W,S,E,N:
+        if isinstance(geoms_Nurbs_AR[side], rg.NurbsCurve):
+            if iConts_Per_Side[side] > 0:
+                print iConts_Per_Side[side]
+                iConts_Per_Side[side] = 0
+                print iConts_Per_Side[side]
+            continue
+
+        # TODO: Decide what, if anything, should be done with the following.
+        # When commented out, the curvature into ruled reference surfaces will be made 0.
+        # Reference is a NurbsSurface.
+        #if side in (W,E):
+        #    if geoms_Nurbs_AR[side].Points.CountU == 2:
+        #        if iConts_Per_Side[side] == 2:
+        #            iConts_Per_Side[side] = 1
+        #else:
+        #    if geoms_Nurbs_AR[side].Points.CountV == 2:
+        #        if iConts_Per_Side[side] == 2:
+        #            iConts_Per_Side[side] = 1
+
+
+    # If not enough points in Coons, increase degree of Coons and references.
+
+    if ns_M_Start.Points.CountU < (iConts_Per_Side[W] + iConts_Per_Side[E] + 2):
+        #print "Increase in U."
+        ns_M_Start.IncreaseDegreeU(
+            ns_M_Start.Degree(0) +
+            (iConts_Per_Side[W] + iConts_Per_Side[E] + 2) -
+            ns_M_Start.Points.CountU)
+    
+    if ns_M_Start.Points.CountV < (iConts_Per_Side[S] + iConts_Per_Side[N] + 2):
+        #print  "Increase in V."
+        ns_M_Start.IncreaseDegreeV(
+            ns_M_Start.Degree(1) +
+            (iConts_Per_Side[S] + iConts_Per_Side[N] + 2) -
+            ns_M_Start.Points.CountV)
+
+    #print ns_M_Start.Degree(0), ns_M_Start.Degree(1)
+    #print ns_M_Start.Points.CountU, ns_M_Start.Points.CountV
+
+    #return
+
+
+    # Match curve/surface degrees per direction to highest.
 
     bResults = []
     for side in W,S,E,N:
@@ -1048,36 +1355,19 @@ def createSurface(rhCrvs_In, **kwargs):
     #sc.doc.Objects.AddSurface(ns_M_Start)#; sc.doc.Views.Redraw(); return
 
 
-    # Back to reference surfaces.
+    # Then, transfer unique knots back to reference surfaces.
     [transferUniqueKnotVector(ns_M_Start, geoms_Nurbs_AR[side], side, side) for side in (S,N,W,E)]
 
-    #for ns in geoms_ARs:
-    #    sc.doc.Objects.AddSurface(ns)
-    #sc.doc.Views.Redraw(); return
+    if bDebug:
+        print geoms_Nurbs_AR.values()
+        spb.addGeoms(geoms_Nurbs_AR.values())
 
-
-    if iContinuity == 0:
+    if all(iContinuity not in (1,2) for iContinuity in iConts_WSEN):
         return ns_M_Start
-
-    if ns_M_Start.Points.CountU < 4 and ns_M_Start.Points.CountV < 4:
-        if bEcho: print "Not enough points to modify continuity."
-        return ns_M_Start
-
-    if bEcho:
-        iCt = sum(isinstance(geoms_Nurbs_AR[key], rg.NurbsSurface) for key in geoms_Nurbs_AR)
-        print "Modifying continuity of up to {} sides.".format(iCt)
-
-
-
-    ptsM_PreG1 = [cp.Location for cp in ns_M_Start.Points]
-
-    pts_G1_corners = {}
-    pts_G2_corners = {}
-
-    ns_WIP = ns_M_Start.Duplicate()
 
 
     def areThereEnoughPtsToModify(side, iG):
+        """ Directions are against side. """
         if side in (W,E):
             ct = ns_M_Start.Points.CountU
             if ct < 2*(iG+1):
@@ -1093,11 +1383,33 @@ def createSurface(rhCrvs_In, **kwargs):
         return True
 
 
+    if ns_M_Start.Points.CountU < 4 and ns_M_Start.Points.CountV < 4:
+        if bEcho: print "Not enough points to modify continuity."
+        return ns_M_Start
+
+    if bEcho:
+        iCt = sum(isinstance(geoms_Nurbs_AR[key], rg.NurbsSurface) for key in geoms_Nurbs_AR)
+        print "Modifying continuity of up to {} sides.".format(iCt)
+
+
+    ptsM_PreG1 = [cp.Location for cp in ns_M_Start.Points]
+
+    pts_G1_corners = {}
+    pts_G2_corners = {}
+
+    ns_WIP = ns_M_Start.Duplicate()
+
+
     def getUvIdxFromNsPoint1dIdx(ns, idxFlat):
         return idxFlat // ns.Points.CountV, idxFlat % ns.Points.CountV
 
 
     for side in W,S,E,N:
+
+        iContinuity = iConts_Per_Side[side]
+
+        if iContinuity not in (1,2):
+            continue # Since surface is already G0 along this side.
 
         if not areThereEnoughPtsToModify(side, 1):
             continue
@@ -1119,17 +1431,17 @@ def createSurface(rhCrvs_In, **kwargs):
         iRowLn = len(idxPts['M',0])
 
 
-        def setModifyRowEnd(side, sides_loose):
+        def setModifyRowEnd(side):
             if side in (W,E):
-                bModifyRowEnd_T0 = S in sides_loose
-                bModifyRowEnd_T1 = N in sides_Loose
+                bModifyRowEnd_T0 = iConts_Per_Side[S] == -1
+                bModifyRowEnd_T1 = iConts_Per_Side[N] == -1
             else:
-                bModifyRowEnd_T0 = W in sides_loose
-                bModifyRowEnd_T1 = E in sides_Loose
+                bModifyRowEnd_T0 = iConts_Per_Side[W] == -1
+                bModifyRowEnd_T1 = iConts_Per_Side[E] == -1
             return bModifyRowEnd_T0, bModifyRowEnd_T1
 
 
-        rc = setModifyRowEnd(side, sides_Loose)
+        rc = setModifyRowEnd(side)
         bModifyRowEnd_T0, bModifyRowEnd_T1 = rc
 
         # G0 row is already set.
@@ -1262,10 +1574,14 @@ def main():
 
     (
         objrefs_Crvs,
-        iContinuity,
+        iContinuity_PerCrv,
         bEcho,
         bDebug,
         ) = rc
+
+    objrefs_Crvs = tuple(objrefs_Crvs)
+    if not isinstance(iContinuity_PerCrv, list): 
+        iContinuity_PerCrv = [iContinuity_PerCrv]*len(objrefs_Crvs)
 
     Rhino.RhinoApp.CommandPrompt = "Working ..."
 
@@ -1274,7 +1590,7 @@ def main():
 
     rc = createSurface(
         rhCrvs_In=objrefs_Crvs,
-        iContinuity=iContinuity,
+        iContinuity_PerCrv=iContinuity_PerCrv,
         bEcho=bEcho,
         bDebug=bDebug,
         )

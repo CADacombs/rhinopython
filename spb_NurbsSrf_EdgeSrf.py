@@ -11,6 +11,8 @@ Send any questions, comments, or script development service needs to @spb on the
 211013-25: Created.
 211102: Continuity can now be set per input curve.
         Added options for single-click selection of continuity.
+211103: Bug fix when entering a number to modify continuity in getInput_Global.
+        Now, G2 is allowed for None IsoStatus from planar surfaces only.
 
 TODO:
     Convert (some) rational input to non-rational degree 5?
@@ -186,15 +188,15 @@ def getInput():
                     Opts.values['bDebug'],
                     )
 
-            if res == ri.GetResult.Number:
-                if int(go.Number()) not in (0,1,2): continue
-                Opts.setValue('iContinuity', idxList=int(go.Number()))
-                continue
-
             # An option was selected.
             go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
             go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
             go.EnableClearObjectsOnEntry(False) # Do not clear objects in go on repeats of While loop.
+
+            if res == ri.GetResult.Number:
+                if int(go.Number()) not in (0,1,2): continue
+                Opts.setValue('iContinuity', idxList=int(go.Number()))
+                continue
 
             if go.Option().Index == idxs_Opt['G0']:
                 Opts.setValue('iContinuity', idxList=0)
@@ -1283,17 +1285,18 @@ def createSurface(rhCrvs_In, **kwargs):
                 print iConts_Per_Side[side]
             continue
 
-        # TODO: Decide what, if anything, should be done with the following.
-        # When commented out, the curvature into ruled reference surfaces will be made 0.
         # Reference is a NurbsSurface.
-        #if side in (W,E):
-        #    if geoms_Nurbs_AR[side].Points.CountU == 2:
-        #        if iConts_Per_Side[side] == 2:
-        #            iConts_Per_Side[side] = 1
-        #else:
-        #    if geoms_Nurbs_AR[side].Points.CountV == 2:
-        #        if iConts_Per_Side[side] == 2:
-        #            iConts_Per_Side[side] = 1
+        if not geoms_Nurbs_AR[side].IsPlanar(tolerance=1e-8):
+            continue
+
+        if side in (W,E):
+            if geoms_Nurbs_AR[side].Points.CountU == 2:
+                if iConts_Per_Side[side] == 2:
+                    iConts_Per_Side[side] = 1
+        else:
+            if geoms_Nurbs_AR[side].Points.CountV == 2:
+                if iConts_Per_Side[side] == 2:
+                    iConts_Per_Side[side] = 1
 
 
     # If not enough points in Coons, increase degree of Coons and references.

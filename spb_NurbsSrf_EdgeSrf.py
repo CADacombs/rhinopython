@@ -13,9 +13,12 @@ Send any questions, comments, or script development service needs to @spb on the
         Added options for single-click selection of continuity.
 211103: Bug fix when entering a number to modify continuity in getInput_Global.
         Now, G2 is allowed for None IsoStatus from planar surfaces only.
+211105: Bug fix when adding missing multiplicity of knots at existing locations.
+        Bug fix in reducing continuity target from G2 when a tangency surface is used.
 
 TODO:
     Convert (some) rational input to non-rational degree 5?
+    Report to McNeel false positives of NurbsSurfaceKnotList.InsertKnot when value is > 2e-52 and < 2e-32.
 """
 
 import Rhino
@@ -919,8 +922,14 @@ def transferUniqueKnotVector(nurbsA, nurbsB, sideA=None, sideB=None, paramTol=No
 
     def getKnot(geom, side, iK):
         if isinstance(geom, rg.NurbsSurface):
-            if side in (S, N): return geom.KnotsU[iK]
-            else: return geom.KnotsV[iK]
+            if side in (S, N):
+                if iK >= geom.KnotsU.Count:
+                    pass
+                return geom.KnotsU[iK]
+            else:
+                if iK >= geom.KnotsV.Count:
+                    pass
+                return geom.KnotsV[iK]
         else:
             return geom.Knots[iK]
 
@@ -932,18 +941,36 @@ def transferUniqueKnotVector(nurbsA, nurbsB, sideA=None, sideB=None, paramTol=No
             return geom.Knots.InsertKnot(t, m)
 
 
-    knotCt_In = knotCount(nurbsB, sideB)
+    knotCt_A = knotCount(nurbsA, sideA)
+    knotCt_B_In = knotCount(nurbsB, sideB)
 
-    iK = degree(nurbsA, sideA)
-    while iK < knotCount(nurbsA, sideA)-degree(nurbsA, sideA):
+    deg_A = degree(nurbsA, sideA)
+
+    iK = deg_A
+    while iK < (knotCt_A - deg_A):
         sc.escape_test()
         t_A = getKnot(nurbsA, sideA, iK)
-        m = knotMultiplicity(nurbsA, sideA, iK)
-        if abs(t_A - getKnot(nurbsB, sideB, iK)) > paramTol:
-            insertKnot(nurbsB, sideB, t_A, m)
-        iK += m
+        mA = knotMultiplicity(nurbsA, sideA, iK)
+        if knotCount(nurbsB, sideB) <= iK:
+            rc = insertKnot(nurbsB, sideB, t_A, mA)
+        elif abs(t_A - getKnot(nurbsB, sideB, iK)) > paramTol:
+            rc = insertKnot(nurbsB, sideB, t_A, mA)
+        elif abs(t_A - getKnot(nurbsB, sideB, iK)) < paramTol:
+            mB = knotMultiplicity(nurbsB, sideB, iK)
+            if mB < mA:
+                # To add missing multiple knots at an existing knot, insert the
+                # total target multiplicity, but using t_B instead of t_A due to
+                # apparent 2e-52 sensitivity of parameter value for InsertKnot.
+                t_B = getKnot(nurbsB, sideB, iK)
+                rc = insertKnot(nurbsB, sideB, t_B, mA)
+                #print abs(t_A-t_B)
+        else:
+            raise Exception("What happened?")
+        iK += mA
 
-    return knotCount(nurbsB, sideB) > knotCt_In
+    knotCt_B_Out = knotCount(nurbsB, sideB)
+
+    return knotCount(nurbsB, sideB) > knotCt_B_In
 
 
 def createSurface(rhCrvs_In, **kwargs):
@@ -1259,7 +1286,6 @@ def createSurface(rhCrvs_In, **kwargs):
         cs_C, cs_R, bEcho)
     if idx_R_per_Ms_WSEN is None: return
 
-    geoms_Nurbs_WSEN = [geoms_Nurbs[i] for i in idx_R_per_Ms_WSEN]
     iConts_WSEN = [iContinuity_PerCrv[i] for i in idx_R_per_Ms_WSEN]
 
 
@@ -1267,36 +1293,54 @@ def createSurface(rhCrvs_In, **kwargs):
     # This results in opposite u x v directions between each Refernce and the Coons.
     geoms_Nurbs_AR = {}
     iConts_Per_Side = {}
+    geoms_In_Per_Side = {}
 
     for i, side in enumerate((W,S,E,N)):
+        idx_R_per_M_side = idx_R_per_Ms_WSEN[i]
         rc = createAlignedRefGeom_PerStart(
-            geoms_Nurbs_WSEN[i], ns_M_Start, side)
+            geoms_Nurbs[idx_R_per_M_side], ns_M_Start, side)
         if rc is None: return
         geoms_Nurbs_AR[side] = rc
         iConts_Per_Side[side] = iConts_WSEN[i]
-
+        if idx_R_per_M_side < len(geoms_In):
+            geoms_In_Per_Side[side] = geoms_In[idx_R_per_Ms_WSEN[i]]
+        else:
+            geoms_In_Per_Side[side] = None
 
     # Reduce continuities that are above maximum that reference objects can offer.
     for side in W,S,E,N:
         if isinstance(geoms_Nurbs_AR[side], rg.NurbsCurve):
             if iConts_Per_Side[side] > 0:
-                print iConts_Per_Side[side]
+                if bEcho:
+                    print "Reduced continuity on {} from {} to {}.".format(
+                        side, iConts_Per_Side[side], 0)
                 iConts_Per_Side[side] = 0
-                print iConts_Per_Side[side]
             continue
 
         # Reference is a NurbsSurface.
-        if not geoms_Nurbs_AR[side].IsPlanar(tolerance=1e-8):
+        if iConts_Per_Side[side] < 2:
+            continue
+
+        rgTrim_In = geoms_In_Per_Side[side]
+        if rgTrim_In.IsoStatus != rg.IsoStatus.None:
+            continue
+
+        if bDebug: print "Tangent surface is used on {}.".format(side)
+
+        if rgTrim_In.Face.UnderlyingSurface().IsPlanar(tolerance=1e-8):
+            # G2 is acceptable.
             continue
 
         if side in (W,E):
-            if geoms_Nurbs_AR[side].Points.CountU == 2:
-                if iConts_Per_Side[side] == 2:
-                    iConts_Per_Side[side] = 1
+            if bEcho:
+                print "Reduced continuity on {} from {} to {}.".format(
+                    side, iConts_Per_Side[side], 1)
+            iConts_Per_Side[side] = 1
         else:
-            if geoms_Nurbs_AR[side].Points.CountV == 2:
-                if iConts_Per_Side[side] == 2:
-                    iConts_Per_Side[side] = 1
+            if bEcho:
+                print "Reduced continuity on {} from {} to {}.".format(
+                    side, iConts_Per_Side[side], 1)
+            iConts_Per_Side[side] = 1
 
 
     # If not enough points in Coons, increase degree of Coons and references.

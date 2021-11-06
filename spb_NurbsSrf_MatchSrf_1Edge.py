@@ -35,6 +35,8 @@ Send any questions, comments, or script development service needs to @spb on the
 211008-25: Bug fix when transferring knot vector.
         Refactored for easier use as a module by other scripts.
 211102: Now, simplification is attempted on non-uniform input curves in createTanSrfFromEdge.
+211106: Now, SumSurfaces are allowed as input for either surface.
+        Now, full Surfaces but with split edges are allowed for the surface to modify.
 """
 
 import Rhino
@@ -204,9 +206,9 @@ def isFaceSupported(rgF, bEcho):
     rgF = rgB.Faces[0]
     rgS = rgF.UnderlyingSurface()
 
-    if not isinstance(rgS, rg.NurbsSurface):
-        print "Underlying surface is a {}.".format(rgS.GetType().Name)
-        return False
+    #if not isinstance(rgS, rg.NurbsSurface):
+    #    print "Underlying surface is a {}.".format(rgS.GetType().Name)
+    #    return False
 
     ns = rgS
 
@@ -219,9 +221,10 @@ def isFaceSupported(rgF, bEcho):
         return False
 
     if not rgB.Trims.Count == 4:
-        print "There are {} trims on this face.  Untrim it first.".format(
-            rgB.Trims.Count)
-        return False
+        print "There are {} trims on this face." \
+            "  Only natural edges will remain.".format(
+                rgB.Trims.Count)
+    #    return False
 
     # Reject any NS with singular trims.
     iCt_Singulars = 0
@@ -256,22 +259,26 @@ def getInput_ToModify():
     go.GeometryFilter = rd.ObjectType.EdgeFilter
 
 
-    def geomFilter_TrimOfFull4TrimNS(rdObj, geom, compIdx):
-        #print rdObj, geom, compIdx.ComponentIndexType, compIdx.Index
+    def customGeometryFilter(rdObj, geom, compIdx):
+        print rdObj, geom, compIdx.ComponentIndexType, compIdx.Index
 
-        if isinstance(geom, rg.BrepTrim):
-            rgT = geom
-            rgB = rgT.Brep
-            if rgB.Faces.Count > 1:
-                return False
-        else:
+        if not isinstance(geom, rg.BrepTrim):
+            return False
+
+        rgT = geom
+
+        if rgT.IsoStatus not in (W, S, E, N):
+            return False
+
+        rgB = rgT.Brep
+        if rgB.Faces.Count > 1:
             return False
 
         rgF = rgB.Faces[0]
         rgS = rgF.UnderlyingSurface()
 
-        if not isinstance(rgS, rg.NurbsSurface):
-            return False
+        #if not isinstance(rgS, rg.NurbsSurface):
+        #    return False
 
         ns = rgS
 
@@ -281,15 +288,15 @@ def getInput_ToModify():
         if not rgF.IsSurface:
             return False
 
-        if not rgB.Trims.Count == 4:
-            return False
+        #if not rgB.Trims.Count == 4:
+        #    return False
 
         if containsShortOrCollapsedBorders(ns):
             return False
 
         return True
 
-    go.SetCustomGeometryFilter(geomFilter_TrimOfFull4TrimNS)
+    go.SetCustomGeometryFilter(customGeometryFilter)
 
     go.AcceptNumber(True, acceptZero=True)
 
@@ -356,7 +363,7 @@ def getInput_Ref(objref_SrfToMod):
     go.GeometryFilter = rd.ObjectType.Curve
 
 
-    def geomFilter_Custom(rdObj, geom, compIdx):
+    def customGeometryFilter(rdObj, geom, compIdx):
         #print rdObj, geom, compIdx.ComponentIndexType, compIdx.Index
 
         if rdObj.Id == objref_SrfToMod.ObjectId:
@@ -372,9 +379,11 @@ def getInput_Ref(objref_SrfToMod):
             if isinstance(srf, rg.PlaneSurface):
                 return True
 
+            if isinstance(srf, rg.RevSurface):
+                return False
             if srf.IsClosed(0) or srf.IsClosed(1):
                 return False
-            if srf.IsRational:
+            if isinstance(srf, rg.NurbsSurface) and srf.IsRational:
                 return False
             if containsShortOrCollapsedBorders(srf):
                 return False
@@ -390,7 +399,7 @@ def getInput_Ref(objref_SrfToMod):
             print "What happened?"
             return False
 
-    go.SetCustomGeometryFilter(geomFilter_Custom)
+    go.SetCustomGeometryFilter(customGeometryFilter)
 
 
     go.AcceptNumber(True, acceptZero=True)
@@ -514,7 +523,7 @@ def areParamsAlignedPerPickPts(objref_A, objref_B):
             raise ValueError("{} IsoStatus should have been caught earlier.".format(side))
 
 
-    def isPickCloserToT0(objref):
+    def isPickCloserToT0(objref, bUseFullIsoCrv=False):
         pt_Sel = objref.SelectionPoint()
         rdObj = objref.Object()
 
@@ -540,24 +549,28 @@ def areParamsAlignedPerPickPts(objref_A, objref_B):
         # Trim is W, S, E, N, X, or Y.
 
         crv2D = trim.DuplicateCurve()
-        crv3D = trim.Edge.DuplicateCurve()
 
-        if trim.IsReversed():
-            crv3D.Reverse()
+        if bUseFullIsoCrv:
+            crv3D = getIsoCurveOfSide(trim.IsoStatus, trim.Face.UnderlyingSurface())
+        else:
+            crv3D = trim.Edge.DuplicateCurve()
 
-        if trim.IsoStatus in (S, E):
-            pass
-        elif trim.IsoStatus in (W, N):
-            crv2D.Reverse()
-            crv3D.Reverse()
-        elif trim.IsoStatus == rg.IsoStatus.X:
-            if trim.PointAt(trim.Domain.T1).Y < trim.PointAt(trim.Domain.T0).Y:
+            if trim.IsReversed():
+                crv3D.Reverse()
+
+            if trim.IsoStatus in (S, E):
+                pass
+            elif trim.IsoStatus in (W, N):
                 crv2D.Reverse()
                 crv3D.Reverse()
-        elif trim.IsoStatus == rg.IsoStatus.Y:
-            if trim.PointAt(trim.Domain.T1).X < trim.PointAt(trim.Domain.T0).X:
-                crv2D.Reverse()
-                crv3D.Reverse()
+            elif trim.IsoStatus == rg.IsoStatus.X:
+                if trim.PointAt(trim.Domain.T1).Y < trim.PointAt(trim.Domain.T0).Y:
+                    crv2D.Reverse()
+                    crv3D.Reverse()
+            elif trim.IsoStatus == rg.IsoStatus.Y:
+                if trim.PointAt(trim.Domain.T1).X < trim.PointAt(trim.Domain.T0).X:
+                    crv2D.Reverse()
+                    crv3D.Reverse()
 
         #sc.doc.Objects.AddCurve(crv3D); sc.doc.Views.Redraw()#; 1/0
 
@@ -570,7 +583,7 @@ def areParamsAlignedPerPickPts(objref_A, objref_B):
 
     if None in (objref_A.SelectionPoint(), objref_B.SelectionPoint()): return
 
-    bPickedAtSideStart_A = isPickCloserToT0(objref_A)
+    bPickedAtSideStart_A = isPickCloserToT0(objref_A, bUseFullIsoCrv=True)
     if bPickedAtSideStart_A is None: return
 
     bPickedAtSideStart_R = isPickCloserToT0(objref_B)

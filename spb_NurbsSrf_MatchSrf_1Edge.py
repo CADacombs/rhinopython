@@ -21,6 +21,9 @@ Limitations:
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
+
+from __future__ import print_function
+
 """
 200626: Started and 1st working version.
 201207: Added G2 matching.  Various UI improvements.
@@ -37,6 +40,7 @@ Send any questions, comments, or script development service needs to @spb on the
 211102: Now, simplification is attempted on non-uniform input curves in createTanSrfFromEdge.
 211106: Now, SumSurfaces are allowed as input for either surface.
         Now, full Surfaces but with split edges are allowed for the surface to modify.
+211117: Minor modifications in createTanSrfFromEdge.  Added print_function from __future__.
 """
 
 import Rhino
@@ -200,30 +204,30 @@ def isFaceSupported(rgF, bEcho):
     rgB = rgF.Brep
 
     if rgB.Faces.Count > 1:
-        print "Face is not from a monoface brep."
+        print("Face is not from a monoface brep.")
         return False
 
     rgF = rgB.Faces[0]
     rgS = rgF.UnderlyingSurface()
 
     #if not isinstance(rgS, rg.NurbsSurface):
-    #    print "Underlying surface is a {}.".format(rgS.GetType().Name)
+    #    print("Underlying surface is a {}.".format(rgS.GetType().Name))
     #    return False
 
     ns = rgS
 
     if ns.IsClosed(0) or ns.IsClosed(1):
-        print "Closed surfaces are not yet supported."
+        print("Closed surfaces are not yet supported.")
         return False
 
     if not rgF.IsSurface:
-        print "Face is not a full surface."
+        print("Face is not a full surface.")
         return False
 
     if not rgB.Trims.Count == 4:
-        print "There are {} trims on this face." \
+        print("There are {} trims on this face." \
             "  Only natural edges will remain.".format(
-                rgB.Trims.Count)
+                rgB.Trims.Count))
     #    return False
 
     # Reject any NS with singular trims.
@@ -232,8 +236,8 @@ def isFaceSupported(rgF, bEcho):
         if rgB.Trims[iT].TrimType == rg.BrepTrimType.Singular:
             iCt_Singulars += 1
     if iCt_Singulars > 0:
-        print "There are {} singular trims on this surface.".format(
-            iCt_Singulars)
+        print("There are {} singular trims on this surface.".format(
+            iCt_Singulars))
         return False
 
     return True
@@ -245,7 +249,7 @@ def printObjRefObjs(objref):
         'Object', 'Point', 'SelectionMethod', 'SelectionPoint', 'Surface',
         'SurfaceParameter', 'Trim'
     ):
-        print "  .{}(): {}".format(sMethod, eval("objref."+sMethod+"()"))
+        print("  .{}(): {}".format(sMethod, eval("objref."+sMethod+"()")))
 
 
 def getInput_ToModify():
@@ -260,7 +264,7 @@ def getInput_ToModify():
 
 
     def customGeometryFilter(rdObj, geom, compIdx):
-        print rdObj, geom, compIdx.ComponentIndexType, compIdx.Index
+        #print(rdObj, geom, compIdx.ComponentIndexType, compIdx.Index)
 
         if not isinstance(geom, rg.BrepTrim):
             return False
@@ -329,9 +333,9 @@ def getInput_ToModify():
             objref = go.Object(0)
             go.Dispose()
 
-            #print objref.Face()
-            #print objref.Surface()
-            #print objref.Trim()
+            #print(objref.Face())
+            #print(objref.Surface())
+            #print(objref.Trim())
 
             rgF = objref.Face()
             if isFaceSupported(rgF, bEcho=True):
@@ -364,7 +368,7 @@ def getInput_Ref(objref_SrfToMod):
 
 
     def customGeometryFilter(rdObj, geom, compIdx):
-        #print rdObj, geom, compIdx.ComponentIndexType, compIdx.Index
+        #print(rdObj, geom, compIdx.ComponentIndexType, compIdx.Index)
 
         if rdObj.Id == objref_SrfToMod.ObjectId:
             return False
@@ -396,7 +400,7 @@ def getInput_Ref(objref_SrfToMod):
                 return False
             return True
         else:
-            print "What happened?"
+            print("What happened?")
             return False
 
     go.SetCustomGeometryFilter(customGeometryFilter)
@@ -598,39 +602,47 @@ def createTanSrfFromEdge(rgTrim, bDebug=False):
 
     rgTrim.Brep.Faces.ShrinkFaces()
     rgEdge = rgTrim.Edge
-    ns = rgTrim.Face.UnderlyingSurface().ToNurbsSurface()
+    ns = rgTrim.Face.UnderlyingSurface()
 
-    ncA_Start = rgEdge.ToNurbsCurve()
+    #ncA_Start = rgEdge.ToNurbsCurve()
+    ncA_Start = ns.Pushup(rgTrim, tolerance=0.5*sc.doc.ModelAbsoluteTolerance)
+
+    if bDebug: print(ncA_Start.Points.Count)
+
+    def simplifyCrv(ncA_Start):
+        # Try to make Bezier.
+        for d in 1, 2, 3, 5:
+            nc_WIP = ncA_Start.Rebuild(pointCount=d+1, degree=d, preserveTangents=True)
+            rc = rg.Curve.GetDistancesBetweenCurves(
+                nc_WIP, ncA_Start, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+            if not rc[0]: continue
+            if rc[1] > 0.5*sc.doc.ModelAbsoluteTolerance: continue
+            return nc_WIP
+        if bDebug: print(ncA_Start.Knots.KnotStyle)
+
+        if ncA_Start.Knots.KnotStyle == rg.KnotStyle.QuasiUniform:
+            return
+
+        # QuasiUniform ~ Open and uniform
+        # Try to at least make uniform.
+        for p in range(3, ncA_Start.Points.Count+1):
+            for d in 2, 3, 5:
+                if (p - d) < 1: continue
+                nc_WIP = ncA_Start.Rebuild(pointCount=p, degree=d, preserveTangents=True)
+                rc = rg.Curve.GetDistancesBetweenCurves(
+                    nc_WIP, ncA_Start, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+                if not rc[0]: continue
+                dev = rc[1]
+                if dev > 0.5*sc.doc.ModelAbsoluteTolerance: continue
+                return nc_WIP
 
     if ncA_Start.SpanCount > 1:
-        def simplifyCrv(ncA_Start):
-            for d in 1, 2, 3, 5:
-                nc_WIP = ncA_Start.Rebuild(pointCount=d+1, degree=d, preserveTangents=True)
-                rc = rg.Curve.GetDistancesBetweenCurves(
-                    nc_WIP, ncA_Start, tolerance=0.01*sc.doc.ModelAbsoluteTolerance)
-                if not rc[0]: continue
-                if rc[1] > 0.5*sc.doc.ModelAbsoluteTolerance: continue
-                return nc_WIP
-            if bDebug: print ncA_Start.Knots.KnotStyle
-            if ncA_Start.Knots.KnotStyle != rg.KnotStyle.QuasiUniform:
-                # QuasiUniform ~ Open and uniform
-                # Try to at least make uniform.
-                for p in range(3, ncA_Start.Points.Count+1):
-                    for d in 2, 3, 5:
-                        if (p - d) < 1: continue
-                        nc_WIP = ncA_Start.Rebuild(pointCount=p, degree=d, preserveTangents=True)
-                        rc = rg.Curve.GetDistancesBetweenCurves(
-                            nc_WIP, ncA_Start, tolerance=0.01*sc.doc.ModelAbsoluteTolerance)
-                        if not rc[0]: continue
-                        if rc[1] > 0.5*sc.doc.ModelAbsoluteTolerance: continue
-                        return nc_WIP
-
         rc = simplifyCrv(ncA_Start)
         if rc is not None:
             if bDebug:
-                print "Simplified starting curve for tangent surface from D{}P{} to D{}P{}.".format(
+                print("Simplified starting curve for tangent surface from D{}P{} to D{}P{}.".format(
                     ncA_Start.Degree, ncA_Start.Points.Count,
-                    rc.Degree, rc.Points.Count)
+                    rc.Degree, rc.Points.Count))
             ncA_Start = rc
 
 
@@ -659,15 +671,15 @@ def createTanSrfFromEdge(rgTrim, bDebug=False):
 
         bSuccess, u, v = ns.ClosestPoint(pt_Start)
         if not bSuccess:
-            print "ClosestPoint failed." \
-                "  G1+ will not occur on an edge."
+            print("ClosestPoint failed." \
+                "  G1+ will not occur on an edge.")
             return
 
         vNormal = ns.NormalAt(u, v)
         bSuccess, frame = ncA.PerpendicularFrameAt(t)
         if not bSuccess:
-            print "PerpendicularFrameAt failed." \
-                "  G1+ will not occur on an edge."
+            print("PerpendicularFrameAt failed." \
+                "  G1+ will not occur on an edge.")
             return
         
         pt_Normal = pt_Start + vNormal * dist
@@ -723,8 +735,8 @@ def createTanSrfFromEdge(rgTrim, bDebug=False):
             closed=False)
 
     if len(rgB_Loft) != 1:
-        print "{} breps resulted from one curve." \
-            "  Continuity increase will not occur on an edge."
+        print("{} breps resulted from one curve." \
+            "  Continuity increase will not occur on an edge.")
 
     ns_Out = rgB_Loft[0].Surfaces[0]
 
@@ -781,7 +793,7 @@ def findMatchingCurveByEndPoints(curvesA, curvesB, bEcho=True):
         else:
             if len(curvesA) == len(curvesB):
                 if bEcho:
-                    print "Matching curve not found."
+                    print("Matching curve not found.")
                 return
             idxBs_per_As.append(None)
 
@@ -820,7 +832,7 @@ def isFaceOnT1SideOfXYIsoCrv(rgTrim):
             for j in range(i+1, len(pts)):
                 ptB = pts[j]
                 if ptA.DistanceTo(ptB) > max_edge_tol:
-                    print "Points non-coincident within edge tolerance found.  Check results."
+                    print("Points non-coincident within edge tolerance found.","Check results.")
 
     pt = pts[0]
     pt_Mid = rgTrim.Edge.PointAt(rgTrim.Edge.Domain.Mid)
@@ -985,7 +997,7 @@ def getNurbsGeomFromGeom(In, iContinuity, bEcho=True, bDebug=False):
                 if iContinuity > 0:
                     s += "  G1 may only be approximately achieved."
                     s += "  Use _EdgeContinuity to check results."
-                print s
+                print(s)
         return (W,S,E,N)[idxB], ns_Tan
 
     return trim.IsoStatus, srf.ToNurbsSurface()
@@ -1203,7 +1215,7 @@ def setContinuity_G0(**kwargs):
 
 
     bValid, sLog = ns_M_In.IsValidWithLog()
-    if not bValid: print sLog; return
+    if not bValid: print(sLog); return
 
 
     ns_M_Out = ns_M_In.Duplicate()
@@ -1267,7 +1279,7 @@ def setContinuity_G1(**kwargs):
     ns_R = nurbs_R
 
     bValid, sLog = ns_M_In.IsValidWithLog()
-    if not bValid: print sLog; return
+    if not bValid: print(sLog); return
 
 
     ns_M_Out = ns_M_In.Duplicate()
@@ -1380,7 +1392,7 @@ def setContinuity_G2(**kwargs):
     ns_R = nurbs_R
 
     bValid, sLog = ns_M_In.IsValidWithLog()
-    if not bValid: print sLog; return
+    if not bValid: print(sLog); return
 
 
     ns_M_Out = ns_M_In.Duplicate()
@@ -1499,7 +1511,7 @@ def setContinuity_G2(**kwargs):
         if bDebug and bAddRefs:
             #addGeoms([r0, a1, a2, r1, r2], False)
             addGeoms(a2, False)
-            #print a2
+            #print(a2)
 
 
     if not b_trans_a2_thru_a1:
@@ -1586,7 +1598,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
                 iContinuity = 1
 
     bValid, sLog = ns_M_In.IsValidWithLog()
-    if not bValid: print sLog; return
+    if not bValid: print(sLog); return
 
 
     if side_M not in (W,S,E,N):
@@ -1604,13 +1616,13 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
             if ns_R.IsRational:
                 makeNonRational(ns_R)
                 if ns_R.IsRational:
-                    print "Warning... Reference surface is rational.  Check results."
+                    print("Warning... Reference surface is rational.  Check results.")
         elif isinstance(geom_R_Nurbs[0], rg.NurbsCurve):
             nc_R = geom_R_Nurbs[0]
             if nc_R.IsRational:
                 makeNonRational(nc_R)
                 if nc_R.IsRational:
-                    print "Warning... Reference curve is rational.  Check results."
+                    print("Warning... Reference curve is rational.  Check results.")
 
 
 
@@ -1630,14 +1642,14 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
 
 
     bValid, sLog = nurbs_R.IsValidWithLog()
-    if not bValid: print sLog; return
+    if not bValid: print(sLog); return
 
     side_R = side_M
     side_Both = side_M
 
     #sc.doc.Objects.AddSurface(nurbs_R); sc.doc.Views.Redraw(); return
-    #sEval = "bMatchWithParamsAligned"; print sEval+':',eval(sEval)
-    #print side_M, side_R
+    #sEval = "bMatchWithParamsAligned"; print(sEval+':',eval(sEval))
+    #print(side_M, side_R)
 
 
 
@@ -1682,7 +1694,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
 
 
     bValid, sLog = ns_WIP.IsValidWithLog()
-    if not bValid: print sLog; return
+    if not bValid: print(sLog); return
 
 
     # Along match side of surface, match reference's knot vector since both surface degrees are the same.
@@ -1737,7 +1749,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
 
     bValid, sLog = ns_WIP.IsValidWithLog()
     if not bValid:
-        print sLog; return
+        print(sLog); return
     #sc.doc.Objects.AddSurface(ns_WIP); sc.doc.Views.Redraw(); return
 
 
@@ -1762,10 +1774,10 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
         iDeg_FromSide_A_Min = iPtCt_FromMSide_A_Min - 1
         if iDeg_FromMSide_A < iDeg_FromSide_A_Min:
             if increaseDegree(ns_WIP, iDir_FromMSide_A, iDeg_FromSide_A_Min):
-                print "Increased degree of surface in {} direction from {} to {}.".format(
+                print("Increased degree of surface in {} direction from {} to {}.".format(
                     getDirString(iDir_FromMSide_A),
                     iDeg_FromMSide_A,
-                    iDeg_FromSide_A_Min)
+                    iDeg_FromSide_A_Min))
 
                 # Update variables since degree was increased.
                 iDeg_FromMSide_A = ns_WIP.Degree(iDir_FromMSide_A)
@@ -1792,17 +1804,17 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
                 iCt_Knot_Target=iKnotCt_FromSide_A_Required
                 )
 
-            print "Increased knot count from {} to {}.".format(
-                    iCt_Knot_Start, coll_Knots.Count)
+            print("Increased knot count from {} to {}.".format(
+                    iCt_Knot_Start, coll_Knots.Count))
     
-            #print coll_Knots.CreateUniformKnots(knotSpacing=1.0)
+            #print(coll_Knots.CreateUniformKnots(knotSpacing=1.0))
     
             ## Only increase degree to an odd value.
             #if iDegIncr % 2 == 0:
             #    iDegIncr += 1
             #if ns_WIP.IncreaseDegreeV(iDegIncr):
-            #    print "Increase degree of surface in V direction from {} to {}.".format(
-            #        iDeg_FromMSide_A, iDegIncr)
+            #    print("Increase degree of surface in V direction from {} to {}.".format(
+            #        iDeg_FromMSide_A, iDegIncr))
 
     ns_M_BeforeAnyMatching = ns_WIP.Duplicate()
 
@@ -1817,8 +1829,8 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
                     sc.escape_test()
                     break
             if bEcho:
-                print "Input and output NURBS surfaces are EpsilonEqual within {}." \
-                    "  No change.".format(eps_prev)
+                print("Input and output NURBS surfaces are EpsilonEqual within {}." \
+                    "  No change.".format(eps_prev))
             Out.Dispose()
             return True
         return False
@@ -1835,7 +1847,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
         return None, None
 
     if iContinuity == 0:
-        if bEcho: print "Modified surface toward G0."
+        if bEcho: print("Modified surface toward G0.")
         if areInOutEpsilonEqual(ns_M_BeforeAnyMatching, ns_M_G0): return
         return ns_M_G0, 0
 
@@ -1923,7 +1935,7 @@ def processObjRefs(objref_M, objref_R, **kwargs):
         if ns_M.IsRational:
             makeNonRational(ns_M)
             if ns_M.IsRational:
-                print "Warning... Surface to modify is rational.  Check results."
+                print("Warning... Surface to modify is rational.  Check results.")
     else:
         raise ValueError("{} not supported.".format(geom_M_In))
 
@@ -1933,7 +1945,7 @@ def processObjRefs(objref_M, objref_R, **kwargs):
         raise ValueError("{} is not valid for reference.".format(geom_R_In.GetType().Name))
 
     bMatchWithParamsAligned = areParamsAlignedPerPickPts(objref_M, objref_R)
-    #sEval = "bMatchWithParamsAligned"; print sEval+':',eval(sEval)
+    #sEval = "bMatchWithParamsAligned"; print(sEval+':',eval(sEval))
 
 
     rc = createSurface(
@@ -1951,20 +1963,20 @@ def processObjRefs(objref_M, objref_R, **kwargs):
         )
 
     if rc is None:
-        print "Surface could not be created."
+        print("Surface could not be created.")
         return
 
     ns_Ret, iG = rc
 
     if bEcho:
-        print "Continuity was modified toward G{}.".format(iG)
+        print("Continuity was modified toward G{}.".format(iG))
 
     if not bReplace:
         gB_Out = sc.doc.Objects.AddSurface(ns_Ret)
         if gB_Out == gB_Out.Empty:
-            print "Could not add modified surface."
+            print("Could not add modified surface.")
         else:
-            print "Surface was added."
+            print("Surface was added.")
     else:
         rdB_In = objref_M.Object()
         rgB_In = objref_M.Brep()
@@ -1977,20 +1989,20 @@ def processObjRefs(objref_M, objref_R, **kwargs):
             rgB_Out = ns_Ret.ToBrep()
             if sc.doc.Objects.Replace(objref_M.ObjectId, rgB_Out):
                 gB_Out = objref_M.ObjectId
-                print "Replaced monoface brep with new surface."
+                print("Replaced monoface brep with new surface.")
             else:
-                print "Could not replace monoface brep with new surface."
+                print("Could not replace monoface brep with new surface.")
         else:
             attr = rdB_In.Attributes
             gB_Out = sc.doc.Objects.AddSurface(ns_Ret, attr)
             if gB_Out == gB_Out.Empty:
-                print "Could not add modified surface."
+                print("Could not add modified surface.")
             else:
                 if len(rgBs_Out) == 1:
                     if sc.doc.Objects.Replace(objref_M.ObjectId, rgBs_Out[0]):
-                        print "Added new surface and deleted face of brep."
+                        print("Added new surface and deleted face of brep.")
                     else:
-                        print "Added new surface but could not delete face of brep."
+                        print("Added new surface but could not delete face of brep.")
                 else:
                     gBs_Out = []
                     for rgB in rgBs_Out:
@@ -2000,11 +2012,11 @@ def processObjRefs(objref_M, objref_R, **kwargs):
                         for gB_Out in gBs_Out:
                             if gB_Out != gB_Out.Empty:
                                 sc.doc.Objects.Delete(objectId=gB_Out, quiet=False)
-                        print "Added new surface but could not delete face of brep."
+                        print("Added new surface but could not delete face of brep.")
                     else:
                         sc.doc.Objects.Delete(rdB_In)
-                        print "Added new surface and deleted face of brep." \
-                            "  Remainder of brep is now {} breps.".format(len(gBs_Out))
+                        print("Added new surface and deleted face of brep." \
+                            "  Remainder of brep is now {} breps.".format(len(gBs_Out)))
 
     return gB_Out
 

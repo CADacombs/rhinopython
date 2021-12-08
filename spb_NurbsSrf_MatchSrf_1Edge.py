@@ -41,6 +41,7 @@ from __future__ import print_function
 211106: Now, SumSurfaces are allowed as input for either surface.
         Now, full Surfaces but with split edges are allowed for the surface to modify.
 211117: Minor modifications in createTanSrfFromEdge.  Added print_function from __future__.
+211208: Bug fix for when PolyCurves are present during reference selection.
 """
 
 import Rhino
@@ -396,6 +397,8 @@ def getInput_Ref(objref_SrfToMod):
             crv = geom
             if crv.IsClosed:
                 return False
+            if isinstance(geom, rg.PolyCurve):
+                return True
             if crv.IsRational:
                 return False
             return True

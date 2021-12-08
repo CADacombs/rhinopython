@@ -42,6 +42,7 @@ from __future__ import print_function
         Now, full Surfaces but with split edges are allowed for the surface to modify.
 211117: Minor modifications in createTanSrfFromEdge.  Added print_function from __future__.
 211208: Bug fix for when PolyCurves are present during reference selection.
+        Bug fix for numeric input.
 """
 
 import Rhino
@@ -350,6 +351,13 @@ def getInput_ToModify():
             sc.doc.Views.Redraw()
             break # out of this while loop.
 
+        if res == ri.GetResult.Number:
+            if int(go.Number()) not in (0,1,2):
+                print("Numeric input is invalid.")
+                continue
+            Opts.setValue('iContinuity', idxList=int(go.Number()))
+            continue
+
         # An option was selected.
         for key in idxs_Opt:
             if go.Option().Index == idxs_Opt[key]:
@@ -450,6 +458,13 @@ def getInput_Ref(objref_SrfToMod):
                 Opts.values['bDebug'],
                 Opts.values['bAddRefs'],
                 )
+
+        if res == ri.GetResult.Number:
+            if int(go.Number()) not in (0,1,2):
+                print("Numeric input is invalid.")
+                continue
+            Opts.setValue('iContinuity', idxList=int(go.Number()))
+            continue
 
         # An option was selected.
         for key in idxs_Opt:

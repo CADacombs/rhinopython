@@ -12,6 +12,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 211226: Added dot output.  Now adds curves along surface isocurves at target knot.
         Integers of min. and max. continuities to mark replaced bool input.
         Removed an option for surface input.
+211127: Bug fix in an options' values check.
 """
 
 import Rhino
@@ -371,8 +372,9 @@ def main():
         bDebug,
         ) = rc
     
-    if iGCont_min == iGCont_max == bG2Plus == False:
-        print("All target knot multiplities are set to 'No'.")
+    if iGCont_min > iGCont_max:
+        print("Min. G continuity target is greater than the max. G continuity target."
+              "  Script canceled.")
         return
     
     

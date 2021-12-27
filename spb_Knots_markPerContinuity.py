@@ -12,7 +12,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 211226: Added dot output.  Now adds curves along surface isocurves at target knot.
         Integers of min. and max. continuities to mark replaced bool input.
         Removed an option for surface input.
-211127: Bug fix in an options' values check.
+211127: Minor bug fixes.
 """
 
 import Rhino
@@ -402,7 +402,7 @@ def main():
                 bDebug=bDebug)
 
             rgNurbsCrv.Dispose()
-            
+
         elif isinstance(rgObj, rg.Surface):
             rgNurbsSrf = rgObj if isinstance(rgObj, rg.NurbsSurface) else rgObj.ToNurbsSurface()
 
@@ -416,6 +416,8 @@ def main():
                 bDebug=bDebug)
 
             rgNurbsSrf.Dispose()
+
+        if iCt_Pts is None: continue
 
         iCt_Pt_All += iCt_Pts
 

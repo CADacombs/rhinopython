@@ -12,7 +12,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 211226: Added dot output.  Now adds curves along surface isocurves at target knot.
         Integers of min. and max. continuities to mark replaced bool input.
         Removed an option for surface input.
-211127: Minor bug fixes.
+211127: Added preview.  Minor bug fixes.
 """
 
 import Rhino
@@ -34,15 +34,9 @@ class Opts:
     stickyKeys = {}
 
 
-    key = 'iGCont_min'; keys.append(key)
-    values[key] = 0
-    names[key] = 'MinG'
-    riOpts[key] = ri.Custom.OptionInteger(values[key], lowerLimit=0, upperLimit=10)
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
     key = 'iGCont_max'; keys.append(key)
     values[key] = 1
-    names[key] = 'MaxG'
+    names[key] = 'MaxGContToMark'
     riOpts[key] = ri.Custom.OptionInteger(values[key], lowerLimit=0, upperLimit=10)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -54,6 +48,11 @@ class Opts:
     key = 'iDotHt'; keys.append(key)
     values[key] = 12
     riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=3)
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bAddObjs'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
@@ -127,7 +126,7 @@ class Opts:
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-def getInput():
+def getInput(gas):
     """
     Get Curves or BrepFaces with optional input.
     """
@@ -146,22 +145,30 @@ def getInput():
 
     go.AcceptNumber(True, acceptZero=True)
 
+    go.AcceptNothing(True)
+
     idxs_Opt = {}
 
+    def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
+
     while True:
+
         go.ClearCommandOptions()
 
         idxs_Opt.clear()
 
-        def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
-
-        addOption('iGCont_min')
         addOption('iGCont_max')
         addOption('bDot')
         if Opts.values['bDot']:
             addOption('iDotHt')
+        addOption('bAddObjs')
         addOption('bEcho')
         addOption('bDebug')
+
+        if Opts.values['bAddObjs']:
+            go.SetCommandPromptDefault("Add objs")
+        else:
+            go.SetCommandPromptDefault("Cancel")
 
         res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
 
@@ -175,42 +182,41 @@ def getInput():
         if res == ri.GetResult.Cancel:
             go.Dispose()
             return
-        elif res == ri.GetResult.Object:
-            objrefs = go.Objects()
+
+        if res == ri.GetResult.Nothing:
             go.Dispose()
-            return tuple([objrefs] + [Opts.values[key] for key in Opts.keys])
+            return False
+
+        if res == ri.GetResult.Object:
+            geoms_In = []
+            for objref in go.Objects():
+                geom = objref.Curve()
+                if geom is None:
+                    geom = objref.Surface()
+                if geom: geoms_In.append(geom)
+            go.Dispose()
+            return geoms_In
 
         if res == ri.GetResult.Number:
-            if abs(int(go.Number())) > 10:
+            iNum = abs(int(go.Number()))
+            if iNum > 10:
                 print("Numeric input is invalid.  "
-                      "Geometric Continuity checking is between 0 and 10.")
+                        "Geometric continuity checking is between 0 and 10.")
                 continue
+            Opts.riOpts('iGCont_max').CurrentValue = iNum
             Opts.setValue('iGCont_max')
-            if Opts.riOpts['iGCont_max'].CurrentValue < Opts.riOpts['iGCont_min'].CurrentValue:
-                Opts.riOpts['iGCont_min'].CurrentValue = Opts.riOpts['iGCont_max'].CurrentValue
-                Opts.setValue('iGCont_min')
-            continue
+            return True
 
         # An option was selected.
-        if go.Option().Index == idxs_Opt['iGCont_min']:
-            Opts.setValue('iGCont_min')
-            if Opts.riOpts['iGCont_min'].CurrentValue > Opts.riOpts['iGCont_max'].CurrentValue:
-                Opts.riOpts['iGCont_max'].CurrentValue = Opts.riOpts['iGCont_min'].CurrentValue
-                Opts.setValue('iGCont_max')
-            continue
-
-        if go.Option().Index == idxs_Opt['iGCont_max']:
-            Opts.setValue('iGCont_max')
-            if Opts.riOpts['iGCont_max'].CurrentValue < Opts.riOpts['iGCont_min'].CurrentValue:
-                Opts.riOpts['iGCont_min'].CurrentValue = Opts.riOpts['iGCont_max'].CurrentValue
-                Opts.setValue('iGCont_min')
-            continue
-
-        if go.Option().Index in idxs_Opt:
+        idx = go.Option().Index
+        if idx in idxs_Opt.values():
+            key = idxs_Opt.keys()[idxs_Opt.values().index(idx)]
             Opts.setValue(key, go.Option().CurrentListOptionIndex)
+            if key in ('iDotHt', 'bAddObjs', 'bEcho', 'bDebug'): continue
+            return True
 
 
-def addPointsAtNurbsCrvKnots(nc, iGCont_min=0, iGCont_max=1, bDot=False, iDotHt=11, bEcho=True, bDebug=False):
+def addPointsAtNurbsCrvKnots(nc, iGCont_max=1, bDot=False, iDotHt=11, bEcho=True, bDebug=False):
     """
     """
 
@@ -220,7 +226,7 @@ def addPointsAtNurbsCrvKnots(nc, iGCont_min=0, iGCont_max=1, bDot=False, iDotHt=
 
     iK = 0 if nc.IsClosed else nc.Degree
 
-    iCt_Pt = 0
+    gas = [] # Each is tuple(rg, attr)
 
     while iK < (nc.Knots.Count - nc.Degree):
         sc.escape_test()
@@ -228,7 +234,7 @@ def addPointsAtNurbsCrvKnots(nc, iGCont_min=0, iGCont_max=1, bDot=False, iDotHt=
         tK = nc.Knots[iK]
         mK = nc.Knots.KnotMultiplicity(iK)
 
-        if (nc.Degree - mK) < iGCont_min or iGCont_max < (nc.Degree - mK):
+        if iGCont_max < (nc.Degree - mK):
             iK += mK
             continue
 
@@ -239,17 +245,18 @@ def addPointsAtNurbsCrvKnots(nc, iGCont_min=0, iGCont_max=1, bDot=False, iDotHt=
         if bDot:
             dot = rg.TextDot("G{}\nknot".format(nc.Degree-mK), pt)
             dot.FontHeight = iDotHt
-            sc.doc.Objects.AddTextDot(dot)
+            gas.append((dot, None))
+            #sc.doc.Objects.AddTextDot(dot)
         else:
-            sc.doc.Objects.AddPoint(pt)
-        iCt_Pt += 1
+            gas.append((pt, None))
+            #sc.doc.Objects.AddPoint(pt)
 
         iK += mK
 
-    return iCt_Pt
+    return gas
 
 
-def addPointsAtNurbsSrfKnots(ns, iGCont_min=0, iGCont_max=1, bDot=False, iDotHt=12, bEcho=True, bDebug=False):
+def addPointsAtNurbsSrfKnots(ns, iGCont_max=1, bDot=False, iDotHt=12, bEcho=True, bDebug=False):
     """
     """
 
@@ -266,7 +273,7 @@ def addPointsAtNurbsSrfKnots(ns, iGCont_min=0, iGCont_max=1, bDot=False, iDotHt=
     attr_Green.ObjectColor = Color.Lime
 
 
-    gPts_Out = []
+    gas = [] # Each is tuple(rg, attr)
 
     tKs = [], []
     mKs = [], []
@@ -307,7 +314,7 @@ def addPointsAtNurbsSrfKnots(ns, iGCont_min=0, iGCont_max=1, bDot=False, iDotHt=
 
             mK = knots.KnotMultiplicity(iK)
 
-            if (degree - mK) < iGCont_min or iGCont_max < (degree - mK):
+            if iGCont_max < (degree - mK):
                 iK += 1
                 continue
 
@@ -322,25 +329,28 @@ def addPointsAtNurbsSrfKnots(ns, iGCont_min=0, iGCont_max=1, bDot=False, iDotHt=
 
                 dot = rg.TextDot("G{}\nknot".format(degree-mK), pt)
                 dot.FontHeight = iDotHt
-                gOut = sc.doc.Objects.AddTextDot(
-                    dot,
-                    attributes=attr_Red if iDir == 1 else attr_Green)
-                if gOut != gOut.Empty: gPts_Out.append(gOut)
+                gas.append((dot, attr_Red if iDir == 1 else attr_Green))
+                #gOut = sc.doc.Objects.AddTextDot(
+                #    dot,
+                #    attributes=attr_Red if iDir == 1 else attr_Green)
+                #if gOut != gOut.Empty: gPts_Out.append(gOut)
 
             if iDir == 1:
-                gOut = sc.doc.Objects.AddCurve(ns.IsoCurve(0, tK), attributes=attr_Red)
+                gas.append((ns.IsoCurve(0, tK), attr_Red))
+                #gOut = sc.doc.Objects.AddCurve(ns.IsoCurve(0, tK), attributes=attr_Red)
             else:
-                gOut = sc.doc.Objects.AddCurve(ns.IsoCurve(1, tK), attributes=attr_Green)
-            if gOut != gOut.Empty: gPts_Out.append(gOut)
+                gas.append((ns.IsoCurve(1, tK), attr_Green))
+                #gOut = sc.doc.Objects.AddCurve(ns.IsoCurve(1, tK), attributes=attr_Green)
+            #if gOut != gOut.Empty: gPts_Out.append(gOut)
 
 
             iK += mK
 
 
-    def isCornerPoint(ns, tU, tV):
-        return (
-            (epsEquals(tU, ns.Domain(0).T0) or epsEquals(tU, ns.Domain(0).T1)) and
-            (epsEquals(tV, ns.Domain(1).T0) or epsEquals(tV, ns.Domain(1).T1)) )
+    #def isCornerPoint(ns, tU, tV):
+    #    return (
+    #        (epsEquals(tU, ns.Domain(0).T0) or epsEquals(tU, ns.Domain(0).T1)) and
+    #        (epsEquals(tV, ns.Domain(1).T0) or epsEquals(tV, ns.Domain(1).T1)) )
 
 
     # Traverse all the knot isocurve intersections per accumulated data.
@@ -355,46 +365,22 @@ def addPointsAtNurbsSrfKnots(ns, iGCont_min=0, iGCont_max=1, bDot=False, iDotHt=
 
     #        if gOut != gOut.Empty: gPts_Out.append(gOut)
 
-    return len(gPts_Out)
+    return gas
 
 
-def main():
+def createGeoms(geoms_In, iGCont_max=1, bDot=False, iDotHt=12, bEcho=True, bDebug=False):
+    """
+    """
 
-    rc = getInput()
-    if rc is None: return
-    (
-        objrefs,
-        iGCont_min,
-        iGCont_max,
-        bDot,
-        iDotHt,
-        bEcho,
-        bDebug,
-        ) = rc
-    
-    if iGCont_min > iGCont_max:
-        print("Min. G continuity target is greater than the max. G continuity target."
-              "  Script canceled.")
-        return
-    
-    
-    if not bDebug: sc.doc.Views.RedrawEnabled = False
-    
-    iCt_Pt_All = 0
-    
-    for objref in objrefs:
-        rgObj = objref.Curve()
+    outs = []
 
-        if rgObj is None:
-            rgObj = objref.Surface()
-            if rgObj is None: contiue
-        
+    for rgObj in geoms_In:
+
         if isinstance(rgObj, rg.Curve):
             rgNurbsCrv = rgObj.Duplicate() if isinstance(rgObj, rg.NurbsCurve) else rgObj.ToNurbsCurve()
             
-            iCt_Pts = addPointsAtNurbsCrvKnots(
+            rc = addPointsAtNurbsCrvKnots(
                 rgNurbsCrv,
-                iGCont_min=iGCont_min,
                 iGCont_max=iGCont_max,
                 bDot=bDot,
                 iDotHt=iDotHt,
@@ -403,12 +389,13 @@ def main():
 
             rgNurbsCrv.Dispose()
 
+            if rc: outs.extend(rc)
+
         elif isinstance(rgObj, rg.Surface):
             rgNurbsSrf = rgObj if isinstance(rgObj, rg.NurbsSurface) else rgObj.ToNurbsSurface()
 
-            iCt_Pts = addPointsAtNurbsSrfKnots(
+            rc = addPointsAtNurbsSrfKnots(
                 rgNurbsSrf,
-                iGCont_min=iGCont_min,
                 iGCont_max=iGCont_max,
                 bDot=bDot,
                 iDotHt=iDotHt,
@@ -417,15 +404,128 @@ def main():
 
             rgNurbsSrf.Dispose()
 
-        if iCt_Pts is None: continue
+            if rc: outs.extend(rc)
 
-        iCt_Pt_All += iCt_Pts
+    return outs
 
 
-    if bEcho:
-        print("{} objects added.".format(iCt_Pt_All))
+class DrawConduit(Rhino.Display.DisplayConduit):
 
-    sc.doc.Views.RedrawEnabled = True
+    def __init__(self):
+        self.gas = None
+        displayMode = Rhino.RhinoDoc.ActiveDoc.Views.ActiveView.ActiveViewport.DisplayMode
+        self.crv_thk = displayMode.DisplayAttributes.CurveThickness + 1
+
+    def CalculateBoundingBox(self, calculateBoundingBoxEventArgs):
+        if not self.gas: return
+
+        for ga in self.gas:
+            geom, attr = ga
+            self.bbox = geom.GetBoundingBox(accurate=False)
+            calculateBoundingBoxEventArgs.IncludeBoundingBox(self.bbox)
+
+    def PreDrawObjects(self, drawEventArgs):
+        if not self.gas: return
+
+        for ga in self.gas:
+            geom, attr = ga
+
+            if attr is None:
+                objColor = sc.doc.Layers.CurrentLayer.Color
+            else:
+                objColor = attr.ObjectColor
+
+            if isinstance(geom, rg.TextDot):
+                dot = geom
+                textColor = Color.Black if objColor != Color.Black else Color.White
+                drawEventArgs.Display.DrawDot(
+                    worldPosition=dot.Point,
+                    text=dot.Text,
+                    dotColor=objColor,
+                    textColor=textColor)
+            elif isinstance(geom, rg.Curve):
+                crv = geom
+                drawEventArgs.Display.DrawCurve(
+                    curve=crv,
+                    color=objColor,
+                    thickness=self.crv_thk)
+            elif isinstance(geom, rg.Point3d):
+                pt = geom
+                drawEventArgs.Display.DrawPoint(
+                    point=pt)
+
+
+def main():
+
+    sk_conduit = 'conduit({})'.format(__file__)
+    if (sk_conduit in sc.sticky) and sc.sticky[sk_conduit]:
+        conduit = sc.sticky[sk_conduit]
+    else:
+        conduit = DrawConduit()
+        sc.sticky[sk_conduit] = conduit
+
+    conduit.Enabled = False
+    sc.doc.Views.Redraw()
+
+
+    gas = None # list(tuple(rg, attr))
+
+
+    while True:
+        rc = getInput(gas)
+        if rc is None:
+            conduit.Enabled = False
+            return
+
+        iGCont_max = Opts.values['iGCont_max']
+        bDot = Opts.values['bDot']
+        iDotHt = Opts.values['iDotHt']
+        bAddObjs = Opts.values['bAddObjs']
+        bEcho = Opts.values['bEcho']
+        bDebug = Opts.values['bDebug']
+
+        if not rc:
+            conduit.Enabled = False
+            break
+
+
+        try:
+            iter(rc)
+            geoms_In = rc
+        except:
+            pass
+
+        rc = createGeoms(
+            geoms_In=geoms_In,
+            iGCont_max=iGCont_max,
+            bDot=bDot,
+            iDotHt=iDotHt,
+            bEcho=bEcho,
+            bDebug=bDebug)
+        if rc is None:
+            conduit.Enabled = False
+            conduit = None
+            return
+
+        gas = rc
+
+        sc.doc.Objects.UnselectAll()
+
+        conduit.gas = gas
+        conduit.Enabled = True
+        sc.doc.Views.Redraw()
+
+
+    if bAddObjs:
+        gOuts = []
+        for geom, attr in gas:
+            gOut = sc.doc.Objects.Add(geom, attr)
+            if gOut != gOut.Empty:
+                gOuts.append(gOut)
+        if bEcho:
+            print("{} objects added.".format(len(gOuts)))
+
+        sc.doc.Views.RedrawEnabled = True
 
 
 if __name__ == '__main__': main()

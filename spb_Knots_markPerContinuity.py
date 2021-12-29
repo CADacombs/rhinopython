@@ -13,6 +13,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Integers of min. and max. continuities to mark replaced bool input.
         Removed an option for surface input.
 211127: Added preview.  Minor bug fixes.
+211229: Bug fixes in getInput.
 """
 
 import Rhino
@@ -203,9 +204,11 @@ def getInput(gas):
                 print("Numeric input is invalid.  "
                         "Geometric continuity checking is between 0 and 10.")
                 continue
-            Opts.riOpts('iGCont_max').CurrentValue = iNum
+            Opts.riOpts['iGCont_max'].CurrentValue = iNum
             Opts.setValue('iGCont_max')
-            return True
+            if gas:
+                return True
+            continue
 
         # An option was selected.
         idx = go.Option().Index
@@ -213,7 +216,7 @@ def getInput(gas):
             key = idxs_Opt.keys()[idxs_Opt.values().index(idx)]
             Opts.setValue(key, go.Option().CurrentListOptionIndex)
             if key in ('iDotHt', 'bAddObjs', 'bEcho', 'bDebug'): continue
-            return True
+            if gas: return True
 
 
 def addPointsAtNurbsCrvKnots(nc, iGCont_max=1, bDot=False, iDotHt=11, bEcho=True, bDebug=False):
@@ -519,7 +522,10 @@ def main():
     if bAddObjs:
         gOuts = []
         for geom, attr in gas:
-            gOut = sc.doc.Objects.Add(geom, attr)
+            if isinstance(geom, rg.Point3d):
+                gOut = sc.doc.Objects.AddPoint(geom)
+            else:
+                gOut = sc.doc.Objects.Add(geom, attr)
             if gOut != gOut.Empty:
                 gOuts.append(gOut)
         if bEcho:

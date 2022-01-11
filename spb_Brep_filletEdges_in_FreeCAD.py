@@ -25,11 +25,10 @@ Requirements to run:
 
 
 TODO:
-Allow multiple fillet radius input similar to _FilletEdge.
 Add preview of edges selected.  Just display text dots with assigned radius?
 Allow edges to be unselected.
 Allow variable radius fillet input.
-    FreeCAD only provides variable fillets whose surfaces are G1 blended
+    FreeCAD only creates variable fillets that have 2 radii and are G1 blended
     between the edges so that the target fillet radii can G1 match to
     an adjacent fillet at a tangent edge.  They are not linearly blended.
 
@@ -43,6 +42,8 @@ from __future__ import absolute_import, print_function, unicode_literals
 """
 211222-220103: Created.
 220106: subprocess.Popen now runs in a threading.Timer.
+220110: Removed code for PartDesign Fillet since it has less options than Part Fillet.
+        Added multiple fillet radius input capability similar to _FilletEdge.
 """
 
 import Rhino
@@ -78,6 +79,8 @@ sPath_STEP_from_FC = desktop + r"\from_FC.stp"
 
 s_FC = []
 
+def fc(s=''): s_FC.append(s)
+
 
 class Opts:
     
@@ -93,12 +96,6 @@ class Opts:
     values[key] = 1.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
-
-    key = 'bDirectlyFilletShell'; keys.append(key)
-    values[key] = True
-    names[key] = 'ObjToFillet'
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Feature', 'Shell')
-    stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fFreeCADTimeoutSecs'; keys.append(key)
     values[key] = 10.0
@@ -178,6 +175,7 @@ def getInput():
     go = ri.Custom.GetObject()
 
     go.SetCommandPrompt("Select edges to fillet")
+    go.SetCommandPromptDefault("Select for next radius")
 
     go.GeometryFilter = rd.ObjectType.Curve # Curve is also used for brep edges.
     go.GeometryAttributeFilter = (
@@ -190,7 +188,11 @@ def getInput():
 
     go.AcceptNumber(enable=True, acceptZero=True)
 
+    go.AcceptNothing(True)
+
     idxs_Opt = {}
+
+    sc.doc.Objects.UnselectAll()
 
     while True:
         go.ClearCommandOptions()
@@ -200,7 +202,6 @@ def getInput():
         def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
         addOption('fRadius')
-        addOption('bDirectlyFilletShell')
         addOption('fFreeCADTimeoutSecs')
         addOption('bEcho')
         addOption('bDebug')
@@ -211,24 +212,27 @@ def getInput():
             go.Dispose()
             return
 
+        if res == ri.GetResult.Nothing:
+            go.Dispose()
+            return []
+
         if res == ri.GetResult.Object:
             objrefs = go.Objects()
             go.Dispose()
 
-            return (
-                objrefs,
-                Opts.values['fRadius'],
-                Opts.values['bDirectlyFilletShell'],
-                Opts.values['fFreeCADTimeoutSecs'],
-                Opts.values['bEcho'],
-                Opts.values['bDebug'],
-                )
+            return objrefs
 
         if res == ri.GetResult.Number:
             key = 'fRadius'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
-            continue
+
+            objrefs = go.Objects()
+            if not objrefs:
+                continue
+            else:
+                go.Dispose()
+                return objrefs
 
         # An option was selected.
         for key in idxs_Opt:
@@ -236,56 +240,13 @@ def getInput():
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
 
-
-def sortInputPerBrep(rhObjs_In):
-
-    gBs = [] # This is used as the index for the brep in the following routine.
-    idx_Es_PerBrep = []
-
-
-    def getDataFromInput(rhObj):
-        if not hasattr(rhObj, '__iter__'):
-            if not isinstance(rhObj, rd.ObjRef): return
-
-            objref = rhObj
-
-            gB = objref.ObjectId
-            idxE = objref.Edge().EdgeIndex
-
-            return gB, idxE
-
-        if len(rhObj) != 2: return
-        rhB, idxE = rhObj
-        if not isinstance(idxE, int): return
-
-        if isinstance(rhB, rd.BrepObject):
-            rdB = rhB
-            gB = rdB.Id
-        elif isinstance(rhB, Guid):
-            gB = rhB
-
-        return gB, idxE
-
-
-    for rhObj in rhObjs_In:
-
-        rc = getDataFromInput(rhObj)
-        if not rc: return
-
-        gB, idxE = rc
-
-        if gB in gBs:
-            if idxE in idx_Es_PerBrep[gBs.index(gB)]: continue
-            idx_Es_PerBrep[gBs.index(gB)].append(idxE)
-            continue
-
-        gBs.append(gB)
-        idx_Es_PerBrep.append([idxE])
-
-    return gBs, idx_Es_PerBrep
-
-
-def fc(s=''): s_FC.append(s)
+        if go.Option().Index == idxs_Opt['fRadius']:
+            objrefs = go.Objects()
+            if not objrefs:
+                continue
+            else:
+                go.Dispose()
+                return objrefs
 
 
 def create_subBs_per_Es_to_fillet(rgB, idxs_Es):
@@ -403,8 +364,32 @@ def export_to_STEP(rgBrep, bDebug=False):
     return True
 
 
-def create_FC_code_Determine_edges_to_fillet(bDirectlyFilletShell):
-    fc('def isEdgeMid_in_input_Mids(edge, midVs):')
+def import_STEP_into_Rhino(bDebug=False):
+    """
+    """
+    rdObj_MostRecent = sc.doc.Objects.MostRecentObject()
+    uInt32_MostRecent = rdObj_MostRecent.RuntimeSerialNumber
+
+    scriptToImportStp = " ".join([
+        "_-Import",
+        '"{}"'.format(sPath_STEP_from_FC),
+        "_JoinSurfaces=Yes",
+        "_LimitFaces=No",
+        "_SkipInvisibles=Yes",
+        "_ShowBadObjectWarning=Yes",
+        "_ShowNestedBlockWarning=No",
+        "_EnterEnd"])
+
+    Rhino.RhinoApp.SetCommandPrompt("Importing STEP ...")
+
+    Rhino.RhinoApp.RunScript(scriptToImportStp, echo=bDebug)
+
+    return sc.doc.Objects.AllObjectsSince(uInt32_MostRecent)
+
+
+def create_FC_code_Determine_edges_to_fillet():
+
+    fc('def idx_input_mid_match(edge):')
     fc('    try:')
     fc('        midE=edge.valueAt(edge.Curve.parameterAtDistance(edge.Length/2.0, edge.FirstParameter))')
     fc('    except:')
@@ -412,19 +397,15 @@ def create_FC_code_Determine_edges_to_fillet(bDirectlyFilletShell):
     fc('        Part.show(edge)')
     fc('        Part.Vertex(edge.Curve.parameterAtDistance(0.0))')
     fc('        1/0')
-    fc('    for v in midVs:')
+    fc('    for i, v in enumerate(midVs):')
     fc('        if midE.distanceToPoint(v) < 0.01:')
-    fc('            return True')
-    fc('    return False')
+    fc('            return i')
     fc()
     fc('edges_to_fillet = []')
     fc('idx_edges_to_fillet = []')
-
-
-    # Edge indices are base 1 in FreeCAD.
-
-    fc('for iE, edge in enumerate({}, start=1):'.format(
-        'shell.Edges' if bDirectlyFilletShell else 'doc.Fillet.Base.Shape.Edges'))
+    fc('rads_per_idxE = []')
+    fc()
+    fc('for iE, edge in enumerate(doc.Fillet.Base.Shape.Edges):')
     #fc('    print(edge.Length)')
     fc('    if edge.Degenerated:')
     fc('        print("Degenerated Edge skipped.".format(edge.Length))')
@@ -435,9 +416,16 @@ def create_FC_code_Determine_edges_to_fillet(bDirectlyFilletShell):
     fc('    if edge.Length < 0.01:')
     fc('        print("Edge with length {} skipped.".format(edge.Length))')
     fc('        continue')
-    fc('    if isEdgeMid_in_input_Mids(edge, midVs):')
-    fc('        edges_to_fillet.append(edge)')
-    fc('        idx_edges_to_fillet.append(iE)')
+    fc('    idxMid = idx_input_mid_match(edge)')
+    fc('    if idxMid is None:')
+    fc('        continue')
+    fc('    edges_to_fillet.append(edge)')
+    fc('    idx_edges_to_fillet.append(iE+1)') # Part Edge indices are base 1 in FreeCAD.
+    fc('    rads_per_idxE.append(rads_per_pts_Mids[idxMid])')
+    fc('    if len(edges_to_fillet) == len(midVs):')
+    fc('        break')
+    fc('else:')
+    fc('    raise Exception("Not all the input edges were matched to the edges in FreeCAD.")')
     fc()
     fc()
 
@@ -483,146 +471,12 @@ def subprocess_FC(sArgs, fFreeCADTimeoutSecs=5.0, bEcho=True):
     return bSuccess
 
 
-def processBrepShells_FcShell(rgBs_ToFillet, fRadius, bEcho=True, bDebug=False):
+def processBrep(rgBrep_In, idxs_Edges, fRadii, fFreeCADTimeoutSecs=10.0, bEcho=True, bDebug=False):
     """
     Parameters:
         rgBrep_In: ObjRef or tuple(rd.BrepObject or GUID, float(edge index))
-        fRadius: float
-        bEcho: bool
-        bDebug: bool
-    """
-
-    sCmdPrompt_In = Rhino.RhinoApp.CommandPrompt
-
-
-    fc('shapes = []')
-
-
-    for rgB_ToFillet in rgBs_ToFillet:
-
-        Rhino.RhinoApp.SetCommandPrompt("Exporting STEP ...")
-
-        if not export_to_STEP(rgB_ToFillet, bDebug): return
-
-        Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt_In)
-
-        fc('shell = Part.Shell()')
-
-        fc('shell.read(r"{}")'.format(sPath_STEP_to_FC))
-
-        fc('shell.isValid()')
-        fc('if not shell.isValid():')
-        fc('    shell.fix(1e-6, 1e-6, 1e-6)')
-        fc()
-        fc('if not shell.isValid():')
-        fc('    raise Exception("Shell was not fixed.")')
-        fc()
-
-        #fc('Part.show(shell)')
-        #fc('Part.show(shell)')
-
-
-        # For debugging.
-        #fc()
-        #script_FC = "\n".join(s_FC)
-        #with open(sPath_Script_for_FC, "w") as f: 
-        #    f.write(script_FC) 
-        #return True, None
-        #
-
-
-        create_FC_code_Determine_edges_to_fillet(bDirectlyFilletShell=True)
-
-
-
-        # Fillet.
-        fc('shape = shell.makeFillet({}, edges_to_fillet)'.format(fRadius))
-        fc()
-        fc('try:')
-        fc('    shape = shell.makeFillet({}, edges_to_fillet)'.format(fRadius))
-        fc('except Exception as e:')
-        fc('    raise Exception(traceback.format_exc())')
-        fc()
-        fc('shapes.append(shape)')
-        fc()
-        fc()
-
-
-    # Create STEP file for Rhino.
-    fc('compound = Part.Compound(shapes)')
-    fc('compound.exportStep(r"{}")'.format(sPath_STEP_from_FC))
-
-
-def processBrepShells_FcFeature(rgBs_ToFillet, fRadius, bEcho=True, bDebug=False):
-    """
-    Parameters:
-        rgBrep_In: ObjRef or tuple(rd.BrepObject or GUID, float(edge index))
-        fRadius: float
-        bEcho: bool
-        bDebug: bool
-    """
-
-    sCmdPrompt_In = Rhino.RhinoApp.CommandPrompt
-
-
-    for rgB_ToFillet in rgBs_ToFillet:
-
-        Rhino.RhinoApp.SetCommandPrompt("Exporting STEP ...")
-
-        if not export_to_STEP(rgB_ToFillet, bDebug): return
-
-        Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt_In)
-
-        fc('shape = Part.Shape()')
-        fc('shape.read(r"{}")'.format(sPath_STEP_to_FC))
-
-        fc('Part.show(shape)')
-
-        fc('doc = FreeCAD.ActiveDocument')
-        fc('doc.recompute()')
-
-
-
-        # For debugging.
-        #fc()
-        #script_FC = "\n".join(s_FC)
-        #with open(sPath_Script_for_FC, "w") as f: 
-        #    f.write(script_FC) 
-        #return True, None
-        #
-
-
-        fc('doc.addObject("Part::Fillet","spbPartFeature_Fillet")')
-        fc('doc.Fillet.Base = doc.Shape')
-        fc('doc.recompute()')
-
-
-        create_FC_code_Determine_edges_to_fillet(bDirectlyFilletShell=False)
-
-
-        # Fillet.
-        fc('data_for_featFillet = []')
-        fc('for iE in idx_edges_to_fillet:')
-        fc('    data_for_featFillet.append((iE,{},{}))'.format(fRadius, fRadius))
-        fc()
-        fc('doc.Fillet.Edges = data_for_featFillet')
-        fc('doc.recompute()')
-        fc('doc.Shape.Visibility = False')
-        fc()
-        fc()
-
-
-    # Create STEP file for Rhino.
-    fc('import Import')
-    fc('Import.export([FreeCAD.ActiveDocument.Fillet], r"{}")'.format(sPath_STEP_from_FC))
-
-
-def processBrep(rgBrep_In, idxs_Edges, fRadius, bDirectlyFilletShell=True, fFreeCADTimeoutSecs=10.0, bEcho=True, bDebug=False):
-    """
-    Parameters:
-        rgBrep_In: ObjRef or tuple(rd.BrepObject or GUID, float(edge index))
-        fRadius: float
-        bDirectlyFilletShell: bool  False means to fillet feature.
+        idxs_Edges: list(int(EdgeIndex))
+        fRadii: list(floats in idxs_Edges order)
         fFreeCADTimeoutSecs: float
         bEcho: bool
         bDebug: bool
@@ -669,7 +523,8 @@ def processBrep(rgBrep_In, idxs_Edges, fRadius, bDirectlyFilletShell=True, fFree
             pts_Mids[iP].Z = pt.Z * fScaleUnit
 
 
-        fRadius *= fScaleUnit
+        #fRadius *= fScaleUnit
+        fRadii = [r*fScaleUnit for r in fRadii]
 
 
     fc('import FreeCAD as App')
@@ -678,21 +533,64 @@ def processBrep(rgBrep_In, idxs_Edges, fRadius, bDirectlyFilletShell=True, fFree
     fc()
 
 
-    sVar_Vs = create_FC_code_Point3Ds_to_Vectors(pts_Mids)
+    if not create_FC_code_Point3Ds_to_Vectors(pts_Mids):
+        raise Exception("Could not create_FC_code_Point3Ds_to_Vectors.") 
+
+    fc('rads_per_pts_Mids = []')
+    for r in fRadii:
+        fc('rads_per_pts_Mids.append({})'.format(r))
 
 
-    if bDirectlyFilletShell:
-        rc = processBrepShells_FcShell(
-            rgBs_ToFillet,
-            fRadius=fRadius,
-            bEcho=bEcho,
-            bDebug=bDebug)
-    else:
-        rc = processBrepShells_FcFeature(
-            rgBs_ToFillet,
-            fRadius=fRadius,
-            bEcho=bEcho,
-            bDebug=bDebug)
+    for rgB_ToFillet in rgBs_ToFillet:
+
+        Rhino.RhinoApp.SetCommandPrompt("Exporting STEP ...")
+
+        if not export_to_STEP(rgB_ToFillet, bDebug): return
+
+        Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt_In)
+
+        fc('shape = Part.Shape()')
+        fc('shape.read(r"{}")'.format(sPath_STEP_to_FC))
+
+        fc('Part.show(shape)')
+
+        fc('doc = FreeCAD.ActiveDocument')
+        fc('doc.recompute()')
+
+
+
+        # For debugging.
+        #fc()
+        #script_FC = "\n".join(s_FC)
+        #with open(sPath_Script_for_FC, "w") as f: 
+        #    f.write(script_FC) 
+        #return True, None
+        #
+
+
+        fc('doc.addObject("Part::Fillet","Fillet")')
+        fc('doc.Fillet.Base = doc.Shape')
+        fc('doc.recompute()')
+
+
+        create_FC_code_Determine_edges_to_fillet()
+
+
+        # Fillet.
+        fc('data_for_featFillet = []')
+        fc('for i, iE in enumerate(idx_edges_to_fillet):')
+        fc('    data_for_featFillet.append((iE, rads_per_idxE[i], rads_per_idxE[i]))')
+        fc()
+        fc('doc.Fillet.Edges = data_for_featFillet')
+        fc('doc.recompute()')
+        fc('doc.Shape.Visibility = False')
+        fc()
+        fc()
+
+
+    # Create STEP file for Rhino.
+    fc('import Import')
+    fc('Import.export([FreeCAD.ActiveDocument.Fillet], r"{}")'.format(sPath_STEP_from_FC))
 
 
     # Create script file.
@@ -737,16 +635,12 @@ def processBrep(rgBrep_In, idxs_Edges, fRadius, bDirectlyFilletShell=True, fFree
     return True, rgB_Fs_not_sent_to_FC
 
 
-def processBrepObject(rhBrep_In, idxs_Es, fRadius, bDirectlyFilletShell=True, fFreeCADTimeoutSecs=10.0, bEcho=True, bDebug=False):
+def processBrepObject(rhBrep_In, idxs_Es, fRadii, fFreeCADTimeoutSecs=10.0, bEcho=True, bDebug=False):
     """
     Parameters:
         rhBrep_In: ObjRef or tuple(rd.BrepObject or GUID, float(edge index))
         idxs_Es: list(int(EdgeIndex))
-        fRadius: float
-            True to subprocess
-            False to send code to Clipboard for FreeCAD GUI.
-                Code to send result to Rhino is not prepared.
-        bDirectlyFilletShell: bool
+        fRadii: list(floats in idxs_Es order)
         fFreeCADTimeoutSecs: float
         bEcho: bool
         bDebug: bool
@@ -773,40 +667,21 @@ def processBrepObject(rhBrep_In, idxs_Es, fRadius, bDirectlyFilletShell=True, fF
     bSuccess, rgB_Fs_not_sent_to_FC = processBrep(
         rgB_In,
         idxs_Es,
-        fRadius=fRadius,
-        bDirectlyFilletShell=bDirectlyFilletShell,
+        fRadii=fRadii,
         fFreeCADTimeoutSecs=fFreeCADTimeoutSecs,
         bEcho=bEcho,
         bDebug=bDebug)
-
     if not bSuccess: return
 
-    rdObj_MostRecent = sc.doc.Objects.MostRecentObject()
-    uInt32_MostRecent = rdObj_MostRecent.RuntimeSerialNumber
-
-    scriptToImportStp = " ".join([
-        "_-Import",
-        '"{}"'.format(sPath_STEP_from_FC),
-        "_JoinSurfaces=Yes",
-        "_LimitFaces=No",
-        "_SkipInvisibles=Yes",
-        "_ShowBadObjectWarning=Yes",
-        "_ShowNestedBlockWarning=No",
-        "_EnterEnd"])
-
-    Rhino.RhinoApp.SetCommandPrompt("Importing STEP ...")
-
-    Rhino.RhinoApp.RunScript(scriptToImportStp, echo=bDebug)
-
-    rdBs_from_FC = sc.doc.Objects.AllObjectsSince(uInt32_MostRecent)
-
-    Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt_In)
-
-
+    rdBs_from_FC = import_STEP_into_Rhino(bDebug)
     if not rdBs_from_FC:
         if bEcho:
             print("Filleted breps were not imported.")
         return
+
+
+    Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt_In)
+
 
     if rgB_Fs_not_sent_to_FC is None:
         rgBs_forOut = [rdB.BrepGeometry for rdB in rdBs_from_FC]
@@ -837,32 +712,93 @@ def processBrepObject(rhBrep_In, idxs_Es, fRadius, bDirectlyFilletShell=True, fF
 
 def main():
 
-    rc = getInput()
-    if rc is None: return
 
-    (
-        objrefs,
-        fRadius,
-        bDirectlyFilletShell,
-        fFreeCADTimeoutSecs,
-        bEcho,
-        bDebug,
-        ) = rc
+    gBs_In = [] # This is used as the index for the brep in the following routine.
+    idx_rgEdges_PerBrep = []
+    rads_for_idxEs_PerBrep = []
+
+
+    def get_BE_FromInput(rhObj):
+        if not hasattr(rhObj, '__iter__'):
+            if not isinstance(rhObj, rd.ObjRef): return
+
+            objref = rhObj
+
+            gB = objref.ObjectId
+            idxE = objref.Edge().EdgeIndex
+
+            return gB, idxE
+
+        if len(rhObj) != 2: return
+        rhB, idxE = rhObj
+        if not isinstance(idxE, int): return
+
+        if isinstance(rhB, rd.BrepObject):
+            rdB = rhB
+            gB = rdB.Id
+        elif isinstance(rhB, Guid):
+            gB = rhB
+
+        return gB, idxE
+
+
+    def sortInputPerBrep(rhObjs_In):
+
+        for rhObj in rhObjs_In:
+
+            rc = get_BE_FromInput(rhObj)
+            if not rc: return
+
+            gB, idxE = rc
+
+            if gB in gBs_In:
+                if idxE in idx_rgEdges_PerBrep[gBs_In.index(gB)]:
+                    # Modify radius value.
+                    idxEperB = idx_rgEdges_PerBrep[gBs_In.index(gB)].index(idxE)
+                    rads_for_idxEs_PerBrep[gBs_In.index(gB)][idxEperB] = fRadius
+                    continue
+
+                idx_rgEdges_PerBrep[gBs_In.index(gB)].append(idxE)
+                rads_for_idxEs_PerBrep[gBs_In.index(gB)].append(fRadius)
+                continue
+
+            gBs_In.append(gB)
+            idx_rgEdges_PerBrep.append([idxE])
+            rads_for_idxEs_PerBrep.append([fRadius])
+
+
+    while True:
+        rc = getInput()
+        if rc is None:
+            return
+
+        fRadius = Opts.values['fRadius']
+        fFreeCADTimeoutSecs = Opts.values['fFreeCADTimeoutSecs']
+        bEcho = Opts.values['bEcho']
+        bDebug = Opts.values['bDebug']
+
+        sc.doc.Objects.UnselectAll()
+
+        if not rc:
+            print("Proceed creating fillets.")
+            print([spb for spb in gBs_In])
+            print([spb for spb in idx_rgEdges_PerBrep])
+            print([spb for spb in rads_for_idxEs_PerBrep])
+            #return
+            break
+
+        objrefs = rc
+
+        rc = sortInputPerBrep(objrefs)
+
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
 
-    sc.doc.Objects.UnselectAll()
-
     gBreps_Res_All = []
 
-    rc = sortInputPerBrep(objrefs)
-    if not rc: return
+    zipped = zip(gBs_In, idx_rgEdges_PerBrep, rads_for_idxEs_PerBrep)
 
-    gBs_In, idx_rgEdges_PerBrep = rc
-
-    zipped = zip(gBs_In, idx_rgEdges_PerBrep)
-
-    for iB, (gB_In, idxs_Es) in enumerate(zipped):
+    for iB, (gB_In, idxs_Es, rads_for_idxEs) in enumerate(zipped):
 
         sCmdPrompt = "Processing brep {} of {}".format(iB+1, len(gBs_In))
 
@@ -871,8 +807,7 @@ def main():
         rc = processBrepObject(
             gB_In,
             idxs_Es,
-            fRadius=fRadius,
-            bDirectlyFilletShell=bDirectlyFilletShell,
+            fRadii=rads_for_idxEs,
             fFreeCADTimeoutSecs=fFreeCADTimeoutSecs,
             bEcho=bEcho,
             bDebug=bDebug)

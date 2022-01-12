@@ -6,6 +6,8 @@ This script uses headless FreeCAD ( https://wiki.freecadweb.org/Headless_FreeCAD
 The most significant differences from Rhino's _FilletEdge are at the
 intersections of non-tangent edges.
 
+Warning: Check the resultant B-Reps for missing faces.
+
 This script been tested on
 Rhino 7, 7.13.21348.13001 on Windows
 FreeCAD 0.019.3 (0.019.24267) on Windows
@@ -25,9 +27,8 @@ Requirements to run:
 
 
 TODO:
-Add preview of edges selected.  Just display text dots with assigned radius?
-Allow edges to be unselected.
-Allow variable radius fillet input.
+For previous input option, should the input be merged with any current input?
+Maybe?: Allow variable radius fillet input.
     FreeCAD only creates variable fillets that have 2 radii and are G1 blended
     between the edges so that the target fillet radii can G1 match to
     an adjacent fillet at a tangent edge.  They are not linearly blended.
@@ -44,6 +45,8 @@ from __future__ import absolute_import, print_function, unicode_literals
 220106: subprocess.Popen now runs in a threading.Timer.
 220110: Removed code for PartDesign Fillet since it has less options than Part Fillet.
         Added multiple fillet radius input capability similar to _FilletEdge.
+220111: Added preview of text dots on edges containing their assigned radius.
+        Added option to use previous input.
 """
 
 import Rhino
@@ -53,6 +56,7 @@ import Rhino.Input as ri
 import scriptcontext as sc
 
 from System import Guid
+from System.Drawing import Color
 
 import os
 from subprocess import Popen, PIPE
@@ -83,7 +87,7 @@ def fc(s=''): s_FC.append(s)
 
 
 class Opts:
-    
+
     keys = []
     values = {}
     names = {}
@@ -156,7 +160,7 @@ class Opts:
 
         if key == 'fRadius':
             if cls.riOpts[key].CurrentValue < 2.0*sc.doc.ModelAbsoluteTolerance:
-                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+                cls.riOpts[key].CurrentValue = 0.0
 
         if key in cls.riOpts:
             cls.values[key] = cls.riOpts[key].CurrentValue
@@ -167,7 +171,7 @@ class Opts:
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-def getInput():
+def getInput(bPrevBrepsArePresent):
     """
     Get BrepEdges with optional input.
     """
@@ -175,7 +179,7 @@ def getInput():
     go = ri.Custom.GetObject()
 
     go.SetCommandPrompt("Select edges to fillet")
-    go.SetCommandPromptDefault("Select for next radius")
+    go.SetCommandPromptDefault("Confirm edges & radius")
 
     go.GeometryFilter = rd.ObjectType.Curve # Curve is also used for brep edges.
     go.GeometryAttributeFilter = (
@@ -184,6 +188,7 @@ def getInput():
 
     go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
     go.EnableClearObjectsOnEntry(False) # Do not clear objects in go_Main on repeats of While loop.
+    go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
     go.EnableUnselectObjectsOnExit(False) # Do not unselect object when an option selected, a number is entered, etc.
 
     go.AcceptNumber(enable=True, acceptZero=True)
@@ -202,6 +207,8 @@ def getInput():
         def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
         addOption('fRadius')
+        if bPrevBrepsArePresent:
+            idxs_Opt['UsePrevInput'] = go.AddOption('UsePrevInput')
         addOption('fFreeCADTimeoutSecs')
         addOption('bEcho')
         addOption('bDebug')
@@ -226,27 +233,39 @@ def getInput():
             key = 'fRadius'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
-
-            objrefs = go.Objects()
-            if not objrefs:
-                continue
-            else:
-                go.Dispose()
-                return objrefs
+            continue
 
         # An option was selected.
+        if go.Option().Index == idxs_Opt['UsePrevInput']:
+            go.Dispose()
+            return 'UsePrevInput'
+
         for key in idxs_Opt:
             if go.Option().Index == idxs_Opt[key]:
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
 
-        if go.Option().Index == idxs_Opt['fRadius']:
-            objrefs = go.Objects()
-            if not objrefs:
+
+class DrawRadiusDotsConduit(Rhino.Display.DisplayConduit):
+
+    def __init__(self):
+        print("in __init__")
+        self.prs = None
+        displayMode = Rhino.RhinoDoc.ActiveDoc.Views.ActiveView.ActiveViewport.DisplayMode
+
+    def PostDrawObjects(self, drawEventArgs):
+        if not self.prs: return
+
+        for pt, rad in self.prs:
+
+            if rad == 0.0:
                 continue
-            else:
-                go.Dispose()
-                return objrefs
+
+            rc = drawEventArgs.Display.DrawDot(
+                worldPosition=pt,
+                text="{:.{}f}".format(rad, sc.doc.ModelDistanceDisplayPrecision),
+                dotColor=sc.doc.Layers.CurrentLayer.Color,
+                textColor=Color.Black if sc.doc.Layers.CurrentLayer.Color != Color.Black else Color.White)
 
 
 def create_subBs_per_Es_to_fillet(rgB, idxs_Es):
@@ -297,7 +316,7 @@ def create_subBs_per_Es_to_fillet(rgB, idxs_Es):
             iEs_SharedVs.append(iE)
 
     for iE in iEs_SharedVs:
-        for iF_A in rgB.Edges[iE].AdjacentFaces():
+        for iF_V in rgB.Edges[iE].AdjacentFaces():
             if iF_V not in iFs:
                 print("Face[{}] added via Vertex routine".format(iF_V))
                 iFs.append(iF_V)
@@ -718,6 +737,33 @@ def main():
     rads_for_idxEs_PerBrep = []
 
 
+    prevSels_Present = []
+    skey_prevSels = 'prevSels({})'.format(__file__)
+    if skey_prevSels in sc.sticky:
+        prevSels_Saved = sc.sticky[skey_prevSels]
+        iter = rd.ObjectEnumeratorSettings()
+        iter.NormalObjects = True
+        iter.LockedObjects = False
+        iter.IncludeLights = False
+        iter.IncludeGrips = False
+        iter.ObjectTypeFilter = rd.ObjectType.Brep
+        gBs_Saved = [d.Id for d in sc.doc.Objects.GetObjectList(iter)]
+        for gB, pts, rads in prevSels_Saved:
+            if gB in  gBs_Saved:
+                prevSels_Present.append((gB, pts, rads))
+
+
+    skey_conduit = 'conduit({})'.format(__file__)
+    if (skey_conduit in sc.sticky) and sc.sticky[skey_conduit]:
+        conduit = sc.sticky[skey_conduit]
+    else:
+        conduit = DrawRadiusDotsConduit()
+        sc.sticky[skey_conduit] = conduit
+
+    conduit.Enabled = False # Turns off the conduit if left on from a previous execution of this script.
+    sc.doc.Views.Redraw()
+
+
     def get_BE_FromInput(rhObj):
         if not hasattr(rhObj, '__iter__'):
             if not isinstance(rhObj, rd.ObjRef): return
@@ -767,10 +813,97 @@ def main():
             rads_for_idxEs_PerBrep.append([fRadius])
 
 
+    def getEdgeIndex_MatchingMidPoint(rgBrep, midpt):
+        for edge in rgBrep.Edges:
+            ts = list(edge.DivideByCount(2, includeEnds=False))
+            if not ts:
+                print("Midpoint of edge[{}] not found.".format(edge.EdgeIndex))
+                return
+            if edge.PointAt(ts[0]).DistanceTo(midpt) < 0.1 * sc.doc.ModelAbsoluteTolerance:
+                return edge.EdgeIndex
+
+
+    def prepareDataForPreviewAndSticky():
+        zipped = zip(gBs_In, idx_rgEdges_PerBrep, rads_for_idxEs_PerBrep)
+
+
+        rgBs = []
+        pts_Mids_All = [] # Won't include matching radius of 0.0.
+        rads_All = [] # Won't include radius of 0.0.
+        
+        bprs = [] # list of tuples of (GUID, pts, radii) for saving input for future use of script.
+
+        for gB_In, idxs_Es, rads_for_idxEs in zipped:
+            rdB = sc.doc.Objects.FindId(gB_In)
+            rgB = rdB.Geometry
+            rgBs.append(rgB)
+            pts_Mids_ThisB = [] # Won't include matching radius of 0.0.
+            rads_ThisB = [] # Won't include radius of 0.0.
+
+            for i, rad in enumerate(rads_for_idxEs):
+                if rad == 0.0:
+                    continue
+                iE = idxs_Es[i]
+                ts = list(rgB.Edges[iE].DivideByCount(2, includeEnds=False))
+                if not ts:
+                    print("Midpoint of edge[{}] not found.".format(iE))
+                    return
+                pt = rgB.Edges[iE].PointAt(ts[0])
+                pts_Mids_ThisB.append(pt)
+                rads_ThisB.append(rad)
+
+            if not pts_Mids_ThisB: continue
+            bprs.append((rdB.Id, pts_Mids_ThisB, rads_ThisB))
+            pts_Mids_All.extend(pts_Mids_ThisB)
+            rads_All.extend(rads_ThisB)
+
+        sc.sticky[skey_prevSels] = bprs
+
+        if not rgBs: return
+
+        return pts_Mids_All, rads_All
+
+
     while True:
-        rc = getInput()
+        rc = getInput(bool(prevSels_Present))
+
         if rc is None:
+            conduit.Enabled = False
+            del conduit
+            del sc.sticky[skey_conduit]
+            sc.sticky[skey_conduit] = None
             return
+
+        if rc == 'UsePrevInput':
+            sc.doc.Objects.UnselectAll()
+            gBs_In = []
+            idx_rgEdges_PerBrep = []
+            rads_for_idxEs_PerBrep = []
+            for gB, pts, rads in prevSels_Present:
+                rgB = sc.doc.Objects.FindId(gB).BrepGeometry
+                idx_rgEdges_ThisB = []
+                rads_for_idxEs_ThisB = []
+                for i, pt in enumerate(pts):
+                    idxE = getEdgeIndex_MatchingMidPoint(rgB, pt)
+                    if idxE is None: continue
+                    idx_rgEdges_ThisB.append(idxE)
+                    rads_for_idxEs_ThisB.append(rads[i])
+                if idx_rgEdges_ThisB:
+                    gBs_In.append(gB)
+                    idx_rgEdges_PerBrep.append(idx_rgEdges_ThisB)
+                    rads_for_idxEs_PerBrep.append(rads_for_idxEs_ThisB)
+
+            rc = prepareDataForPreviewAndSticky()
+            if not rc: continue
+            pts_Mids_All, rads_All = rc
+
+            conduit.prs = zip(pts_Mids_All, rads_All)
+
+            conduit.Enabled = True
+            sc.doc.Views.Redraw()
+
+            continue
+
 
         fRadius = Opts.values['fRadius']
         fFreeCADTimeoutSecs = Opts.values['fFreeCADTimeoutSecs']
@@ -778,18 +911,26 @@ def main():
         bDebug = Opts.values['bDebug']
 
         sc.doc.Objects.UnselectAll()
+        sc.doc.Views.Redraw()
 
         if not rc:
-            print("Proceed creating fillets.")
-            print([spb for spb in gBs_In])
-            print([spb for spb in idx_rgEdges_PerBrep])
-            print([spb for spb in rads_for_idxEs_PerBrep])
-            #return
+            print("Proceeding to create fillets.")
+            conduit.Enabled = False
+            del conduit
             break
 
         objrefs = rc
 
-        rc = sortInputPerBrep(objrefs)
+        sortInputPerBrep(objrefs)
+
+        rc = prepareDataForPreviewAndSticky()
+        if not rc: continue
+        pts_Mids_All, rads_All = rc
+
+        conduit.prs = zip(pts_Mids_All, rads_All)
+
+        conduit.Enabled = True
+        sc.doc.Views.Redraw()
 
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
@@ -801,8 +942,9 @@ def main():
     for iB, (gB_In, idxs_Es, rads_for_idxEs) in enumerate(zipped):
 
         sCmdPrompt = "Processing brep {} of {}".format(iB+1, len(gBs_In))
-
         Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt)
+
+        s_FC[:] = [] # So that a new FreeCAD script is made for each brep.
 
         rc = processBrepObject(
             gB_In,

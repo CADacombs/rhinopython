@@ -11,6 +11,7 @@
 200505: Bug fix.
 200519-23, 0619,24,25, 0701,29: Refactored.  Exported a function to its own script.  Import-related update.
 210223: Modified an option default.
+220317: Import-related update.
 """
 
 import Rhino
@@ -24,6 +25,7 @@ from System import Guid
 
 import xBrep_splitSurfaceWithCurves
 import xBrepObject
+import xSurface
 
 
 class Opts():
@@ -351,7 +353,7 @@ def trimSurfaceIntoFace(rgSrf_In, rhObjects_CurveOrEdge, pt_Input=None, **kwargs
     bDebug = getOpt('bDebug')
 
 
-    rgB_fromSplit = xBrep_splitSurfaceWithCurves.splitSurfaceIntoBrep(
+    rgB_fromSplit = xSurface.splitSurfaceIntoBrep(
             rgSrf_toSplit=srf_toSplit,
             rhObjects_CurveOrEdge=rhObjects_CurveOrEdge,
             fTolerance=fTolerance,

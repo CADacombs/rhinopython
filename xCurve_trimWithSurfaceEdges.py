@@ -1,8 +1,6 @@
 """
 200521: Created, starting with another script.
-200611, 24, 25: Bug fix.
-200729: Renamed a function.
-220317: Import-related update.
+200729, 220317: Import-related update.
 """
 
 import Rhino
@@ -49,18 +47,31 @@ class Opts():
             getObj, englishName=names[key], toggleValue=riOpts[key])
 
 
+    key = 'bKeepExterior'; keys.append(key)
+    values[key] = False
+    names[key] = "Keep"
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Interior', 'Exterior')
+    riAddOpts[key] = addOptionToggle(key, names, riOpts)
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+    
     key = 'fTolerance'; keys.append(key)
     values[key] = 1.0 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     riAddOpts[key] = addOptionDouble(key, names, riOpts)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
-
+    
+    key = 'bReplace'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Add', 'Replace')
+    riAddOpts[key] = addOptionToggle(key, names, riOpts)
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+    
     key = 'bEcho'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
-
+    
     key = 'bDebug'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
@@ -123,7 +134,9 @@ def getInput_Curves():
     idxs_Opts = {}
 
     while True:
+        key = 'bKeepExterior'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'fTolerance'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
+        key = 'bReplace'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'bEcho'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'bDebug'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         
@@ -173,7 +186,9 @@ def getInput_Face():
     idxs_Opts = {}
 
     while True:
+        key = 'bKeepExterior'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'fTolerance'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
+        key = 'bReplace'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'bEcho'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         key = 'bDebug'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
         
@@ -199,17 +214,6 @@ def getInput_Face():
         go.ClearCommandOptions()
 
 
-def formatDistance(fDistance):
-    if fDistance is None:
-        return "(No deviation was provided.)"
-    if fDistance == 0.0:
-        return "Exactly zero"
-    if fDistance < 10.0**(-(sc.doc.DistanceDisplayPrecision-3)):
-        return "{:.1e}".format(fDistance)
-    else:
-        return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
-
-
 def processCurveObjects(rhCrvObjs, rhSrf, **kwargs):
     """
     """
@@ -217,7 +221,9 @@ def processCurveObjects(rhCrvObjs, rhSrf, **kwargs):
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
+    bKeepExterior = getOpt('bKeepExterior')
     fTolerance = getOpt('fTolerance')
+    bReplace = getOpt('bReplace')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -315,7 +321,7 @@ def processCurveObjects(rhCrvObjs, rhSrf, **kwargs):
     
     for i, rgCrv in enumerate(rgCrvs_In):
         
-        attrs = rdCrvs_In[i].Attributes
+        attrs = rdCrvs_In[i].Attributes if bReplace else None
 
         rc = xCurve.splitCurvesWithSurfaceEdges(
             [rgCrv],
@@ -330,9 +336,16 @@ def processCurveObjects(rhCrvObjs, rhSrf, **kwargs):
             cs_Exterior
             ) = rc
 
+        for c in cs_Boundary: c.Dispose()
+
         iCt_Added_ThisCrv_In = 0
         
-        crvs_toAdd = cs_Interior + cs_Boundary + cs_Exterior
+        if bKeepExterior:
+            crvs_toAdd = cs_Exterior
+            for c in cs_Interior: c.Dispose()
+        else:
+            crvs_toAdd = cs_Interior
+            for c in cs_Exterior: c.Dispose()
         
         if not crvs_toAdd: continue
         
@@ -343,15 +356,18 @@ def processCurveObjects(rhCrvObjs, rhSrf, **kwargs):
                 iCt_Added_ThisCrv_In += 1
         
         if iCt_Added_ThisCrv_In == len(crvs_toAdd):
-            sc.doc.Objects.Delete(objectId=rdCrvs_In[i].Id, quiet=False)
+            if bReplace:
+                sc.doc.Objects.Delete(objectId=rdCrvs_In[i].Id, quiet=False)
             iCt_Split_AllCrv_In += iCt_Added_ThisCrv_In
             iCt_CrvsSplit_NoError += 1
         else:
             print "Added {} out of {} curves.  Original curve was not removed.".format(
                 iCt_Added_ThisCrv_In, len(crvs_toAdd))
 
+        for c in crvs_toAdd: c.Dispose()
+
     if iCt_CrvsSplit_NoError:
-        print "Split {} curves into {} curves.".format(
+        print "Trimmed {} curves into {} curves.".format(
             iCt_CrvsSplit_NoError, iCt_Split_AllCrv_In)
     else:
         print "No curves were split."

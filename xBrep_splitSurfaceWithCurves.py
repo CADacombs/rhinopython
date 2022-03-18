@@ -1,24 +1,21 @@
 """
 190530: Created.
-191112: Added a function.
-191113: Made input of some function more BrepFace focused.
+...
 191115: Added more tolerance multipliers.
-200130, 0202: Modified output of a function.
-200209, 14: Modified debug output.
+...
 200303: Now accepts curves with length < resolution and >= ModelAbsoluteTolerance.
 200422: Refactored Opts.  Added some options.  Modified an option default value.
 200430: Added bOnlyUseCrvsOnSrf and option to use all normal wires and brep edges.
-200505: Bug fix.
-200519-23, 26: Refactored.  Exported a function to its own script.
-200611: Bug fix.
-200619: Import-related update.
-200625: Now Normal objects are now found in main() instead of a subsequent function.
-200629: Refactored.
-200701: Bug fix.
-200729: Import-related update.
+...
 210122: Now, processBrepObjects processes more object types for faces and splitters.
 210125: Minor bug fix.
 210325: Added bAddSplittingCrvs.
+210930: Now, non-NurbsSurface faces of monoface breps are converted to NurbsSurface on split fails.
+            Bug reported to McNeel:
+                https://discourse.mcneel.com/t/trim-pull-curve-to-sumsurface-bug/130927
+                https://mcneel.myjetbrains.com/youtrack/issue/RH-65780
+211006: Bug fix.
+220317: Import-related updates.
 """
 
 import Rhino
@@ -30,10 +27,9 @@ import scriptcontext as sc
 
 from System import Guid
 
-import xCurve
-import xCurve_sortCurvesOnSurface
-import xCurve_splitWithSurfaceEdges
 import xBrepObject
+import xCurve
+import xSurface
 
 
 class Opts():
@@ -383,96 +379,6 @@ def getNakedEdgesOfBrepObject(rdBrep):
     return rgEs
 
 
-def splitSurfaceIntoBrep(rgSrf_toSplit, rgCrvs_Splitters, **kwargs):
-    """
-    Parameters:
-        rgSrf_toSplit: Can be rg.BrepFace or other rg.Surface.
-        rgCrvs_Splitters
-        fTolerance
-        bTryOtherTolsOnFail
-        bDebug
-    Returns on success:
-        rg.Brep
-    Returns on fail:
-        None
-    """
-
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    fTolerance = getOpt('fTolerance')
-    bTryOtherTolsOnFail = getOpt('bTryOtherTolsOnFail')
-    bDebug = getOpt('bDebug')
-
-
-    if isinstance(rgSrf_toSplit, rg.BrepFace):
-        rgFace_toSplit = rgSrf_toSplit
-        rgBrep_TempForUnderlyingSrf = None
-    elif isinstance(rgSrf_toSplit, rg.Surface):
-        rgBrep_TempForUnderlyingSrf = rgSrf_toSplit.ToBrep()
-        rgFace_toSplit = rgBrep_TempForUnderlyingSrf.Faces[0]
-    else:
-        return
-
-
-    # Create tolerance loop.
-    if bTryOtherTolsOnFail:
-        fTols_toTry = []
-        for tolMultiplier in 1.0, 0.5, 2.0, 0.25, 4.0, 0.125, 8.0, 0.0625, 16.0:
-            tol = tolMultiplier * fTolerance
-            fTols_toTry.append(tol)
-    else:
-        fTols_toTry = fTolerance,
-
-
-    # Split in a tolerance loop.
-    for fTol_toTry in fTols_toTry:
-
-        #
-        #
-        rgB_Split = rgFace_toSplit.Split(
-            curves=rgCrvs_Splitters,
-            tolerance=fTol_toTry)
-        #
-        #
-
-
-        if bDebug: sEval='rgB_Split'; print sEval+':',eval(sEval)
-        
-        if rgB_Split is None:
-            if bDebug:
-                print "  Failed at fTol_toTry=={}.".format(
-                    getFormattedDistance(fTol_toTry))
-                for c in crvs:
-                    sc.doc.Objects.AddCurve(c)
-                sc.doc.Views.Redraw()
-        elif rgB_Split.Faces.Count == 1:
-            if bDebug:
-                print "BrepFace.Split resulted in a 1-face Brep."
-            rgB_Split = None
-        elif rgB_Split.Faces.Count == rgFace_toSplit.Brep.Faces.Count:
-            if bDebug:
-                print "BrepFace.Split resulted in a Brep with no additional faces."
-            rgB_Split = None
-        else:
-            if bDebug:
-                sEval='rgB_Split.IsValid'; print sEval+':',eval(sEval)
-                sEval='rgB_Split.Faces.Count'; print sEval+':',eval(sEval)
-                #sc.doc.Objects.AddBrep(rgB_Split); sc.doc.Views.Redraw()
-            if not rgB_Split.IsValid:
-                rgB_Split = None
-
-            if bDebug or abs(fTol_toTry - fTolerance) > 1e-9:
-                print "  Split successful at a tolerance of {}.".format(
-                    getFormattedDistance(fTol_toTry))
-            break # out of tolerance loop.
-
-
-    if rgBrep_TempForUnderlyingSrf: rgBrep_TempForUnderlyingSrf.Dispose()
-
-    return rgB_Split
-
-
 def splitFaceOfBrep(rgFace_toSplit, rgCrvs_Splitters, **kwargs):
     """
     Parameters:
@@ -537,7 +443,43 @@ def splitFaceOfBrep(rgFace_toSplit, rgCrvs_Splitters, **kwargs):
         elif rgB_Split.Faces.Count == rgFace_toSplit.Brep.Faces.Count:
             if bDebug:
                 print "BrepFace.Split resulted in a Brep with no additional faces."
+
             rgB_Split = None
+
+            if not isinstance(rgFace_toSplit.UnderlyingSurface(), rg.NurbsSurface):
+                s = "{} face was not split.".format(
+                    rgFace_toSplit.UnderlyingSurface().GetType().Name)
+                s += "  Trying NurbsSurface equivalent ..."
+                print s
+
+
+                def convertToNS():
+                    ns = rgFace_toSplit.UnderlyingSurface().ToNurbsSurface()
+                    rgB_1F_NS = rgFace_toSplit.Brep.DuplicateBrep()
+                    idxNS = rgB_1F_NS.AddSurface(ns)
+                    if not rgB_1F_NS.Faces[rgFace_toSplit.FaceIndex].ChangeSurface(idxNS):
+                        print "Brep.ChangeSurface failed."
+                        rgB_1F_NS.Dispose()
+                        return
+                    rgB_1F_NS.Compact()
+                    if not rgB_1F_NS.IsValid:
+                        return
+                    return rgB_1F_NS.Faces[rgFace_toSplit.FaceIndex]
+
+                rgF_NS_toSplit = convertToNS()
+
+                if rgF_NS_toSplit is not None:
+                    rgB_Split = rgF_NS_toSplit.Split(
+                        curves=rgCrvs_Splitters,
+                        tolerance=fTol_toTry)
+                    if rgB_Split.Faces.Count == rgFace_toSplit.Brep.Faces.Count:
+                        rgB_Split = None
+                        print "  NurbsSurface face also didn't split."
+                    else:
+                        print "  NurbsSurface passed.  This means that the modified" \
+                            " model has an underlying surface which was converted" \
+                            " from {} to a NurbsSurface.".format(
+                                rgFace_toSplit.UnderlyingSurface().GetType().Name)
         else:
             if bDebug:
                 sEval='rgB_Split.IsValid'; print sEval+':',eval(sEval)
@@ -552,49 +494,9 @@ def splitFaceOfBrep(rgFace_toSplit, rgCrvs_Splitters, **kwargs):
             break # out of tolerance loop.
 
 
-    rgFace_toSplit.Brep.Dispose()
+    rgFace_toSplit.Brep.Dispose() # WHY IS THIS HERE INSTEAD OF WHERE THE BREP WAS Duplicate()?
 
     return rgB_Split
-
-
-def getCurvesToSplitSurface(rgCrvs_tryForSplitters, rgSrf, fTolerance, bDebug=False):
-    """
-    Duplicates input curves that are on surface and splits to edges.
-    """
-    rc = xCurve_sortCurvesOnSurface.duplicateCurvesOnSurface(
-        rgCrvs_tryForSplitters,
-        rgSrf,
-        fTolerance=fTolerance,
-        bDebug=bDebug)
-    if not rc: return
-    (
-        crvs_CompletelyOnSrf_Closed,
-        crvs_CompletelyOnSrf_Open,
-        crvs_PartiallyOnSrf,
-        ) = rc
-
-    if not crvs_PartiallyOnSrf:
-        return (crvs_CompletelyOnSrf_Closed + crvs_CompletelyOnSrf_Open)
-
-    # Trim the curves that lie partially on the surface mostly to get rid of the overlapping (Boundary) portions.
-    rc = xCurve_splitWithSurfaceEdges.splitCurvesWithSurfaceEdges(
-        rgCrvs_In=crvs_PartiallyOnSrf,
-        rgSrf_In=rgSrf,
-        fTolerance=fTolerance)
-    (
-        crvs_Trimmed_Interior,
-        crvs_Trimmed_Boundary,
-        crvs_Trimmed_Exterior
-        ) = rc
-
-    for c in crvs_Trimmed_Boundary + crvs_Trimmed_Exterior: c.Dispose()
-    for c in crvs_PartiallyOnSrf: c.Dispose()
-
-    return (
-        crvs_CompletelyOnSrf_Closed +
-        crvs_CompletelyOnSrf_Open +
-        crvs_Trimmed_Interior
-        )
 
 
 def processBrepObjects(rhObjs_Faces, rhObjs_Splitters, **kwargs):
@@ -752,7 +654,7 @@ def processBrepObjects(rhObjs_Faces, rhObjs_Splitters, **kwargs):
 
 
             if bOnlyUseCrvsOnSrf:
-                rgCrvs_Splitters_thisFace = getCurvesToSplitSurface(
+                rgCrvs_Splitters_thisFace = xCurve.getCurvesToSplitSurface(
                     rgCrvs_Splitters_FilteredToBrep, srf_toSplit, fTolerance, bDebug)
                 if bDebug and bAddSplittingCrvs:
                     for c in rgCrvs_Splitters_thisFace: sc.doc.Objects.AddCurve(c)
@@ -771,7 +673,7 @@ def processBrepObjects(rhObjs_Faces, rhObjs_Splitters, **kwargs):
                     for c in rgCrvs_Splitters_thisFace: sc.doc.Objects.AddCurve(c)
 
 
-            rgBrep_Ret_Split = splitSurfaceIntoBrep(
+            rgBrep_Ret_Split = xSurface.splitSurfaceIntoBrep(
                 rgSrf_toSplit=srf_toSplit,
                 rgCrvs_Splitters=rgCrvs_Splitters_thisFace,
                 fTolerance=fTolerance,
@@ -844,7 +746,7 @@ def processBrepObjects(rhObjs_Faces, rhObjs_Splitters, **kwargs):
 
 
             if bOnlyUseCrvsOnSrf:
-                rgCrvs_Splitters_thisFace = getCurvesToSplitSurface(
+                rgCrvs_Splitters_thisFace = xCurve.getCurvesToSplitSurface(
                     rgCrvs_Splitters_FilteredToBrep, rgFace_toSplit, fTolerance, bDebug)
                 if bDebug and bAddSplittingCrvs:
                     for c in rgCrvs_Splitters_thisFace: sc.doc.Objects.AddCurve(c)

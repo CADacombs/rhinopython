@@ -8,6 +8,8 @@
 210407: Added more support for new-in-V7's BrepFace.PerFaceColor.
 210412: Added more times fEdgeLen_Min is used in splitFace.
 210503: Now, curves on SENW are ignored for retrim when underlying surface is not being replaced.
+210929: is3dPointOnFace now converts non-NurbsSurfaces into NurbsSurfaces on ClosestPoint fails.
+220317: Updated to use a new overload.  Import-related update.
 """
 
 import Rhino
@@ -18,8 +20,8 @@ import scriptcontext as sc
 from System import Guid
 from System import Random
 
-import xBrep_splitSurfaceWithCurves
 import xCurve
+import xSurface
 
 
 def formatDistance(fDistance):
@@ -137,23 +139,39 @@ def is3dPointOnFace(rgFace, pt, fTolerance=None):
     if fTolerance is None:
         fTolerance = sc.doc.ModelAbsoluteTolerance
     
-    b, u, v = rgFace.ClosestPoint(pt)
+    b, u, v = rgFace.ClosestPoint(pt) # ClosestPoint is a Surface method and ignores edges of BrepFaces.
     if not b:
-        print "ClosestPoint return was not a success."
-        return
+        s = "ClosestPoint on {} failed ".format(rgFace.UnderlyingSurface().GetType().Name)
+        s += "at {:.15g},{:.15g},{:.15g}.".format(pt.X, pt.Y, pt.Z)
+        if isinstance(rgFace.UnderlyingSurface(), rg.NurbsSurface):
+            print s
+            return
+
+        ns = rgFace.UnderlyingSurface().ToNurbsSurface()
+        b, u, v = ns.ClosestPoint(pt)
+        ns.Dispose()
+        if not b:
+            s += "  It also failed for the NurbsSurface equivalent."
+            print s
+            return
+        s += "  But NurbsSurface equivalent passed."
+        print s
 
     dist = rgFace.PointAt(u,v).DistanceTo(pt)
     if dist > fTolerance:
         # Point isn't even on underlying surface.
         return False
 
-    ptFaceRel = isParameterPointOnFace(
-        rgFace, u, v, fTolerance)
+    try:
+        ptFaceRel = rgFace.IsPointOnFace(u, v, fTolerance) # Overload added to RhinoCommon 7.0.
+    except:
+        ptFaceRel = isParameterPointOnFace_beforeV7(
+            rgFace, u, v, fTolerance)
 
     return ptFaceRel
 
 
-def isParameterPointOnFace(rgFace, u, v, f3dTolerance=None):
+def isParameterPointOnFace_beforeV7(rgFace, u, v, f3dTolerance=None):
     """
     Hard-coded (3D) tolerance of IsPointOnFace up through at least V6.28 (7/17/2020)
     is Rhino.RhinoMath.SqrtEpsilon.
@@ -166,15 +184,10 @@ def isParameterPointOnFace(rgFace, u, v, f3dTolerance=None):
     if f3dTolerance is None:
         f3dTolerance = sc.doc.ModelAbsoluteTolerance
     
-    pt_3d = rgFace.PointAt(u, v)
+    ptAt = rgFace.PointAt(u, v)
     # Note that this Point3d will already be pulled to the face.
     # For true 3D point check, use is3dPointOnFace instead.
     
-    dist = rgFace.PointAt(u,v).DistanceTo(pt_3d)
-    if dist > f3dTolerance:
-        # Point must have pulled outside of face's boundary.
-        return rg.PointFaceRelation.Exterior
-
     ptFaceRel = rgFace.IsPointOnFace(u, v)
     
     if ptFaceRel == rg.PointFaceRelation.Boundary:
@@ -182,17 +195,17 @@ def isParameterPointOnFace(rgFace, u, v, f3dTolerance=None):
     
     for iE in rgFace.AdjacentEdges():
         bSuccess, t = rgFace.Brep.Edges[iE].ClosestPoint(
-            testPoint=pt_3d,
+            testPoint=ptAt,
             maximumDistance=f3dTolerance)
         if not bSuccess:
             continue
         pt_onEdge = rgFace.Brep.Edges[iE].PointAt(t)
-        dist_toCrv = pt_3d.DistanceTo(other=pt_onEdge)
+        dist_toCrv = ptAt.DistanceTo(other=pt_onEdge)
         if dist_toCrv <= f3dTolerance:
             return rg.PointFaceRelation.Boundary
     else:
         # No distances smaller than f3dTolerance found.
-        return rg.PointFaceRelation.Interior
+        return ptFaceRel # Exterior or boundary.
 
 
 def splitFace(rgFace, **kwargs):
@@ -326,7 +339,7 @@ def splitFace(rgFace, **kwargs):
 
     rgCrvs_Splitters_WIP = [c.Duplicate() for c in rgCrvs_fromLoops]
 
-    rc = xBrep_splitSurfaceWithCurves.getCurvesToSplitSurface(
+    rc = xCurve.getCurvesToSplitSurface(
         rgCrvs_Splitters_WIP, rgSrf_toSplit, fSplitTol)
     if not rc:
         rgB_Out = rgSrf_toSplit.ToBrep()
@@ -354,7 +367,7 @@ def splitFace(rgFace, **kwargs):
     if bDebug or bOutputTrimmingCrvs: map(sc.doc.Objects.AddCurve, rgCrvs_Splitters)
     if bDebug: sc.doc.Objects.AddSurface(rgSrf_toSplit)
 
-    rc = xBrep_splitSurfaceWithCurves.splitSurfaceIntoBrep(
+    rc = xSurface.splitSurfaceIntoBrep(
         rgSrf_toSplit,
         rgCrvs_Splitters,
         fTolerance=fSplitTol,

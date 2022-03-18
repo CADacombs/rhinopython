@@ -1,13 +1,6 @@
 """
 160618: Created.
 ...
-190226: Added import.
-190505: Added some functions.
-190513: Replaced an import with a new internal function.
-190521-22: Added checks for cylinders, cones, spheres, and tori of large size.
-        Merged 2 functions into one.
-        Changed a default value.
-190523-24: Added a function.
 190617: Using NurbsSurface in place of other surfaces due to bugs in RhinoCommon stated below.
 190720: A Cone-related function now check whether test point is at the Apex and returns accordingly.
 190722: Split some functions.  Added a function.
@@ -17,6 +10,12 @@
 191118: Moved some functions to other modules.
 191124: Import-related bug fix.
 191126: Modified some printed output.
+201212: Added knot information to description of NurbsSurface.
+210325: getDescription now tests for primitives using more tolerances and reports the primitive's radius, etc.
+210327: Bug fix.
+210330: Modified some tolerances to test for 'perfect' primitive match.
+210604: Bug fix in knot multiplicity routine.
+220317: Added a function.
 
 Known Issues with RhinoCommon:
     
@@ -58,32 +57,49 @@ def getDescription(rgSrf0):
     """
 
     typeSrf = rgSrf0.GetType()
-    
-    tolerance = 1e-9
 
     # Check whether face's UnderlyingSurface is already a primitive shape.
     if typeSrf == rg.PlaneSurface:
         return "PlaneSurface"
-    elif rgSrf0.IsPlanar(tolerance):
-        return "Planar ({}) {}".format(tolerance, typeSrf.Name)
-    #    elif (
-    #            (typeSrf==rg.RevSurface or typeSrf==rg.SumSurface)
-    #            and rgSrf0.IsPlanar(tolerance)
-    #    ):
-    #        return "Planar ({}) {}".format(tolerance, typeSrf.Name)
-    
+
+    fTols_ToTry = Rhino.RhinoMath.ZeroTolerance, 1e-9, 1e-8
+    # 1e-8 can compensate for ZeroTolerance scaling from inches to millimeters
+    # because 2.32830643654e-10 * 25.4 ~ 5.91389834881e-09.
+
+    for fTol in fTols_ToTry:
+        if rgSrf0.IsPlanar(fTol):
+            return "Planar ({}) {}".format(fTol, typeSrf.Name)
+        #    elif (
+        #            (typeSrf==rg.RevSurface or typeSrf==rg.SumSurface)
+        #            and rgSrf0.IsPlanar(fTol)
+        #    ):
+        #        return "Planar ({}) {}".format(fTol, typeSrf.Name)
+
     if rgSrf0.IsSolid: s = "Solid"
     elif (rgSrf0.IsClosed(0) or rgSrf0.IsClosed(1)): s = "Closed"
     else: s = "Open"
-    
-    if rgSrf0.IsCylinder(tolerance):
-        s += ", cylindrical ({})".format(tolerance)
-    elif rgSrf0.IsCone(tolerance):
-        s += ", conical ({})".format(tolerance)
-    elif rgSrf0.IsSphere(tolerance):
-        s += ", spherical ({})".format(tolerance)
-    elif rgSrf0.IsTorus(tolerance):
-        s += ", toric ({})".format(tolerance)
+
+    for fTol in fTols_ToTry:
+        rc = rgSrf0.TryGetCylinder(fTol)
+        if rc[0]:
+            cyl = rc[1]
+            s += ", R{:.4f} cylindrical ({:.3e})".format(cyl.Radius, fTol)
+            break
+        rc = rgSrf0.TryGetCone(fTol)
+        if rc[0]:
+            cone = rc[1]
+            s += ", {:.2f} degree conical ({:.3e})".format(cone.AngleInDegrees(), fTol)
+            break
+        rc = rgSrf0.TryGetSphere(fTol)
+        if rc[0]:
+            sphere = rc[1]
+            s += ", R{:.4f} spherical ({:.3e})".format(sphere.Radius, fTol)
+            break
+        rc = rgSrf0.TryGetTorus(fTol)
+        if rc[0]:
+            torus = rc[1]
+            s += ", R{:.4f},r{:.4f} toric ({:.3e})".format(torus.MajorRadius, torus.MinorRadius, fTol)
+            break
     
     s += " {}".format(typeSrf.Name)
     
@@ -97,8 +113,30 @@ def getDescription(rgSrf0):
     elif typeSrf == rg.NurbsSurface:
         s += "  Rational," if rgSrf0.IsRational else "  Non-rational,"
         s += "  Degrees {} x {}".format(rgSrf0.Degree(0), rgSrf0.Degree(1))
-        s += "  CP counts {} x {}".format(rgSrf0.Points.CountU, rgSrf0.Points.CountV)
-    
+        s += "  CpCts {} x {}".format(rgSrf0.Points.CountU, rgSrf0.Points.CountV)
+        s += "  SpanCts {} x {}".format(rgSrf0.SpanCount(0), rgSrf0.SpanCount(1))
+        if Rhino.RhinoApp.ExeVersion >= 7:
+            s += "  KnotStyles {} x {}".format(
+                rgSrf0.KnotsU.KnotStyle, rgSrf0.KnotsU.KnotStyle)
+
+
+        iCt_KnotMulties_U = []
+        iK = 0
+        while iK < rgSrf0.KnotsU.Count:
+            m = rgSrf0.KnotsU.KnotMultiplicity(iK)
+            iCt_KnotMulties_U.append(m)
+            iK += m
+
+        iCt_KnotMulties_V = []
+        iK = 0
+        while iK < rgSrf0.KnotsV.Count:
+            m = rgSrf0.KnotsV.KnotMultiplicity(iK)
+            iCt_KnotMulties_V.append(m)
+            iK += m
+        s += "  KnotMultiplicities {} x {}".format(
+            iCt_KnotMulties_U, iCt_KnotMulties_V)
+
+
     return s
 
 
@@ -190,5 +228,126 @@ def shortSenws(rgSrf, fSenwLen_MinAllowed, bEcho=False):
                     if bEcho: print "SENW found using maximumPointSpread instead of GetLength()."
                     iSenwsWithinPtSpread.append(side)
     return iSenwsWithinPtSpread
+
+
+def splitSurfaceIntoBrep(rgSrf_toSplit, rgCrvs_Splitters, **kwargs):
+    """
+    Parameters:
+        rgSrf_toSplit: Can be rg.BrepFace or other rg.Surface.
+        rgCrvs_Splitters
+        fTolerance
+        bTryOtherTolsOnFail
+        bDebug
+    Returns on success:
+        rg.Brep
+    Returns on fail:
+        None
+    """
+
+
+    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
+
+    fTolerance = getOpt('fTolerance')
+    bTryOtherTolsOnFail = getOpt('bTryOtherTolsOnFail')
+    bDebug = getOpt('bDebug')
+
+
+    if isinstance(rgSrf_toSplit, rg.BrepFace):
+        rgFace_toSplit = rgSrf_toSplit
+        rgBrep_TempForUnderlyingSrf = None
+    elif isinstance(rgSrf_toSplit, rg.Surface):
+        rgBrep_TempForUnderlyingSrf = rgSrf_toSplit.ToBrep()
+        rgFace_toSplit = rgBrep_TempForUnderlyingSrf.Faces[0]
+    else:
+        return
+
+
+    # Create tolerance loop.
+    if bTryOtherTolsOnFail:
+        fTols_toTry = []
+        for tolMultiplier in 1.0, 0.5, 2.0, 0.25, 4.0, 0.125, 8.0, 0.0625, 16.0:
+            tol = tolMultiplier * fTolerance
+            fTols_toTry.append(tol)
+    else:
+        fTols_toTry = fTolerance,
+
+
+    # Split in a tolerance loop.
+    for fTol_toTry in fTols_toTry:
+
+        #
+        #
+        rgB_Split = rgFace_toSplit.Split(
+            curves=rgCrvs_Splitters,
+            tolerance=fTol_toTry)
+        #
+        #
+
+
+        if bDebug: sEval='rgB_Split'; print sEval+':',eval(sEval)
+        
+        if rgB_Split is None:
+            if bDebug:
+                print "  Failed at fTol_toTry=={}.".format(
+                    getFormattedDistance(fTol_toTry))
+                for c in crvs:
+                    sc.doc.Objects.AddCurve(c)
+                sc.doc.Views.Redraw()
+        elif rgB_Split.Faces.Count == rgFace_toSplit.Brep.Faces.Count:
+            if bDebug:
+                    if rgB_Split.Faces.Count == 1:
+                        print "BrepFace.Split resulted in a 1-face Brep."
+                    else:
+                        print "BrepFace.Split resulted in a Brep with no additional faces."
+
+            rgB_Split = None
+
+            if not isinstance(rgFace_toSplit.UnderlyingSurface(), rg.NurbsSurface):
+                s = "{} face was not split.".format(
+                    rgFace_toSplit.UnderlyingSurface().GetType().Name)
+                s += "  Trying NurbsSurface equivalent ..."
+                print s
+
+
+                def convertToNS():
+                    ns = rgFace_toSplit.UnderlyingSurface().ToNurbsSurface()
+                    rgB_1F_NS = ns.ToBrep()
+                    if not rgB_1F_NS.IsValid:
+                        return
+                    if rgB_1F_NS.Faces.Count != 1:
+                        return
+                    return rgB_1F_NS.Faces[0]
+
+                rgF_NS_toSplit = convertToNS()
+
+                if rgF_NS_toSplit is not None:
+                    rgB_Split = rgF_NS_toSplit.Split(
+                        curves=rgCrvs_Splitters,
+                        tolerance=fTol_toTry)
+                    if rgB_Split.Faces.Count == rgFace_toSplit.Brep.Faces.Count:
+                        rgB_Split = None
+                        print "  NurbsSurface face also didn't split."
+                    else:
+                        print "  NurbsSurface passed.  This means that the modified" \
+                            " model has an underlying surface which was converted" \
+                            " from {} to a NurbsSurface.".format(
+                                rgFace_toSplit.UnderlyingSurface().GetType().Name)
+        else:
+            if bDebug:
+                sEval='rgB_Split.IsValid'; print sEval+':',eval(sEval)
+                sEval='rgB_Split.Faces.Count'; print sEval+':',eval(sEval)
+                #sc.doc.Objects.AddBrep(rgB_Split); sc.doc.Views.Redraw()
+            if not rgB_Split.IsValid:
+                rgB_Split = None
+
+            if bDebug or abs(fTol_toTry - fTolerance) > 1e-9:
+                print "  Split successful at a tolerance of {}.".format(
+                    getFormattedDistance(fTol_toTry))
+            break # out of tolerance loop.
+
+
+    if rgBrep_TempForUnderlyingSrf: rgBrep_TempForUnderlyingSrf.Dispose()
+
+    return rgB_Split
 
 

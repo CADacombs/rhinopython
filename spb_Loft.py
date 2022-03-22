@@ -1,12 +1,16 @@
 """
+This script creates lofts or loft-like surfaces by choice of 3 methods:
+    1. Standard loft.  This was added to the script to utilize the script's UX.
+    2. 
 """
 
-from __future__ import absolute_import, division, print_function, unicode_literals
+from __future__ import absolute_import, print_function, unicode_literals
 
 """
 200404: Created.
 200515: Now aligns duplicates of the input curves.
 211127: Added 2 more lofting methods from other scripts as options.
+220322: Bug fix in resetting options.  UX improvements.
 """
 
 import Rhino
@@ -179,11 +183,11 @@ def getInput_Curves():
         if go.Option().Index == idxs_Opt['ResetOptions']:
             for key in Opts.keys:
                 if key in Opts.riOpts:
-                    Opts.values[key] = Opts.riOpts[key].InitialValue
+                    Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
                     Opts.setValue(key, go.Option().CurrentListOptionIndex)
 
 
-def alignCrvDirs(crvs_In):
+def _alignCrvDirs(crvs_In):
     """
     Returns list of new curves.
     """
@@ -196,6 +200,17 @@ def alignCrvDirs(crvs_In):
 
 def createLoft_CreateFromLoft(crvs, **kwargs):
     """
+    Parameters:
+        crvs
+        bAlignCrvDirs
+        iLoftType
+        bClosed
+        bPeriodic
+        iGContinuity
+        bEcho
+        bDebug
+    Returns on success: Rhino.Geometry.NurbsSurface
+    Returns on fail: None
     """
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
@@ -213,7 +228,7 @@ def createLoft_CreateFromLoft(crvs, **kwargs):
 
 
     if bAlignCrvDirs:
-        crvs = alignCrvDirs(crvs)
+        crvs = _alignCrvDirs(crvs)
 
     for i in range(1, len(crvs)):
         if not rg.Curve.DoDirectionsMatch(crvs[0], crvs[i]):
@@ -242,7 +257,9 @@ def createLoft_MatchGrevilles(ncs, **kwargs):
     """
     Parameters:
         ncs
+        bAlignCrvDirs
         iDegree
+        fDistTol
         bClosed
         bPeriodic
         iGContinuity
@@ -291,7 +308,7 @@ def createLoft_MatchGrevilles(ncs, **kwargs):
 
 
     if bAlignCrvDirs:
-        ncs = alignCrvDirs(ncs)
+        ncs = _alignCrvDirs(ncs)
 
 
     if (iDegree == 2) and (len(ncs) == 2):
@@ -440,7 +457,7 @@ def createLoft_CreateThroughPoints(ncs, **kwargs):
 
 
     if bAlignCrvDirs:
-        ncs = alignCrvDirs(ncs)
+        ncs = _alignCrvDirs(ncs)
 
 
     if bClosed:
@@ -574,7 +591,7 @@ class DrawBrepConduit(Rhino.Display.DisplayConduit):
                 material=Rhino.Display.DisplayMaterial(diffuse=self.color))
 
 
-def createLoft_interactively(ncs_In):
+def _createLoft_interactively(ncs_In):
     """
     Returns
         None to cancel.
@@ -601,31 +618,37 @@ def createLoft_interactively(ncs_In):
 
     idxs_Opt = {}
 
+    bRecalc = True
+
     while True:
 
         sCurrentMethod = Opts.listValues['iLoftMethod'][Opts.values['iLoftMethod']]
 
         rgB_Out = None
 
-        if sCurrentMethod == 'Standard':
-            rgB_Out = createLoft_CreateFromLoft(ncs_In)
-        elif sCurrentMethod == 'Iterative':
-            ns_Res = createLoft_MatchGrevilles(ncs_In)
-            if ns_Res:
-                rgB_Out = ns_Res.ToBrep()
-        elif sCurrentMethod == 'SrfPtGrid':
-            ns_Res = createLoft_CreateThroughPoints(ncs_In)
-            if ns_Res:
-                rgB_Out = ns_Res.ToBrep()
-        else:
-            raise ValueError("LoftMethod value error.")
-
-        if rgB_Out:
-            conduit.brep = rgB_Out
+        if not bRecalc:
             conduit.Enabled = True
             sc.doc.Views.Redraw()
         else:
-            print("Loft was not created at current settings.")
+            if sCurrentMethod == 'Standard':
+                rgB_Out = createLoft_CreateFromLoft(ncs_In)
+            elif sCurrentMethod == 'Iterative':
+                ns_Res = createLoft_MatchGrevilles(ncs_In)
+                if ns_Res:
+                    rgB_Out = ns_Res.ToBrep()
+            elif sCurrentMethod == 'SrfPtGrid':
+                ns_Res = createLoft_CreateThroughPoints(ncs_In)
+                if ns_Res:
+                    rgB_Out = ns_Res.ToBrep()
+            else:
+                raise ValueError("LoftMethod value error.")
+
+            if rgB_Out:
+                conduit.brep = rgB_Out
+                conduit.Enabled = True
+                sc.doc.Views.Redraw()
+            else:
+                print("Loft was not created at current settings.")
 
 
         go.ClearCommandOptions()
@@ -635,9 +658,9 @@ def createLoft_interactively(ncs_In):
         go.SetCommandPrompt("{}".format(sCurrentMethod))
 
         for i, key in enumerate(Opts.listValues['iLoftMethod']):
-            if i == Opts.values['iLoftMethod']:
-                idxs_Opt[key] = None
-                continue
+            #if i == Opts.values['iLoftMethod']:
+            #    idxs_Opt[key] = None
+            #    continue
             idxs_Opt[key] = go.AddOption(key)
 
         def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
@@ -709,15 +732,20 @@ def createLoft_interactively(ncs_In):
         rc = getLoftMethodChange()
         if rc:
             key = rc
+            if key == Opts.listValues['iLoftMethod'][Opts.values['iLoftMethod']]:
+                print("No change.")
+                bRecalc = False
             Opts.setValue(
                 'iLoftMethod',
                 Opts.listValues['iLoftMethod'].index(key))
+            bRecalc = True
             continue
 
 
         for key in idxs_Opt:
             if go.Option().Index == idxs_Opt[key]:
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                bRecalc = True
                 break
 
 
@@ -728,7 +756,7 @@ def main():
     
     ncs_FromIn = [o.Curve().ToNurbsCurve() for o in objrefs]
 
-    rc = createLoft_interactively(ncs_FromIn)
+    rc = _createLoft_interactively(ncs_FromIn)
 
     if rc is None:
         # Cancel.

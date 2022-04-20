@@ -4,6 +4,9 @@
 200401: Import-related bug fix.
 200611: Implemented more correct use of IsPointOnFace.
 200715: Joined 
+210423: replaceShape now uses RemoveShortSegments for splitting curves.
+        WIP: Make moveSurfaceSeamsToAvoidCurves avoid endpoints of curves as well.
+220420: Repaired a RhinoCommon 7.17 script-breaking change.
 
 TODO:
     Rotate RevSurface's before moving seams to avoid conversion to NurbsSurface.
@@ -435,7 +438,7 @@ def replaceShape(rgBrep0, shape, fTolerance=None, bDebug=False):
     #                rebuildVertices=True)
 
     # Prepare trimming curves.
-    rgCrvs_NEs_Otr = rgBrep_In.DuplicateNakedEdgeCurves(outer=True, inner=False)
+    rgCrvs_NEs_Otr = rgBrep_In.DuplicateNakedEdgeCurves(True, False) # nakedOuter, nakedInner
     
     #map(sc.doc.Objects.AddCurve, rgCrvs_ToJoin_Otr); sc.doc.Views.Redraw()
     
@@ -450,7 +453,7 @@ def replaceShape(rgBrep0, shape, fTolerance=None, bDebug=False):
     
     #map(sc.doc.Objects.AddCurve, rgCrvs_ToJoin_Otr); sc.doc.Views.Redraw()
     
-    rgCrvs_NEs_Inr = rgBrep_In.DuplicateNakedEdgeCurves(outer=False, inner=True)
+    rgCrvs_NEs_Inr = rgBrep_In.DuplicateNakedEdgeCurves(False, True) # nakedOuter, nakedInner
     
     #map(sc.doc.Objects.AddCurve, rgCrvs_Inr); sc.doc.Views.Redraw()
     
@@ -502,11 +505,13 @@ def replaceShape(rgBrep0, shape, fTolerance=None, bDebug=False):
     
     rgCrvs_ForSplit = []
     for c in rgCrvs_Joined_All:
+        print c.RemoveShortSegments(tolerance=fTolerance)
         segs = c.DuplicateSegments()
         if segs:
             rgCrvs_ForSplit.extend(c.DuplicateSegments())
         else:
             rgCrvs_ForSplit.append(c)
+            print "DuplicateSegments returned None."
             # Because DuplicateSegments returns None when curve cannot be segmented.
     if bDebug: sEval = 'len(rgCrvs_ForSplit)'; print sEval + ':', eval(sEval)
     
@@ -588,15 +593,24 @@ def replaceShape(rgBrep0, shape, fTolerance=None, bDebug=False):
             if rgSrf1_MovedSeam is None: return
             #sc.doc.Objects.AddSurface(rgSrf1_MovedSeam)
             
-            rgFace_FullSrf = rgSrf1_MovedSeam.ToBrep().Faces[0]
+            rgB_FullSrf = rgSrf1_MovedSeam.ToBrep()
+            
+            rgFace_FullSrf = rgB_FullSrf.Faces[0]
             
             rgBrep_Split = rgFace_FullSrf.Split(
                     curves=rgCrvs_ForSplit,
                     tolerance=sc.doc.ModelAbsoluteTolerance)
-            
-            #            for crv in rgCrvs_ForSplit:
-            #                sc.doc.Objects.AddCurve(crv)
-        
+
+            if not rgBrep_Split.IsValid:
+                if bDebug:
+                    print "rgBreps3_1F is invalid."
+                print rgBrep_Split.IsValidWithLog()
+                rgBrep_Split.Dispose()
+                sc.doc.Objects.AddBrep(rgB_FullSrf)
+                for crv in rgCrvs_ForSplit:
+                    sc.doc.Objects.AddCurve(crv)
+                return
+
         elif isinstance(shape_In, rg.Torus):
             rgBrep_FullTorus_FromRevSrf = rgRevSrf1_FromShape.ToBrep()
             rgFace_FullSrf = rgBrep_FullTorus_FromRevSrf.Faces[0]

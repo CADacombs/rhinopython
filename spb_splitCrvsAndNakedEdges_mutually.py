@@ -115,7 +115,7 @@ def _splitCurveObjects(d):
         if len(pts) == 0: continue
         ts = [rgC.ClosestPoint(pt)[1] for pt in pts]
         rgCs_Out = rgC.Split(ts)
-        if len(rgCs_Out) < 2:
+        if len(rgCs_Out) < 2 and not rgC.IsClosed:
             print("Curve {} was not split.".format(rdC.Id))
         for rgC_Out in rgCs_Out:
             sc.doc.Objects.AddCurve(rgC_Out)

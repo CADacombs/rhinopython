@@ -1,10 +1,16 @@
 """
+Behavior notes:
+    Wire curves are only split by naked edges and other wire curves, not mated edges or face interiors.
+    Naked edges are only split by wire curves.
+    Mated edges are not split.
+    Pressing Enter with no selected input will process all normal (not locked or hidden) curves and breps.
 """
 
 from __future__ import absolute_import, print_function, unicode_literals
 
 """
 220715-17: Created.
+220718: Now includes wire-wire intersections.
 """
 
 import Rhino
@@ -20,6 +26,7 @@ class _Data:
         self.rgNEs_perB = []
         self.pts_Cs = []
         self.pts_NEs_perB = []
+        self.devs_X = []
 
 
 def _getInput():
@@ -57,13 +64,16 @@ def _sortInput(rdObjs, d):
     return bFound
 
 
-def _collectIntersectionData(d):
+def buildEmptyPtLists(d):
     
     for i, rdC in enumerate(d.rdCs):
         d.pts_Cs.append([])
     
     for i, rgNEs in enumerate(d.rgNEs_perB):
         d.pts_NEs_perB.append([[] for _ in xrange(len(rgNEs))])
+
+
+def _getIntPts_WireEdge(d):
 
     bFound = False
 
@@ -74,7 +84,7 @@ def _collectIntersectionData(d):
                 ie = rg.Intersect.Intersection.CurveCurve(
                     curveA=rgC,
                     curveB=rgNE,
-                    tolerance=0.1*sc.doc.ModelAbsoluteTolerance,
+                    tolerance=sc.doc.ModelAbsoluteTolerance,
                     overlapTolerance=0.0)
                 if ie.Count == 0:
                     continue
@@ -84,7 +94,38 @@ def _collectIntersectionData(d):
                         continue
                     d.pts_Cs[iC].append(ie[iie].PointA)
                     d.pts_NEs_perB[iNEs][iNE].append(ie[iie].PointB)
+                    d.devs_X.append(ie[iie].PointA.DistanceTo(ie[iie].PointB))
                 bFound = True
+
+    return bFound
+
+
+def _getIntPts_WireWire(d):
+
+    bFound = False
+
+    for iCA in xrange(len(d.rdCs)-1):
+        rdCA = d.rdCs[iCA]
+        rgCA = rdCA.Geometry
+        for iCB in xrange(iCA+1, len(d.rdCs)):
+            rdCB = d.rdCs[iCB]
+            rgCB = rdCB.Geometry
+
+            ie = rg.Intersect.Intersection.CurveCurve(
+                curveA=rgCA,
+                curveB=rgCB,
+                tolerance=sc.doc.ModelAbsoluteTolerance,
+                overlapTolerance=0.0)
+            if ie.Count == 0:
+                continue
+            for iie in xrange(ie.Count):
+                if ie[iie].IsOverlap:
+                    print("Overlap interesection was created and will be ignored.")
+                    continue
+                d.pts_Cs[iCA].append(ie[iie].PointA)
+                d.pts_Cs[iCB].append(ie[iie].PointB)
+                d.devs_X.append(ie[iie].PointA.DistanceTo(ie[iie].PointB))
+            bFound = True
 
     return bFound
 
@@ -171,13 +212,19 @@ def main():
         print("No curve or edge data in input.")
         return
     
-    if not _collectIntersectionData(d):
+    buildEmptyPtLists(d)
+    
+    if not any((_getIntPts_WireEdge(d), _getIntPts_WireWire(d))):
         print("No intersections found.")
         return
     
     _splitCurveObjects(d)
     
     _splitNakedEdges(d)
+    
+    if max(d.devs_X) >= 0.1*sc.doc.ModelAbsoluteTolerance:
+        print("Max. intersection pt-pt deviation: {:.{}f}".format(
+            max(d.devs_X), sc.doc.ModelDistanceDisplayPrecision))
     
     sc.doc.Views.Redraw()
 

@@ -43,6 +43,7 @@ from __future__ import print_function
 211117: Minor modifications in createTanSrfFromEdge.  Added print_function from __future__.
 211208: Bug fix for when PolyCurves are present during reference selection.
         Bug fix for numeric input.
+220826: Bug fix for when ArcCurve is selected as a reference.
 """
 
 import Rhino
@@ -405,10 +406,18 @@ def getInput_Ref(objref_SrfToMod):
             crv = geom
             if crv.IsClosed:
                 return False
-            if isinstance(geom, rg.PolyCurve):
+            if isinstance(crv, rg.PolyCurve):
                 return True
-            if crv.IsRational:
+            if isinstance(crv, rg.NurbsCurve) and crv.IsRational:
+                for i in range(crv.Points.Count):
+                    if abs(crv.Points.GetWeight(i)-1.0) > 1e-12:
+                        print("Rational NURBS curve not accepted.")
+                        return False
+                return True
+            if isinstance(crv, rg.ArcCurve):
+                print("Arc curve not accepted.")
                 return False
+            # LineCurve
             return True
         else:
             print("What happened?")
@@ -487,18 +496,17 @@ def makeNonRational(nurbsGeom, tol=1e-9):
             ns.MakeNonRational()
             return True
         return False
-    elif isinstance(nurbsGeom, rg.NurbsCurve):
+
+    if isinstance(nurbsGeom, rg.NurbsCurve):
         nc = nurbsGeom
         for i in range(nc.Points.Count):
             weights.append(nc.Points.GetWeight(i))
         if abs(1.0 - max(weights)) <= tol:
             for i in range(nc.Points.Count):
-                if not ns.Points[i].SetWeight(i, 1.0):
+                if not nc.Points.SetWeight(i, 1.0):
                     return False
             return True
         return False
-    else:
-        return
 
 
 def areParamsAlignedPerPickPts(objref_A, objref_B):

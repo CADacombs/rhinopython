@@ -1,7 +1,7 @@
 """
 Select the 2 outer control points of linear control point region.
     For surfaces, points must share a row or column.
-Option:
+Options:
     Ends
         Fixed: The 2 selected control points will not be moved with those between them.
         MoveToAverageLine: the 2 selected control points will be calculated for the line
@@ -228,26 +228,15 @@ def distributeEvenly(grips_ToMove, ptA, ptB):
     return bSomePtTrans
 
 
-def linearizeGripsBetween2(gripA, gripB, **kwargs):
+def linearizeGripsBetween2(gripA, gripB, bFixedEnds=True, bDistributeEvenly=False, bEcho=True, bDebug=False):
     """
     """
-
-
-    if gripA.Index == gripB.Index:
-        return False, "The 2 grips are identical."
-
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-
-    bFixedEnds = getOpt('bFixedEnds')
-    bDistributeEvenly = getOpt('bDistributeEvenly')
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
-
 
     if gripA.OwnerId != gripB.OwnerId:
         return False, "Grips must be from the same object."
+
+    if gripA.Index == gripB.Index:
+        return False, "The 2 grips are identical."
 
 
     rdObj = rs.coercerhinoobject(gripA.OwnerId)
@@ -301,9 +290,21 @@ def main():
     grips = getInput()
     if grips is None: return
 
-    if not Opts.values['bDebug']: sc.doc.Views.RedrawEnabled = False
+    bFixedEnds = Opts.values['bFixedEnds']
+    bDistributeEvenly = Opts.values['bDistributeEvenly']
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
 
-    rc = linearizeGripsBetween2(grips[0], grips[1])
+    if not bDebug: sc.doc.Views.RedrawEnabled = False
+
+    rc = linearizeGripsBetween2(
+        grips[0],
+        grips[1],
+        bFixedEnds=bFixedEnds,
+        bDistributeEvenly=bDistributeEvenly,
+        bEcho=bEcho,
+        bDebug=bDebug,
+        )
     if rc is None: return
     bSuccess, sLog = rc
 

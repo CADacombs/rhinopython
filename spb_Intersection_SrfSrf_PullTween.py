@@ -1,6 +1,15 @@
 """
+"""
+
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
 210921: Created.
 210927: Bug fix: Match starting curve directions.
+210929: Modified tolerance for point-point coincidence.
+        Replaced CreateTweenCurvesWithMatching with CreateTweenCurvesWithSampling for better results.
+210930: Now numSamples of CreateTweenCurvesWithSampling is incremented until 3 deviation results are within tolerance.
+221004: Now, when start curve's endpoints cannot automatically be determined, user can pick them.
 """
 
 import Rhino
@@ -17,6 +26,7 @@ class Opts():
     riOpts = {}
     listValues = {}
     stickyKeys = {}
+
 
     key = 'bUseUnderlyingSrfs'; keys.append(key)
     values[key] = False
@@ -80,7 +90,7 @@ class Opts():
                 listValues=cls.listValues[key],
                 listCurrentIndex=cls.values[key])
 
-        if not idxOpt: print "Add option for {} failed.".format(key)
+        if not idxOpt: print("Add option for {} failed.".format(key))
 
         return idxOpt
 
@@ -165,34 +175,32 @@ def getInput():
                 break
 
 
-def createCurve(face_A, face_B, **kwargs):
+def getStartCrvEndPts(face_A, face_B, **kwargs):
     """
     """
-
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    bUseUnderlyingSrfs = getOpt('bUseUnderlyingSrfs')
     fTolerance = getOpt('fTolerance')
     fMinCrvLength = getOpt('fMinCrvLength')
+    bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
 
-    if bUseUnderlyingSrfs:
-        fA = face_A.UnderlyingSurface().ToBrep().Faces[0]
-        fB = face_B.UnderlyingSurface().ToBrep().Faces[0]
-    else:
-        fA = face_A
-        fB = face_B
-
     cs_Es_A = []
-    for iE in fA.AdjacentEdges():
-        cs_Es_A.append(fA.Brep.Edges[iE].ToNurbsCurve())
-
+    for iE in face_A.AdjacentEdges():
+        cs_Es_A.append(face_A.Brep.Edges[iE].ToNurbsCurve())
 
     cs_Es_B = []
-    for iE in fB.AdjacentEdges():
-        cs_Es_B.append(fB.Brep.Edges[iE].ToNurbsCurve())
+    for iE in face_B.AdjacentEdges():
+        cs_Es_B.append(face_B.Brep.Edges[iE].ToNurbsCurve())
+
+
+    # Determine tolerance for whether EdgeFace points are coincident to EdgeEdge points.
+    fMaxEdgeTol_A = max([face_A.Brep.Edges[iE].Tolerance for iE in face_A.AdjacentEdges()])
+    fMaxEdgeTol_B = max([face_B.Brep.Edges[iE].Tolerance for iE in face_B.AdjacentEdges()])
+    fMaxEdgeTol = max((fMaxEdgeTol_A, fMaxEdgeTol_B))
+    fPoint_coincident_Tol = max(fMaxEdgeTol, 10.0*sc.doc.ModelAbsoluteTolerance)
 
 
     pts_Intersects = []
@@ -210,8 +218,8 @@ def createCurve(face_A, face_B, **kwargs):
             return True
         for ptSaved in pts_Intersects:
             dist = pt.DistanceTo(ptSaved)
-            #print dist
-            if dist <= fTolerance:
+            #print(dist)
+            if dist <= fPoint_coincident_Tol:
                 return False
         else:
             # Match not found.
@@ -219,7 +227,7 @@ def createCurve(face_A, face_B, **kwargs):
             return True
 
 
-    def getCurveCurveIntersections():
+    def getEdgeEdgeIntersections():
         for cA in cs_Es_A:
             for cB in cs_Es_B:
                 crvinters = rg.Intersect.Intersection.CurveCurve(
@@ -233,11 +241,20 @@ def createCurve(face_A, face_B, **kwargs):
                     #sc.doc.Objects.AddPoint(pt)
                     addNewPointToIntersectList(pt)
 
-    getCurveCurveIntersections()
+    getEdgeEdgeIntersections()
+
+    #    if bDebug:
+    #        for pt in pts_Intersects: sc.doc.Objects.AddPoint(pt)
+    #        return
+
+    if len(pts_Intersects) > 2:
+        if bDebug:
+            for pt in pts_Intersects: sc.doc.Objects.AddPoint(pt)
+        return None, "More than 2 points found."
 
 
-    def addCurveFaceIntersections():
-        for cs, f in zip((cs_Es_A, cs_Es_B), (fB, fA)):
+    def addEdgeFaceIntersections():
+        for cs, f in zip((cs_Es_A, cs_Es_B), (face_B, face_A)):
 
             for c in cs:
                 rc = rg.Intersect.Intersection.CurveBrepFace(
@@ -255,12 +272,12 @@ def createCurve(face_A, face_B, **kwargs):
                     #sc.doc.Objects.AddPoint(pt)
                     addNewPointToIntersectList(pt)
 
-    if len(pts_Intersects) > 2:
-        if bDebug:
-            for pt in pts_Intersects: sc.doc.Objects.AddPoint(pt)
-        return None, "More than 2 points found."
+    if bDebug:
+        for pt in pts_Intersects:
+            sc.doc.Objects.AddPoint(pt)
+
     if len(pts_Intersects) < 2:
-        addCurveFaceIntersections()
+        addEdgeFaceIntersections()
 
 
     if len(pts_Intersects) == 0:
@@ -271,6 +288,24 @@ def createCurve(face_A, face_B, **kwargs):
         if bDebug:
             for pt in pts_Intersects: sc.doc.Objects.AddPoint(pt)
         return None, "More than 2 points found."
+
+
+    pt_Start = pts_Intersects[0]
+    pt_End = pts_Intersects[1]
+
+    return (pt_Start, pt_End), None
+
+
+def createCurve(face_A, face_B, pt_Start, pt_End, **kwargs):
+    """
+    """
+
+
+    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
+
+    fTolerance = getOpt('fTolerance')
+    fMinCrvLength = getOpt('fMinCrvLength')
+    bDebug = getOpt('bDebug')
 
 
     def doCurveStucturesMatch(a, b):
@@ -312,7 +347,7 @@ def createCurve(face_A, face_B, **kwargs):
         return True
 
 
-    def createTweenCurves(a, b):
+    def createTweenCurves(a, b, i, iAdditionalSamples=0):
         if doCurveStucturesMatch(a, b):
             return rg.Curve.CreateTweenCurves(
                 a,
@@ -320,10 +355,24 @@ def createCurve(face_A, face_B, **kwargs):
                 numCurves=1,
                 tolerance=0.5*fTolerance)
 
-        return rg.Curve.CreateTweenCurvesWithMatching(
+        # CreateTweenCurvesWithMatching refits the starting curves but doesn't
+        # seem to use tolerance in doing so.
+        if i == 1:
+            return rg.Curve.CreateTweenCurvesWithMatching(
+                a,
+                b,
+                numCurves=1,
+                tolerance=0.5*fTolerance)
+
+        numSamples = i
+        #numSamples = max((a.SpanCount, b.SpanCount)) + iAdditionalSamples
+        #numSamples = int(a.GetLength() / (100.0*fTolerance)) + 1
+
+        return rg.Curve.CreateTweenCurvesWithSampling(
             a,
             b,
             numCurves=1,
+            numSamples=numSamples,
             tolerance=0.5*fTolerance)
 
 
@@ -331,33 +380,42 @@ def createCurve(face_A, face_B, **kwargs):
         for iE in face.AdjacentEdges():
             e = face.Brep.Edges[iE]
             if (
-                (pts_Intersects[0].DistanceTo(e.StartVertex.Location) <= fTolerance
+                (pt_Start.DistanceTo(e.StartVertex.Location) <= fTolerance
                 and
-                pts_Intersects[1].DistanceTo(e.EndVertex.Location) <= fTolerance)
+                pt_End.DistanceTo(e.EndVertex.Location) <= fTolerance)
                 or
-                (pts_Intersects[1].DistanceTo(e.StartVertex.Location) <= fTolerance
+                (pt_End.DistanceTo(e.StartVertex.Location) <= fTolerance
                 and
-                pts_Intersects[0].DistanceTo(e.EndVertex.Location) <= fTolerance)
+                pt_Start.DistanceTo(e.EndVertex.Location) <= fTolerance)
             ):
                 return e.DuplicateCurve()
 
 
     crv_WIP = None
+    iAdditionalSamples = 0
 
-    cA_Start = getEdgeWithPointsAtBothVertices(fA)
+    cA_Start = getEdgeWithPointsAtBothVertices(face_A)
     if cA_Start is not None:
-        cB_Start = getEdgeWithPointsAtBothVertices(fB)
+        cB_Start = getEdgeWithPointsAtBothVertices(face_B)
         if cB_Start is not None:
             if not rg.Curve.DoDirectionsMatch(cA_Start, cB_Start):
-                cB_Start.Reverse()
-            rc = createTweenCurves(cA_Start, cB_Start)
+                # Align curves to each other and per pt_Start.
+                if (
+                    cA_Start.PointAtStart.DistanceTo(pt_Start) <
+                    cB_Start.PointAtStart.DistanceTo(pt_Start)
+                ):
+                    cB_Start.Reverse()
+                else:
+                    cA_Start.Reverse()
+            rc = createTweenCurves(cA_Start, cB_Start, i=1)
             if len(rc) == 1:
                 crv_WIP = rc[0]
-                i = 2
+                i = 2 # will be the next iteration.
+
 
     if crv_WIP is None:
-        crv_WIP = rg.LineCurve(pts_Intersects[0], pts_Intersects[1])
-        i = 1
+        crv_WIP = rg.LineCurve(pt_Start, pt_End)
+        i = 1 # will be the next iteration.
 
     if bDebug:
         sc.doc.Objects.AddCurve(crv_WIP)#; sc.doc.Views.Redraw(); return
@@ -375,30 +433,67 @@ def createCurve(face_A, face_B, **kwargs):
             #sc.doc.Views.Redraw()
             return
 
-        rc = rg.Curve.PullToBrepFace(crv_WIP, fA, tolerance=fTolerance)
+        crv_WIP.SetStartPoint(pt_Start)
+        crv_WIP.SetEndPoint(pt_End)
+
+        rc = rg.Curve.PullToBrepFace(crv_WIP, face_A, tolerance=fTolerance)
         if len(rc) == 0:
-            return None, "No result from pull onto face A."
-        if len(rc) > 1:
-            return None, "More than one curve from pull onto face A."
-        crv_Pull_A = rc[0]
+            if bDebug:
+                print("No result from pull onto face A.  Adjusting end points and retrying PullToBrepFace.")
+            crv_WIP.SetStartPoint(pt_Start)
+            crv_WIP.SetEndPoint(pt_End)
+            rc = rg.Curve.PullToBrepFace(crv_WIP, face_A, tolerance=fTolerance)
+            if len(rc) == 0:
+                return None, "No result from pull onto face A."
+        if len(rc) == 1:
+            crv_Pull_A = rc[0]
+        else:
+            lengths = [c.GetLength() for c in rc]
+            crv_Pull_A = rc[lengths.index(max(lengths))]
+            #if bDebug:
+            #    for c in rc:
+            #        sc.doc.Objects.AddCurve(c)
+            #return None, "More than one curve from pull onto face A."
+
+        #if i == 4: sc.doc.Objects.AddCurve(crv_Pull_A)
 
         if crv_Pull_A.GetLength() < fMinCrvLength:
             return None, "Curve is too short."
 
-        rc = rg.Curve.PullToBrepFace(crv_WIP, fB, tolerance=fTolerance)
+        rc = rg.Curve.PullToBrepFace(crv_WIP, face_B, tolerance=fTolerance)
         if len(rc) == 0:
-            return None, "No result from pull onto face B."
-        if len(rc) > 1:
-            return None, "More than one curve from pull onto face B."
-        crv_Pull_B = rc[0]
+            if bDebug:
+                print("No result from pull onto face B.  Adjusting end points and retrying PullToBrepFace.")
+            crv_WIP.SetStartPoint(pt_Start)
+            crv_WIP.SetEndPoint(pt_End)
+            rc = rg.Curve.PullToBrepFace(crv_WIP, face_B, tolerance=fTolerance)
+            if len(rc) == 0:
+                return None, "No result from pull onto face B."
+        if len(rc) == 1:
+            crv_Pull_B = rc[0]
+        else:
+            lengths = [c.GetLength() for c in rc]
+            crv_Pull_B = rc[lengths.index(max(lengths))]
+            #if bDebug:
+            #    for c in rc:
+            #        sc.doc.Objects.AddCurve(c)
+            #return None, "More than one curve from pull onto face B."
+
+        #if i == 4: sc.doc.Objects.AddCurve(crv_Pull_B)
 
         if crv_Pull_B.GetLength() < fMinCrvLength:
             return None, "Curve is too short."
 
-        rc = createTweenCurves(crv_Pull_A, crv_Pull_B)
+        if i == 4:
+            pass
+
+        rc = createTweenCurves(crv_Pull_A, crv_Pull_B, i, iAdditionalSamples)
         if len(rc) != 1:
             return None, "{} curves returned from CreateTweenCurves...".format(len(rc))
         crv_WIP = rc[0]
+        #if bDebug:
+        #    sc.doc.Objects.AddCurve(crv_WIP)
+        if bDebug: sEval = "crv_WIP.SpanCount"; print(sEval+':', eval(sEval))
 
         if crv_WIP_Prev is None:
             crv_WIP_Prev = crv_WIP
@@ -414,6 +509,38 @@ def createCurve(face_A, face_B, **kwargs):
         dev = rc[1]
 
         if dev <= fTolerance:
+            #sc.doc.Objects.AddCurve(crv_WIP_Prev)
+            #sc.doc.Objects.AddCurve(crv_WIP)
+            #1/0
+            
+            #dev_FromPrev = dev
+            
+            # Further checks.
+            rc = rg.Curve.GetDistancesBetweenCurves(crv_WIP, crv_Pull_A, tolerance=0.1*fTolerance)
+            if not rc[0]:
+                raise ValueError("GetDistancesBetweenCurves could not be calculated.")
+            
+            dev = rc[1]
+            
+            if dev > 0.5*fTolerance:
+                iAdditionalSamples += 1
+                i += 1
+                continue
+            
+            rc = rg.Curve.GetDistancesBetweenCurves(crv_WIP, crv_Pull_B, tolerance=0.1*fTolerance)
+            if not rc[0]:
+                raise ValueError("GetDistancesBetweenCurves could not be calculated.")
+            
+            dev = rc[1]
+            
+            if dev > 0.5*fTolerance:
+                iAdditionalSamples += 1
+                i += 1
+                continue
+            
+            # Success.
+            
+            crv_WIP_Prev.Dispose()
             return crv_WIP, "Intersection found after {} Pull/TweenCurves iterations.".format(i)
 
         if dev_Prev is not None and abs(dev-dev_Prev) <= 1e-9:
@@ -424,7 +551,7 @@ def createCurve(face_A, face_B, **kwargs):
                         dev, sc.doc.ModelDistanceDisplayPrecision, i)
                 )
 
-        #print dev
+        #print(dev)
 
         crv_WIP_Prev.Dispose()
         crv_WIP_Prev = crv_WIP
@@ -432,13 +559,12 @@ def createCurve(face_A, face_B, **kwargs):
         i += 1
 
 
-def createCurveObject(face_A, face_B, **kwargs):
+def createCurveObject(face_A, face_B, pt_Start, pt_End, **kwargs):
     """
     """
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    bUseUnderlyingSrfs = getOpt('bUseUnderlyingSrfs')
     fTolerance = getOpt('fTolerance')
     fMinCrvLength = getOpt('fMinCrvLength')
     bEcho = getOpt('bEcho')
@@ -450,20 +576,22 @@ def createCurveObject(face_A, face_B, **kwargs):
     rc = createCurve(
         face_A,
         face_B,
-        bUseUnderlyingSrfs=bUseUnderlyingSrfs,
+        pt_Start,
+        pt_End,
         fTolerance=fTolerance,
         fMinCrvLength=fMinCrvLength,
         bDebug=bDebug,
         )
+
     if rc is None: return
 
     c_res, sLog = rc
 
     if bEcho:
         if c_res is None:
-            print sLog + "  No intersection was returned."
+            print(sLog + "  No intersection was returned.")
         else:
-            print sLog
+            print(sLog)
 
     if c_res is None: return
 
@@ -473,8 +601,6 @@ def createCurveObject(face_A, face_B, **kwargs):
 
 
 def main():
-    """
-    """
 
     rc = getInput()
     if rc is None: return
@@ -488,13 +614,43 @@ def main():
         bDebug,
         ) = rc
 
+
     face_A = objrefs[0].Face()
     face_B = objrefs[1].Face()
+
+    if bUseUnderlyingSrfs:
+        face_A = face_A.UnderlyingSurface().ToBrep().Faces[0]
+        face_B = face_B.UnderlyingSurface().ToBrep().Faces[0]
+
+
+    rc = getStartCrvEndPts(
+        face_A,
+        face_B,
+        bEcho=bEcho,
+        bDebug=bDebug,
+        )
+    if rc is None: return
+
+    if rc[0] is None:
+        print(rc[1], "Pick start curve's end points to continue.")
+        res, pt_Start = ri.RhinoGet.GetPoint(
+            "Pick one end point of intersection",
+            acceptNothing=False)
+        if res != Rhino.Commands.Result.Success: return
+
+        res, pt_End = ri.RhinoGet.GetPoint(
+            "Pick other end point of intersection",
+            acceptNothing=False)
+        if res != Rhino.Commands.Result.Success: return
+    else:
+        pt_Start, pt_End = rc[0]
+
 
     gCrv_Res = createCurveObject(
         face_A,
         face_B,
-        bUseUnderlyingSrfs=bUseUnderlyingSrfs,
+        pt_Start,
+        pt_End,
         fTolerance=fTolerance,
         fMinCrvLength=fMinCrvLength,
         bEcho=bEcho,

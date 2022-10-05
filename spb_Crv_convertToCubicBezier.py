@@ -179,8 +179,30 @@ def createCurve(crv_In, **kwargs):
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
+    if isinstance(crv_In, rg.LineCurve):
+        nc_Out = crv_In.Rebuild(pointCount=4, degree=3, preserveTangents=False)
+        if nc_Out:
+            print("Input is a LineCurve.")
+            return nc_Out
+        return
     if crv_In.IsLinear(Rhino.RhinoMath.ZeroTolerance):
-        return rg.LineCurve(crv_In.PointAtStart, crv_In.PointAtEnd).Rebuild(pointCount=4, degree=3, preserveTangents=False)
+        nc_Out = rg.LineCurve(crv_In.PointAtStart, crv_In.PointAtEnd).Rebuild(pointCount=4, degree=3, preserveTangents=False)
+        if nc_Out:
+            print("Input is a linear {}.".format(crv_In.GetType().Name))
+            return nc_Out
+        return
+
+    if isinstance(crv_In, rg.NurbsCurve) and crv_In.Degree==2 and crv_In.SpanCount==1 and not crv_In.IsRational:
+        nc_Out = crv_In.DuplicateCurve()
+        if rg.NurbsCurve.IncreaseDegree(nc_Out, 3):
+            print("Input is a degree-2 NurbsCurve.")
+            return nc_Out
+        return
+
+    if isinstance(crv_In, rg.BrepEdge):
+        print("Input is a BrepEdge of a {}.".format(crv_In.DuplicateCurve().GetType().Name))
+    else:
+        print("Input is a {}.".format(crv_In.GetType().Name))
 
     fBulgeUnitDist = crv_In.PointAtStart.DistanceTo(crv_In.PointAtEnd)
 
@@ -225,13 +247,24 @@ def createCurve(crv_In, **kwargs):
 
                 dev = _getMaxDev(nc_WIP, crv_In)
                 if not dev:
-                    print("Deviation could not be determined for mA:{} , mB:{}".format(mA, mB))
+                    if bDebug:
+                        print("Deviation could not be determined for mA:{} , mB:{}".format(mA, mB))
+                    #sc.doc.Objects.AddCurve(nc_WIP); 1/0
                     continue
 
                 ncs_Res.append(nc_WIP)
                 mAs.append(mA)
                 mBs.append(mB)
                 devs.append(dev)
+
+        if not ncs_Res:
+            print("No curves were generated.")
+            fmin_mA *= 10.0
+            fmax_mA *= 10.0
+            fmin_mB *= 10.0
+            fmax_mB *= 10.0
+            continue
+
 
         min_devs = min(devs)
 
@@ -265,14 +298,14 @@ def main():
     """
     """
 
-    objref = getInput()
-    if objref is None: return
+    objref_In = getInput()
+    if objref_In is None: return
 
     bReplace = Opts.values['bReplace']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
-    crv_In = objref.Curve()
+    crv_In = objref_In.Curve()
 
 
     if bDebug:
@@ -292,7 +325,7 @@ def main():
         return
 
 
-    if objref.Edge() or not bReplace:
+    if objref_In.Edge() or not bReplace:
         gOut = sc.doc.Objects.AddCurve(nc_Res)
         if gOut != gOut.Empty:
             print("Curve was added.")
@@ -303,7 +336,7 @@ def main():
             return
 
 
-    if sc.doc.Objects.Replace(objref_ToMod, curve=nc_Res):
+    if sc.doc.Objects.Replace(objref_In, curve=nc_Res):
         print("Curve was replaced.")
         sc.doc.Views.Redraw()
     else:

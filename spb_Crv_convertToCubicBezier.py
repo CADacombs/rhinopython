@@ -212,9 +212,9 @@ def createCurve(crv_In, **kwargs):
     vB = crv_In.TangentAtEnd # Already length of 1.0
 
 
-    fmin_mA = 0.1
+    fmin_mA = 0.0
     fmax_mA = 1.0
-    fmin_mB = 0.1
+    fmin_mB = 0.0
     fmax_mB = 1.0
     multi_Resolution = 0.1
 
@@ -232,12 +232,14 @@ def createCurve(crv_In, **kwargs):
         mBs = []
         devs = []
 
-        for iA in range(10):
-            mA = fmin_mA * (1 - iA * 0.1) + fmax_mA * (iA * 0.1)
+        iDivs_A = 20
+        for iA in range(iDivs_A):
+            mA = fmin_mA * (1 - iA * 1.0/iDivs_A) + fmax_mA * (iA * 1.0/iDivs_A)
             if mA == 0.0: continue
             pts[1] = pts[0] + mA * fBulgeUnitDist * vA
-            for iB in range(10):
-                mB = fmin_mB * (1 - iB * 0.1) + fmax_mB * (iB * 0.1)
+            iDivs_B = 20
+            for iB in range(iDivs_B):
+                mB = fmin_mB * (1 - iB * 1.0/iDivs_B) + fmax_mB * (iB * 1.0/iDivs_B)
                 if mB == 0.0: continue
                 pts[2] = pts[3] - mB * fBulgeUnitDist * vB
 

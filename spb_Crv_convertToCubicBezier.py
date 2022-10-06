@@ -13,6 +13,8 @@ import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
 
+import math
+
 
 class Opts():
 
@@ -204,6 +206,39 @@ def createCurve(crv_In, **kwargs):
     else:
         print("Input is a {}.".format(crv_In.GetType().Name))
 
+
+
+    arc = None
+
+    if isinstance(crv_In, rg.ArcCurve):
+        arc = rg.ArcCurve.Arc
+    rc = rg.Curve.TryGetArc(crv_In, tolerance=Rhino.RhinoMath.ZeroTolerance)
+    if rc[0]:
+        arc = rc[1]
+
+    if arc is not None:
+        
+        def createPoints_matchArcAtMidPoint(arc):
+        
+            if (arc.Angle - Rhino.RhinoMath.ZeroTolerance) > math.pi:
+                return
+        
+        
+            # Per https://pomax.github.io/bezierinfo/#circles_cubic
+            k = 4.0 * math.tan(arc.Angle/4.0) / 3.0
+        
+            return Rhino.Collections.Point3dList(
+                arc.StartPoint,
+                arc.StartPoint + k * arc.TangentAt(arc.AngleDomain.T0) * arc.Radius,
+                arc.EndPoint   - k * arc.TangentAt(arc.AngleDomain.T1) * arc.Radius,
+                arc.EndPoint)
+
+        point3dList = createPoints_matchArcAtMidPoint(arc)
+
+        return rg.Curve.CreateControlPointCurve(point3dList, degree=3)
+
+
+
     fBulgeUnitDist = crv_In.PointAtStart.DistanceTo(crv_In.PointAtEnd)
 
     pts = [crv_In.PointAtStart, None, None, crv_In.PointAtEnd]
@@ -212,36 +247,36 @@ def createCurve(crv_In, **kwargs):
     vB = crv_In.TangentAtEnd # Already length of 1.0
 
 
-    fmin_mA = 0.0
-    fmax_mA = 1.0
-    fmin_mB = 0.0
-    fmax_mB = 1.0
-    multi_Resolution = 0.1
+    def findCrv_Symmetrical():
 
-    min_devs_Prev = min_devs = None
+        fmin = 0.0
+        fmax = 1.0
 
-    ncs_Res = []
+        min_devs = None
 
-    while True:
-        sc.escape_test()
-
-        for nc in ncs_Res: nc.Dispose()
+        fDivs = res_WIP = 0.1
 
         ncs_Res = []
-        mAs = []
-        mBs = []
-        devs = []
 
-        iDivs_A = 20
-        for iA in range(iDivs_A):
-            mA = fmin_mA * (1 - iA * 1.0/iDivs_A) + fmax_mA * (iA * 1.0/iDivs_A)
-            if mA == 0.0: continue
-            pts[1] = pts[0] + mA * fBulgeUnitDist * vA
-            iDivs_B = 20
-            for iB in range(iDivs_B):
-                mB = fmin_mB * (1 - iB * 1.0/iDivs_B) + fmax_mB * (iB * 1.0/iDivs_B)
-                if mB == 0.0: continue
-                pts[2] = pts[3] - mB * fBulgeUnitDist * vB
+        while True:
+            sc.escape_test()
+
+            for nc in ncs_Res: nc.Dispose()
+
+            if bDebug:
+                sEval = "fmin"; print("{}: {}".format(sEval, eval(sEval)))
+                sEval = "fmax"; print("{}: {}".format(sEval, eval(sEval)))
+
+
+            ncs_Res = []
+            mABs = []
+            devs = []
+
+            for iAB in range(int(1.0/fDivs) + 1):
+                mAB = fmin * (1 - iAB * fDivs) + fmax * (iAB * fDivs)
+                if mAB == 0.0: continue
+                pts[1] = pts[0] + mAB * fBulgeUnitDist * vA
+                pts[2] = pts[3] - mAB * fBulgeUnitDist * vB
 
                 nc_WIP = rg.NurbsCurve.CreateControlPointCurve(pts, degree=3)
 
@@ -250,50 +285,178 @@ def createCurve(crv_In, **kwargs):
                 dev = _getMaxDev(nc_WIP, crv_In)
                 if not dev:
                     if bDebug:
-                        print("Deviation could not be determined for mA:{} , mB:{}".format(mA, mB))
+                        print("Deviation could not be determined for mA, mB:{}".format(mAB))
                     #sc.doc.Objects.AddCurve(nc_WIP); 1/0
                     continue
 
                 ncs_Res.append(nc_WIP)
-                mAs.append(mA)
-                mBs.append(mB)
+                mABs.append(mAB)
                 devs.append(dev)
 
-        if not ncs_Res:
-            print("No curves were generated.")
-            fmin_mA *= 10.0
-            fmax_mA *= 10.0
-            fmin_mB *= 10.0
-            fmax_mB *= 10.0
-            continue
+            if not ncs_Res:
+                print("No curves were generated.")
+                fmin *= 10.0
+                fmax *= 10.0
+                continue
 
 
-        min_devs = min(devs)
+            min_devs = min(devs)
 
-        s_min_devs = _formatDistance(min_devs)
+            s_min_devs = _formatDistance(min_devs)
 
+            if bDebug:
+                print("Minimum deviation: {}".format(s_min_devs))
+
+            if devs.count(min_devs) > 1:
+                print("More than one curve with deviation {}.".format(s_min_devs))
+
+            idx_Winner = devs.index(min_devs)
+
+            if bDebug:
+                sEval = "mABs[idx_Winner]"; print("{}: {}".format(sEval, eval(sEval)))
+
+            if res_WIP < 1.1e-6:
+                return ncs_Res[idx_Winner], min_devs
+
+            fmin = mABs[idx_Winner] - res_WIP
+            fmax = mABs[idx_Winner] + res_WIP
+
+            res_WIP *= 0.1
+
+            fDivs = 0.05
+
+
+        return ncs_Res[idx_Winner], min_devs
+
+
+    def findCrv_NonSymmetrical():
+
+        fmin_mA = fmin_mB = 0.0
+        fmax_mA = fmax_mB = 1.0
+
+        min_devs_Prev = min_devs = None
+
+        fDivs = res_WIP = 0.1
+
+        ncs_Res = []
+
+        while True:
+            sc.escape_test()
+
+            for nc in ncs_Res: nc.Dispose()
+
+            if bDebug:
+                sEval = "fmin_mA"; print("{}: {}".format(sEval, eval(sEval)))
+                sEval = "fmax_mA"; print("{}: {}".format(sEval, eval(sEval)))
+                sEval = "fmin_mB"; print("{}: {}".format(sEval, eval(sEval)))
+                sEval = "fmax_mB"; print("{}: {}".format(sEval, eval(sEval)))
+
+
+            ncs_Res = []
+            mAs = []
+            mBs = []
+            devs = []
+
+            for iA in range(int(1.0/fDivs) + 1):
+                mA = fmin_mA * (1 - iA * fDivs) + fmax_mA * (iA * fDivs)
+                if mA == 0.0: continue
+                pts[1] = pts[0] + mA * fBulgeUnitDist * vA
+                for iB in range(int(1.0/fDivs) + 1):
+                    mB = fmin_mB * (1 - iB * fDivs) + fmax_mB * (iB * fDivs)
+                    if mB == 0.0: continue
+                    pts[2] = pts[3] - mB * fBulgeUnitDist * vB
+
+                    nc_WIP = rg.NurbsCurve.CreateControlPointCurve(pts, degree=3)
+
+                    #sc.doc.Objects.AddCurve(nc_WIP)
+
+                    dev = _getMaxDev(nc_WIP, crv_In)
+                    if not dev:
+                        if bDebug:
+                            print("Deviation could not be determined for mA:{} , mB:{}".format(mA, mB))
+                        #sc.doc.Objects.AddCurve(nc_WIP); 1/0
+                        continue
+
+                    ncs_Res.append(nc_WIP)
+                    mAs.append(mA)
+                    mBs.append(mB)
+                    devs.append(dev)
+
+            if not ncs_Res:
+                print("No curves were generated.")
+                fmin_mA *= 10.0
+                fmax_mA *= 10.0
+                fmin_mB *= 10.0
+                fmax_mB *= 10.0
+                continue
+
+
+            min_devs = min(devs)
+
+            s_min_devs = _formatDistance(min_devs)
+
+            if bDebug:
+                print("Minimum deviation: {}".format(s_min_devs))
+
+            if devs.count(min_devs) > 1:
+                print("More than one curve with deviation {}.".format(s_min_devs))
+
+            idx_Winner = devs.index(min_devs)
+
+            if bDebug:
+                sEval = "mAs[idx_Winner]"; print("{}: {}".format(sEval, eval(sEval)))
+                sEval = "mBs[idx_Winner]"; print("{}: {}".format(sEval, eval(sEval)))
+
+            if min_devs_Prev is not None and abs(min_devs_Prev - min_devs) < 1e-6: #0.1*sc.doc.ModelAbsoluteTolerance:
+                return ncs_Res[idx_Winner], min_devs
+
+            min_devs_Prev = min_devs
+
+            if res_WIP < 0.00101 and abs(mAs[idx_Winner] - mBs[idx_Winner]) <= 0.001:
+                if bDebug: print("Go with symmetrical solution.")
+                return
+
+            fmin_mA = mAs[idx_Winner] - res_WIP
+            fmax_mA = mAs[idx_Winner] + res_WIP
+            fmin_mB = mBs[idx_Winner] - res_WIP
+            fmax_mB = mBs[idx_Winner] + res_WIP
+
+            res_WIP *= 0.1
+
+            fDivs = 0.05
+
+        return ncs_Res[idx_Winner], min_devs
+
+
+    if bDebug: print("Symmetrical search:")
+    rc = findCrv_Symmetrical()
+    (nc_Sym, dev_Sym) = rc if rc else (None, None)
+
+    if bDebug: print("Non-symmetrical search:")
+    rc = findCrv_NonSymmetrical()
+    (nc_NonSym, dev_NonSym) = rc if rc else (None, None)
+
+    if dev_Sym is None and dev_NonSym is None:
+        return
+
+    if dev_Sym is None:
         if bEcho:
-            print("Minimum deviation: {}".format(s_min_devs))
+            print("Non-symmetrical solution with deviation of {} from input.".format(_formatDistance(dev_NonSym)))
+        return nc_NonSym
 
-        if devs.count(min_devs) > 1:
-            print("More than one curve with deviation {}.".format(s_min_devs))
+    if dev_NonSym is None:
+        if bEcho:
+            print("Symmetrical solution with deviation of {} from input.".format(_formatDistance(dev_Sym)))
+        return nc_Sym
 
-        idx_Winner = devs.index(min_devs)
+    if dev_Sym <= dev_NonSym:
+        if bEcho:
+            print("Symmetrical solution with deviation of {} from input.".format(_formatDistance(dev_Sym)))
+        return nc_Sym
 
-        if min_devs_Prev is not None and abs(min_devs_Prev - min_devs) < 1e-6: #0.1*sc.doc.ModelAbsoluteTolerance:
-            return ncs_Res[idx_Winner]
-
-        min_devs_Prev = min_devs
-
-        fmin_mA = mAs[idx_Winner] - multi_Resolution
-        fmax_mA = mAs[idx_Winner] + multi_Resolution
-        fmin_mB = mBs[idx_Winner] - multi_Resolution
-        fmax_mB = mBs[idx_Winner] + multi_Resolution
-
-        multi_Resolution *= 0.1
-
-
-    return ncs_Res[idx_Winner]
+    if bEcho:
+        print("Non-symmetrical solution with deviation of {} from input.".format(_formatDistance(dev_NonSym)))
+    return nc_NonSym
 
 
 def main():
@@ -310,8 +473,8 @@ def main():
     crv_In = objref_In.Curve()
 
 
-    if bDebug:
-        Rhino.RhinoApp.ClearCommandHistoryWindow()
+    #if bDebug:
+    #    Rhino.RhinoApp.ClearCommandHistoryWindow()
 
 
     Rhino.RhinoApp.CommandPrompt = "Working ..."

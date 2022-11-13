@@ -1,14 +1,18 @@
 """
-This script is an alternative to _FilletEdge, using RhinoCommon's Brep.CreateFilletEdges with
-a flexible tolerance.
+This script is an alternative to _FilletEdge, using RhinoCommon's
+Brep.CreateFilletEdges with flexibility in tolerance.
 
-Advantages:
+Advantage:
     Not only can a start tolerance be specified, but when the main method,
-    Brep.CreateFilletEdges, fails, it is recalled with smaller tolerances.
+    Brep.CreateFilletEdges, fails, it is recalled with smaller, then optionally,
+    larger tolerances.
 
 Limitations:
     All fillets are constant.
     Fillets are not editable, i.e, _FilletEdge _Edit .
+
+To minimize variation from the starting tolerance, it is recommended to fillet
+each chain of fillets separately.
 
 Send any questions, comments, or script development service needs to @spb on
 the McNeel Forums ( https://discourse.mcneel.com/ )
@@ -84,7 +88,7 @@ class Opts:
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
     key = 'bIncrTolOnFail'; keys.append(key)
-    values[key] = True
+    values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -281,7 +285,7 @@ def getInput(bPrevBrepsArePresent):
         if Opts.values['bIncrTolOnFail']:
             addOption('fTol_Max')
         if bPrevBrepsArePresent:
-            idxs_Opts['PreviousEdgeSelection'] = go.AddOption('PreviousEdgeSelection')
+            idxs_Opts['UsePrevInput'] = go.AddOption('UsePrevInput')
         addOption('bReplace')
         addOption('bEcho')
         addOption('bDebug')
@@ -308,9 +312,9 @@ def getInput(bPrevBrepsArePresent):
             continue
 
         # An option was selected.
-        if go.Option().Index == idxs_Opts['PreviousEdgeSelection']:
+        if go.Option().Index == idxs_Opts['UsePrevInput']:
             go.Dispose()
-            return 'PreviousEdgeSelection'
+            return 'UsePrevInput'
 
         for key in idxs_Opts:
             if go.Option().Index == idxs_Opts[key]:
@@ -431,7 +435,7 @@ def processBrep(rgBrep_In, idxs_rgEdges_In, fRadii_In, bConstantRadius=True, **k
     def getNextTolerance(fTol_In, fTol_Start, fTol_Min, fTol_Max, bEcho):
 
         if fTol_In == fTol_Min:
-            if fTol_Max is None:
+            if fTol_Max is None or fTol_Max == fTol_Start:
                 if bEcho: print("Fillet could not be created.")
                 return
             fTol_Out = fTol_Start * 2.0
@@ -756,7 +760,7 @@ def main():
             sc.sticky[skey_conduit] = None
             return
 
-        if rc == 'PreviousEdgeSelection':
+        if rc == 'UsePrevInput':
             sc.doc.Objects.UnselectAll()
             gBs_In = []
             idx_rgEdges_PerBrep = []

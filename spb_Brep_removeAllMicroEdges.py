@@ -1,10 +1,10 @@
 """
-Alternative to _RemoveAllNakedMicroEdges, this script will remove all micro edges,
+Alternative to _RemoveAllNakedMicroEdges, this script will remove all micro-edges,
 both naked and interior, with no limiation of that the edges
 "fold or loop back on themselves and have no matching edge to which they can be joined"
 as stated in https://docs.mcneel.com/rhino/7/help/en-us/index.htm#commands/removeallnakedmicroedges.htm
 
-Both naked and interior micro BrepEdges, as defined by the MaxEdgeLengthToRemove
+Both naked and interior micro-BrepEdges, as defined by the MaxEdgeLengthToRemove
 option, will be removed along with the relative BrepTrims.
 For each edge removed, both end vertices are replaced with a single vertex at
 the average location.
@@ -19,12 +19,19 @@ Send any questions, comments, or script development service needs to
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-221114-16: Created.
+221114-18: Created.
+
+WIP:
+    Having trouble matching the ends of some Loop-consecutive Trims using MatchEnds method
+    when matches occur loop by loop as the trims are added.  This may just be the case
+    for mated edges and MatchEnds for the entire Brep is the best solution.
+    
+    For problems occuring at consecutive micro-edges,
+    First, merge all consecutive micro-edges in each loop?
+    Maybe the consecutive micro-edge Curve2Ds should be replaced with a single, cubic Bezier.
 
 TODO:
-    If a valid brep is not output by attempting to remove all micro edges at once,
-    loop the routine, attempting to remove one micro edge at a time.
-    Merge edges first to handle some consecutive micro edges.
+    Merge edges first to handle some consecutive micro-edges.
 """
 
 import Rhino
@@ -49,6 +56,11 @@ class Opts:
     names[key] = 'MaxEdgeLengthToRemove'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'bDupEdgesRemoved'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
     values[key] = True
@@ -128,7 +140,7 @@ def getInput():
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select breps and/or edges")
+    go.SetCommandPrompt("Select breps")
     go.SetCommandPromptDefault("All normal breps when none are selected")
 
     go.GeometryFilter = rd.ObjectType.Brep
@@ -153,6 +165,7 @@ def getInput():
         idxs_Opts.clear()
 
         addOption('fMaxMicroLength')
+        addOption('bDupEdgesRemoved')
         addOption('bEcho')
         addOption('bDebug')
 
@@ -199,11 +212,30 @@ def getInput():
                 break
 
 
-def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
+def _getTrimEndDeviation(rgLoop, idxLT):
+    return rgLoop.Trims[idxLT].PointAtEnd.DistanceTo(
+        rgLoop.Trims[(idxLT + 1) % rgLoop.Trims.Count].PointAtStart)
+
+
+def _maxTrimEndDeviation(rgLoop, bDebug):
+    fMax = 0.0
+    iT_A_Max = None
+    iT_B_Max = None
+    for iT_A in range(rgLoop.Trims.Count):
+        dev = _getTrimEndDeviation(rgLoop, iT_A)
+        if dev > fMax:
+            fMax = dev
+            iT_A_Max = iT_A
+            iT_B_Max = iT_A + 1
+    if bDebug and (fMax > 0.0): print(iT_A_Max, iT_B_Max)
+    return fMax
+
+
+def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
     """
     Parameters:
         rgBrep_In
-        fMaxMicroLength: float
+        idxEdges_In: list(int)
         bDebug: bool
 
     Returns on success:
@@ -212,16 +244,18 @@ def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
 
     Returns on fail:
         None
-        str("Explanation of fail or that brep doesn't contain micro edges.")
+        str("Explanation of fail or that brep doesn't contain micro-edges.")
     """
 
 
     rgB_In = rgBrep_In
 
+
+    idxEs_In_ToRemove = idxEdges_In
+
     rgB_Out = rg.Brep()
 
 
-    idxEs_In_ToRemove = []
     idxVs_Out_Added = [] # 1:1 relationship with idxEs_In_ToRemove, so they share a list index.
 
     idxTs_In_ToRemove = []
@@ -229,10 +263,9 @@ def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
     idxVs_In_ToRemove = []
     idxVs_Out_Added_Per_idxVs_In_ToRemove = []
 
-    for rgE_In in rgB_In.Edges:
-        if rgE_In.GetLength() > fMaxMicroLength:
-            continue
-        idxEs_In_ToRemove.append(rgE_In.EdgeIndex)
+    for idxE_In in idxEs_In_ToRemove:
+        rgE_In = rgB_In.Edges[idxE_In]
+
         idxTs_In_ToRemove.extend(rgE_In.TrimIndices())
 
         pt = 0.5*(rgE_In.StartVertex.Location + rgE_In.EndVertex.Location)
@@ -250,10 +283,6 @@ def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
             idxVs_In_ToRemove.append(idxV_In)
             idxVs_Out_Added_Per_idxVs_In_ToRemove.append(rgV.VertexIndex)
 
-
-    if rgB_Out.Vertices.Count == 0:
-        rgB_Out.Dispose()
-        return None, "Brep does not have any micro edges."
 
     if bDebug:
         sEval = "idxEs_In_ToRemove"; print("{}: {}".format(sEval, eval(sEval)))
@@ -341,14 +370,14 @@ def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
         idxC3_Out = idxC3s_Out_Per_idxC3s_In[idxC3s_In.index(rgE_In.EdgeCurveIndex)]
         rgC3_Out = rgB_Out.Curves3D[idxC3_Out]
 
-        #if idxV_S == idxV_E:
-        #    print(
-        #        rgC3_Out.IsClosed,
-        #        rgC3_Out.MakeClosed(sc.doc.ModelAbsoluteTolerance))
-
         b_rgE_and_rgC3_domains_match = (
             rgE_In.Domain.T0 == rgC3_Out.Domain.T0 and
             rgE_In.Domain.T1 == rgC3_Out.Domain.T1)
+
+        if idxV_S == idxV_E:
+            if not rgC3_Out.IsClosed:
+                rgC3_Out.MakeClosed(sc.doc.ModelAbsoluteTolerance)
+            b_rgE_and_rgC3_domains_match = True
 
         if b_rgE_and_rgC3_domains_match:
             rgE_Out = rgB_Out.Edges.Add(
@@ -364,6 +393,10 @@ def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
                 subDomain=rgE_In.Domain,
                 edgeTolerance=sc.doc.ModelAbsoluteTolerance) # SetTolerancesBoxesAndFlags below should correct this.
 
+        if idxV_S == idxV_E:
+            if not rgE_Out.IsClosed:
+                rgE_Out.MakeClosed(sc.doc.ModelAbsoluteTolerance)
+
 
         #if idxV_S == idxV_E:
         #    print(rgE_Out.IsClosed, rgE_Out.EdgeIndex)
@@ -378,50 +411,127 @@ def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
             idxEs_Out_Per_idxTs_In_ToKeep.append(idxE_Out)
 
 
-    # Add trims.
-    for idxL_In, rgL_In in enumerate(rgB_In.Loops):
-        for rgT_In in rgL_In.Trims:
-            idxT_In = rgT_In.TrimIndex
-        #for idxT_In, rgT_In in enumerate(rgB_In.Trims):
-            if idxT_In in idxTs_In_ToRemove:
-                continue
+    # Add trims NOT per loop.
+    for idxT_In, rgT_In in enumerate(rgB_In.Trims):
+        if idxT_In in idxTs_In_ToRemove:
+            continue
 
-            idxC2_Out = idxC2s_Out_Per_idxC2s_In[idxC2s_In.index(rgT_In.TrimCurveIndex)]
+        idxC2_Out = idxC2s_Out_Per_idxC2s_In[idxC2s_In.index(rgT_In.TrimCurveIndex)]
 
-            if rgT_In.TrimType == rg.BrepTrimType.Singular:
+        rgL_Out = rgB_Out.Loops[rgT_In.Loop.LoopIndex]
 
-                idxV_In = rgT_In.StartVertex.VertexIndex
+        if rgT_In.TrimType == rg.BrepTrimType.Singular:
 
-                if idxV_In in idxVs_In_ToRemove:
-                    idxV_Out = idxVs_Out_Added_Per_idxVs_In_ToRemove[idxVs_In_ToRemove.index(idxV_In)]
-                else:
-                    idxV_Out = idxVs_Out_Kept[idxVs_In_Per_idxVs_Out_Kept.index(idxV_In)]
+            idxV_In = rgT_In.StartVertex.VertexIndex
 
-                rgT_Out = rgB_Out.Trims.AddSingularTrim(
-                    vertex=rgB_Out.Vertices[idxV_Out],
-                    loop=rgB_Out.Loops[rgT_In.Loop.LoopIndex],
-                    iso=rgT_In.IsoStatus,
-                    curve2dIndex=idxC2_Out)
+            if idxV_In in idxVs_In_ToRemove:
+                idxV_Out = idxVs_Out_Added_Per_idxVs_In_ToRemove[idxVs_In_ToRemove.index(idxV_In)]
             else:
-                idxE_Out = idxEs_Out_Per_idxTs_In_ToKeep[idxTs_In_ToKeep.index(idxT_In)]
+                idxV_Out = idxVs_Out_Kept[idxVs_In_Per_idxVs_Out_Kept.index(idxV_In)]
 
-                rgT_Out = rgB_Out.Trims.Add(
-                    edge=rgB_Out.Edges[idxE_Out],
-                    rev3d=rgT_In.IsReversed(),
-                    loop=rgB_Out.Loops[rgT_In.Loop.LoopIndex],
-                    curve2dIndex=idxC2_Out)
+            rgT_Out = rgB_Out.Trims.AddSingularTrim(
+                vertex=rgB_Out.Vertices[idxV_Out],
+                loop=rgL_Out,
+                iso=rgT_In.IsoStatus,
+                curve2dIndex=idxC2_Out)
+        else:
+            idxE_Out = idxEs_Out_Per_idxTs_In_ToKeep[idxTs_In_ToKeep.index(idxT_In)]
 
-                rgT_Out.IsoStatus = rgT_In.IsoStatus
+            rgT_Out = rgB_Out.Trims.Add(
+                edge=rgB_Out.Edges[idxE_Out],
+                rev3d=rgT_In.IsReversed(),
+                loop=rgL_Out,
+                curve2dIndex=idxC2_Out)
 
-            rgT_Out.SetTolerances(
-                toleranceU=Rhino.RhinoMath.ZeroTolerance,
-                toleranceV=Rhino.RhinoMath.ZeroTolerance)
+            rgT_Out.IsoStatus = rgT_In.IsoStatus
+
+        rgT_Out.SetTolerances(
+            toleranceU=Rhino.RhinoMath.ZeroTolerance,
+            toleranceV=Rhino.RhinoMath.ZeroTolerance) # SetTolerancesBoxesAndFlags below should correct this.
+
+
+
+
+    # Add trims PER loop.
+    #for idxL_In, rgL_In in enumerate(rgB_In.Loops):
+    #    rgL_Out = rgB_Out.Loops[rgT_In.Loop.LoopIndex]
+    #    for rgT_In in rgL_In.Trims:
+    #        idxT_In = rgT_In.TrimIndex
+    #    #for idxT_In, rgT_In in enumerate(rgB_In.Trims):
+    #        if idxT_In in idxTs_In_ToRemove:
+    #            continue
+
+    #        idxC2_Out = idxC2s_Out_Per_idxC2s_In[idxC2s_In.index(rgT_In.TrimCurveIndex)]
+
+    #        if rgT_In.TrimType == rg.BrepTrimType.Singular:
+
+    #            idxV_In = rgT_In.StartVertex.VertexIndex
+
+    #            if idxV_In in idxVs_In_ToRemove:
+    #                idxV_Out = idxVs_Out_Added_Per_idxVs_In_ToRemove[idxVs_In_ToRemove.index(idxV_In)]
+    #            else:
+    #                idxV_Out = idxVs_Out_Kept[idxVs_In_Per_idxVs_Out_Kept.index(idxV_In)]
+
+    #            rgT_Out = rgB_Out.Trims.AddSingularTrim(
+    #                vertex=rgB_Out.Vertices[idxV_Out],
+    #                loop=rgL_Out,
+    #                iso=rgT_In.IsoStatus,
+    #                curve2dIndex=idxC2_Out)
+    #        else:
+    #            idxE_Out = idxEs_Out_Per_idxTs_In_ToKeep[idxTs_In_ToKeep.index(idxT_In)]
+
+    #            rgT_Out = rgB_Out.Trims.Add(
+    #                edge=rgB_Out.Edges[idxE_Out],
+    #                rev3d=rgT_In.IsReversed(),
+    #                loop=rgL_Out,
+    #                curve2dIndex=idxC2_Out)
+
+    #            rgT_Out.IsoStatus = rgT_In.IsoStatus
+
+    #        rgT_Out.SetTolerances(
+    #            toleranceU=Rhino.RhinoMath.ZeroTolerance,
+    #            toleranceV=Rhino.RhinoMath.ZeroTolerance) # SetTolerancesBoxesAndFlags below should correct this.
 
             #if rgT_Out.TrimIndex in (715,716):
             #    sc.doc.Objects.AddCurve(rgT_Out.Edge); sc.doc.Views.Redraw()
 
-        bMatchedTrimEnds = rgB_Out.Trims.MatchEnds()
-        print("Matched BrepTrim ends in Loop[{}]: {}".format(idxL_In, bMatchedTrimEnds))
+        #fMaxDev = _maxTrimEndDeviation(rgL_Out, bDebug)
+        #if fMaxDev == 0.0:
+        #    continue
+
+        #if bDebug: print("L[{}], Dev:{}".format(idxL_In, fMaxDev))
+
+        #bMatchedTrimEnds = rgB_Out.Trims.MatchEnds(rgL_Out)
+        ##if bDebug:
+        #if not bMatchedTrimEnds:
+        #    for idxLT, rgT in enumerate(rgL_Out.Trims):
+        #        if _getTrimEndDeviation(rgL_Out, idxLT) == 0.0:
+        #            continue
+        #        bMatchedTrimEnds_2 = rgB_Out.Trims.MatchEnds(rgT, rgL_Out.Trims[(idxLT + 1) % rgL_Out.Trims.Count])
+        #        if bMatchedTrimEnds_2:
+        #            continue
+
+        #        if bDebug:
+        #            for idxLT, rgT in enumerate(rgL_Out.Trims):
+        #                sc.doc.Objects.AddCurve(rgT)
+        #                rgDot = rg.TextDot(
+        #                    "idxLT[{}], idxT[{}]".format(idxLT, rgT.TrimIndex),
+        #                    rgT.PointAt(rgT.Domain.Mid))
+        #                sc.doc.Objects.AddTextDot(rgDot)
+
+        #            #sc.doc.Objects.AddBrep(rgL_In.Face.DuplicateFace(duplicateMeshes=True))
+
+        #        rgB_Out.Dispose()
+        #        #1/0
+        #        return None, "Failed to match BrepTrim ends in Loop[{}].".format(idxL_In)
+
+        #print("Matched BrepTrim ends in Loop[{}]: {}".format(idxL_In, bMatchedTrimEnds))
+
+        #fMaxDev = _maxTrimEndDeviation(rgL_Out)
+        #if fMaxDev > 0.0:
+        #print(idxL_In, fMaxDev)
+
+
 
 
     bMatchedTrimEnds_All = rgB_Out.Trims.MatchEnds()
@@ -429,9 +539,9 @@ def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
     if bDebug:
         sEval = "rgB_In.Loops.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "rgB_Out.Loops.Count"; print("{}: {}".format(sEval, eval(sEval)))
-        sEval = "bMatchedTrimEnds_All"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "rgB_Out.Edges.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "rgB_Out.Vertices.Count"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "bMatchedTrimEnds_All"; print("{}: {}".format(sEval, eval(sEval)))
 
 
     bIsValid, sLog = rgB_Out.IsValidWithLog()
@@ -460,9 +570,14 @@ def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
     bIsValid, sLog = rgB_Out.IsValidWithLog()
 
     if not bIsValid:
+        print(sLog)
+        #sc.doc.Objects.AddCurve(rgB_Out.Trims[715].Edge)
+        #sc.doc.Objects.AddCurve(rgB_Out.Trims[716].Edge)
+        #sc.doc.Views.Redraw(); 1/0
         rgB_Out.Dispose()
         return None, "After Brep.Repair brep: {}".format(sLog)
 
+    if bDebug: print("Brep.Repair was successful.")
 
     rgB_Out.SetTolerancesBoxesAndFlags(
         bLazy=False,
@@ -478,7 +593,130 @@ def createBrep(rgBrep_In, fMaxMicroLength, bDebug=False):
     return rgB_Out, None
 
 
-def processBrepObjects(rdBs_In, fMaxMicroLength, bEcho=True, bDebug=False):
+def createBrep_RemoveMicroEdges(rgBrep_In, fMaxMicroLength, bDupEdgesRemoved=False, bEcho=True, bDebug=False):
+    """
+    Parameters:
+        rgBrep_In
+        fMaxMicroLength: float
+        bDebug: bool
+
+    Returns on success:
+        Brep
+        None
+
+    Returns on fail:
+        None
+        str("Explanation of fail or that brep doesn't contain micro-edges.")
+    """
+
+
+    rgB_In = rgBrep_In
+
+
+    def getMicroEdges(rgB):
+        idxEs_Micro = []
+        for rgE_In in rgB.Edges:
+            if rgE_In.GetLength() <= fMaxMicroLength:
+                idxEs_Micro.append(rgE_In.EdgeIndex)
+        return idxEs_Micro
+
+
+    idxEs_Micro_In = idxEs_Micro = getMicroEdges(rgB_In)
+
+
+    if not idxEs_Micro:
+        return None, "Brep does not have any micro-edges."
+
+    #print("{} micro-edges found.".format(len(idxEs_Micro)))
+
+
+    # For debugging
+    #if bDebug:
+    #    rgB_Res, sLog = createBrep_RemoveEdges(
+    #        rgB_In,
+    #        [idxEs_Micro[0]],
+    #        bDebug=True)
+    #    if rgB_Res:
+    #        idxEs_Micro_End = getMicroEdges(rgB_Res)
+
+    #        sLog = "Micro edge count change: {} -> {}".format(
+    #            len(idxEs_Micro_In), len(idxEs_Micro_End))
+    #        #if bEcho: print(sLog)
+    #        return rgB_Res, sLog
+
+    #    return None, sLog
+
+
+
+    # Try to create brep with all micro-edges removed.
+
+    rgB_Res, sLog = createBrep_RemoveEdges(
+        rgB_In,
+        idxEs_Micro,
+        bDebug=bDebug)
+
+    if rgB_Res:
+        if bDupEdgesRemoved:
+            for idxE in idxEs_Micro_In:
+                sc.doc.Objects.AddCurve(rgB_In.Edges[idxE])
+
+        idxEs_Micro_End = getMicroEdges(rgB_Res)
+
+        sLog = "Micro edge count change: {} -> {}".format(
+            len(idxEs_Micro_In), len(idxEs_Micro_End))
+        #if bEcho: print(sLog)
+        return rgB_Res, sLog
+
+
+    if bEcho:
+        print("Removing all micro-edges at once failed because {}".format(sLog))
+
+    if len(idxEs_Micro_In) == 1:
+        return None, sLog
+
+
+    print("Now, trying to remove one at a time ...")
+
+    rgB_LastGood = rgB_In.DuplicateBrep()
+
+    i = 0
+
+    while i < len(idxEs_Micro):
+        sc.escape_test()
+
+        rgB_Res, sLog = createBrep_RemoveEdges(
+            rgB_LastGood,
+            [idxEs_Micro[i]],
+            bDebug=bDebug)
+
+        if rgB_Res:
+            rgB_LastGood.Dispose()
+            rgB_LastGood = rgB_Res
+            idxEs_Micro = getMicroEdges(rgB_LastGood)
+            print("Removed edge {} of {} remaining.".format(
+                i+1, len(idxEs_Micro)))
+            if bDupEdgesRemoved:
+                sc.doc.Objects.AddCurve(rgB_LastGood.Edges[idxEs_Micro[i]])
+            i = 0
+        else:
+            print("Failed to remove edge {} of {} remaining because {}".format(
+                i+1, len(idxEs_Micro), sLog))
+            i += 1
+
+    idxEs_Micro_End = getMicroEdges(rgB_LastGood)
+
+    if len(idxEs_Micro_End) < len(idxEs_Micro_In):
+        sLog = "Micro edge count change: {} -> {}".format(
+            len(idxEs_Micro_In), len(idxEs_Micro_End))
+        #if bEcho: print(sLog)
+        return rgB_LastGood, sLog
+
+    rgB_LastGood.Dispose()
+
+    return None, sLog
+
+
+def processBrepObjects(rdBs_In, fMaxMicroLength, bDupEdgesRemoved=False, bEcho=True, bDebug=False):
     """
     Parameters:
         rdBs_In: list(DocObjects.BrepObject)
@@ -493,14 +731,18 @@ def processBrepObjects(rdBs_In, fMaxMicroLength, bEcho=True, bDebug=False):
         Rhino.RhinoApp.SetCommandPrompt(
                 prompt="Processing brep {} of {} ...".format(iB+1, len(rdBs_In)))
 
-        rgB_Res, sLog = createBrep(
+        rgB_Res, sLog = createBrep_RemoveMicroEdges(
             rdB.Geometry,
             fMaxMicroLength=fMaxMicroLength,
+            bDupEdgesRemoved=bDupEdgesRemoved,
+            bEcho=bEcho,
             bDebug=bDebug,
             )
 
-        if not rgB_Res:
+        if sLog is not None:
             sLogs.append(sLog)
+
+        if not rgB_Res:
             continue
 
         if sc.doc.Objects.Replace(rdB.Id, brep=rgB_Res):
@@ -511,7 +753,7 @@ def processBrepObjects(rdBs_In, fMaxMicroLength, bEcho=True, bDebug=False):
         print(sLogs[0])
     else:
         for sLog in sorted(set(sLogs)):
-            print("{}x: {}".format(sLogs.count(sLog), sLog))
+            print("[{}] {}".format(sLogs.count(sLog), sLog))
 
     if not gBs_Modified:
         print("No breps were modified.")
@@ -526,6 +768,7 @@ def main():
     if rdBs_In is None: return
 
     fMaxMicroLength = Opts.values['fMaxMicroLength']
+    bDupEdgesRemoved = Opts.values['bDupEdgesRemoved']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
@@ -534,6 +777,7 @@ def main():
     processBrepObjects(
         rdBs_In,
         fMaxMicroLength=fMaxMicroLength,
+        bDupEdgesRemoved=bDupEdgesRemoved,
         bEcho=bEcho,
         bDebug=bDebug,
         )

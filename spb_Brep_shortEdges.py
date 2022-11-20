@@ -5,6 +5,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 """
 221114: Created.
+221118: Bug fix: Added a View.Redraw.
+221119: Added option to dot edges.
 """
 
 import Rhino.DocObjects as rd
@@ -43,6 +45,11 @@ class Opts:
 
     key = 'bAddDot'; keys.append(key)
     values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bIncludeIndex'; keys.append(key)
+    values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -164,6 +171,7 @@ def getInput():
         addOption('bDupCrv')
         addOption('bAddDot')
         if Opts.values['bAddDot']:
+            addOption('bIncludeIndex')
             addOption('iDotHt')
         addOption('bEcho')
         addOption('bDebug')
@@ -217,6 +225,7 @@ def main():
     bShortestOnly = Opts.values['bShortestOnly']
     bDupCrv = Opts.values['bDupCrv']
     bAddDot = Opts.values['bAddDot']
+    bIncludeIndex = Opts.values['bIncludeIndex']
     iDotHt = Opts.values['iDotHt']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -248,7 +257,7 @@ def main():
 
 
     epsilon_Shortest = 0.5 * 10.0**-sc.doc.ModelDistanceDisplayPrecision
-    print(epsilon_Shortest)
+    print("TODO: determine epsilon for shortest.  Now is {}.".format(epsilon_Shortest))
 
     for iB, rdB in enumerate(rdBs_In):
         gB = rdB.Id
@@ -273,6 +282,8 @@ def main():
 
             if bAddDot:
                 text = formatDistance(fLength)
+                if bIncludeIndex:
+                    text = "e[{}]:".format(rgE.EdgeIndex) + text
                 location = rgE.PointAt(rgE.Domain.Mid)
                 rgDot = rg.TextDot(text, location)
                 rgDot.FontHeight = iDotHt
@@ -291,6 +302,7 @@ def main():
         formatDistance(max(fLengths_Short))))
 
     if not bShortestOnly:
+        sc.doc.Views.Redraw()
         return
 
 
@@ -310,6 +322,8 @@ def main():
 
             if bAddDot:
                 text = formatDistance(fLength)
+                if bIncludeIndex:
+                    text = "e[{}]:".format(rgE.EdgeIndex) + text
                 location = rgE.PointAt(rgE.Domain.Mid)
                 rgDot = rg.TextDot(text, location)
                 rgDot.FontHeight = iDotHt

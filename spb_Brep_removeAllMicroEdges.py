@@ -9,8 +9,11 @@ option, will be removed along with the relative BrepTrims.
 For each edge removed, both end vertices are replaced with a single vertex at
 the average location.
 
-If this script fails, run _RemoveAllNakedMicroEdges then this script.
-If that also fails, _MergeAllEdges then this script.
+If this script fails, do the following and rerun the after each step until success:
+1. _RemoveAllNakedMicroEdges on the target breps then this script.
+2. _MergeAllEdges on the target breps then this script.
+3. _Extract faces with micro-edges.
+4. _MergeAllEdges on the extracted faces.
 
 Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums ( https://discourse.mcneel.com/ ).
@@ -19,19 +22,7 @@ Send any questions, comments, or script development service needs to
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-221114-18: Created.
-
-WIP:
-    Having trouble matching the ends of some Loop-consecutive Trims using MatchEnds method
-    when matches occur loop by loop as the trims are added.  This may just be the case
-    for mated edges and MatchEnds for the entire Brep is the best solution.
-    
-    For problems occuring at consecutive micro-edges,
-    First, merge all consecutive micro-edges in each loop?
-    Maybe the consecutive micro-edge Curve2Ds should be replaced with a single, cubic Bezier.
-
-TODO:
-    Merge edges first to handle some consecutive micro-edges.
+221114-20: Created.
 """
 
 import Rhino
@@ -39,6 +30,8 @@ import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
+
+from System.Drawing import Color
 
 
 class Opts:
@@ -231,6 +224,98 @@ def _maxTrimEndDeviation(rgLoop, bDebug):
     return fMax
 
 
+def _getEdgeChain(rgB, idxE_Start, idxsEs):
+    if idxE_Start not in idxsEs:
+        raise Exception("Edge[] not in [{}]".format(idxE_Start, *idxsEs))
+
+    if len(idxsEs) == 1:
+        return (
+            [idxE_Start],
+            [
+                rgB.Edges[idxsEs[0]].StartVertex.VertexIndex,
+                rgB.Edges[idxsEs[0]].EndVertex.VertexIndex])
+
+    idxEs_Chain = [idxE_Start]
+    idxVs_Chain = []
+
+
+    # Determine edges and vertices in one direction.
+
+    idxE_Now = idxE_Start
+    idxV_Now = rgB.Edges[idxE_Start].StartVertex.VertexIndex
+
+    while True:
+        sc.escape_test()
+
+        idxVs_Chain.insert(0, idxV_Now)
+
+        idxEs_at_V_Now = rgB.Vertices[idxV_Now].EdgeIndices()
+
+        if len(idxEs_at_V_Now) == 1:
+            sc.doc.Objects.AddTextDot(rg.TextDot("", rgB.Vertices[idxV_Now].Location))
+            sc.doc.Views.Redraw()
+            raise Exception("Only 1 edge at vertex[{}]".format(idxV_Now))
+
+        if len(idxEs_at_V_Now) > 2:
+            break
+
+        idxE_Next = idxEs_at_V_Now[0] if idxEs_at_V_Now[0] != idxE_Now else idxEs_at_V_Now[1]
+
+        if idxE_Next not in idxsEs:
+            break
+
+        idxEs_Chain.insert(0, idxE_Next)
+
+        if rgB.Vertices[idxV_Now].VertexIndex == rgB.Edges[idxE_Next].StartVertex.VertexIndex:
+            idxV_Now = rgB.Edges[idxE_Next].EndVertex.VertexIndex
+        elif rgB.Vertices[idxV_Now].VertexIndex == rgB.Edges[idxE_Next].EndVertex.VertexIndex:
+            idxV_Now = rgB.Edges[idxE_Next].StartVertex.VertexIndex
+        else:
+            raise Exception("What happened?")
+
+        idxE_Now = idxE_Next
+
+
+    # Determine edges and vertices in other direction.
+
+    idxE_Now = idxE_Start
+    idxV_Now = rgB.Edges[idxE_Start].EndVertex.VertexIndex
+
+    while True:
+        sc.escape_test()
+
+        idxVs_Chain.append(idxV_Now)
+
+        idxEs_at_V_Now = rgB.Vertices[idxV_Now].EdgeIndices()
+
+        if len(idxEs_at_V_Now) == 1:
+            sc.doc.Objects.AddTextDot(rg.TextDot("", rgB.Vertices[idxV_Now].Location))
+            sc.doc.Views.Redraw()
+            raise Exception("Only 1 edge at vertex[{}]".format(idxV_Now))
+
+        if len(idxEs_at_V_Now) > 2:
+            break
+
+        idxE_Next = idxEs_at_V_Now[0] if idxEs_at_V_Now[0] != idxE_Now else idxEs_at_V_Now[1]
+
+        if idxE_Next not in idxsEs:
+            break
+
+        idxEs_Chain.append(idxE_Next)
+
+        if rgB.Vertices[idxV_Now].VertexIndex == rgB.Edges[idxE_Next].StartVertex.VertexIndex:
+            idxV_Now = rgB.Edges[idxE_Next].EndVertex.VertexIndex
+        elif rgB.Vertices[idxV_Now].VertexIndex == rgB.Edges[idxE_Next].EndVertex.VertexIndex:
+            idxV_Now = rgB.Edges[idxE_Next].StartVertex.VertexIndex
+        else:
+            raise Exception("What happened?")
+
+        idxE_Now = idxE_Next
+
+    return idxEs_Chain, idxVs_Chain
+
+
+
 def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
     """
     Parameters:
@@ -249,39 +334,89 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
 
 
     rgB_In = rgBrep_In
-
-
     idxEs_In_ToRemove = idxEdges_In
 
     rgB_Out = rg.Brep()
 
-
-    idxVs_Out_Added = [] # 1:1 relationship with idxEs_In_ToRemove, so they share a list index.
-
     idxTs_In_ToRemove = []
 
-    idxVs_In_ToRemove = []
-    idxVs_Out_Added_Per_idxVs_In_ToRemove = []
+    idxVs_In_Involved = []
+    idxVs_Out_Per_idxVs_In_Involved = []
 
-    for idxE_In in idxEs_In_ToRemove:
-        rgE_In = rgB_In.Edges[idxE_In]
+    idxEs_In_FindChains = idxEs_In_ToRemove[:]
 
-        idxTs_In_ToRemove.extend(rgE_In.TrimIndices())
+    # Using 'Left' and 'Right' to designate each end of the chain.
 
-        pt = 0.5*(rgE_In.StartVertex.Location + rgE_In.EndVertex.Location)
-        rgV = rgB_Out.Vertices.Add(
-            point=pt,
-            vertexTolerance=sc.doc.ModelAbsoluteTolerance) # SetTolerancesBoxesAndFlags below should correct this.
-        idxVs_Out_Added.append(rgV.VertexIndex)
+    while len(idxEs_In_FindChains) > 0:
+        sc.escape_test()
 
-        idxV_In = rgE_In.StartVertex.VertexIndex
-        if idxV_In not in idxVs_In_ToRemove:
-            idxVs_In_ToRemove.append(idxV_In)
-            idxVs_Out_Added_Per_idxVs_In_ToRemove.append(rgV.VertexIndex)
-        idxV_In = rgE_In.EndVertex.VertexIndex
-        if idxV_In not in idxVs_In_ToRemove:
-            idxVs_In_ToRemove.append(idxV_In)
-            idxVs_Out_Added_Per_idxVs_In_ToRemove.append(rgV.VertexIndex)
+        # No chaining for debugging.
+        #idxEs_Chain = [idxEs_In_FindChains[0]]
+        #idxVs_Chain = [
+        #    rgB_In.Edges[0].StartVertex.VertexIndex,
+        #    rgB_In.Edges[0].endVertex.VertexIndex,
+
+        idxEs_Chain, idxVs_Chain = _getEdgeChain(
+            rgB_In,
+            idxEs_In_FindChains[0],
+            idxEs_In_FindChains)
+
+        if bDebug:
+            print("Edges:{}".format(idxEs_Chain), "Vertices:{}".format(idxVs_Chain))
+
+
+        for idxE_In in idxEs_Chain:
+            rgE_In = rgB_In.Edges[idxE_In]
+
+            idxTs_In_ToRemove.extend(rgE_In.TrimIndices())
+
+        if len(idxVs_Chain) > 2:
+            for idxV_In in idxVs_Chain[1:-1]:
+                idxVs_In_Involved.append(idxV_In)
+                idxVs_Out_Per_idxVs_In_Involved.append(None)
+
+        idxV_In_Left = idxVs_Chain[0]
+        idxV_In_Right = idxVs_Chain[-1]
+
+        idxEs_at_V_In_Left = rgB_In.Vertices[idxV_In_Left].EdgeIndices()
+        idxEs_at_V_In_Right = rgB_In.Vertices[idxV_In_Right].EdgeIndices()
+
+
+        if len(idxEs_at_V_In_Left) == len(idxEs_at_V_In_Right):
+            pt = 0.5*(rgE_In.StartVertex.Location + rgE_In.EndVertex.Location)
+            rgV_Out_Added = rgB_Out.Vertices.Add(
+                point=pt,
+                vertexTolerance=sc.doc.ModelAbsoluteTolerance) # SetTolerancesBoxesAndFlags below should correct this.
+
+            if idxV_In_Left not in idxVs_In_Involved:
+                idxVs_In_Involved.append(idxV_In_Left)
+                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+
+            if idxV_In_Right not in idxVs_In_Involved:
+                idxVs_In_Involved.append(idxV_In_Right)
+                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+        elif len(idxEs_at_V_In_Left) > len(idxEs_at_V_In_Right):
+            if idxV_In_Left not in idxVs_In_Involved:
+                idxVs_In_Involved.append(idxV_In_Left)
+                rgV_Out_Added = rgB_Out.Vertices.Add(
+                    point=rgE_In.StartVertex.Location,
+                    vertexTolerance=sc.doc.ModelAbsoluteTolerance) # SetTolerancesBoxesAndFlags below should correct this.
+                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+            if idxV_In_Right not in idxVs_In_Involved:
+                idxVs_In_Involved.append(idxV_In_Right)
+                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+        else: # len(idxEs_at_V_In_S) < len(idxEs_at_V_In_E)
+            if idxV_In_Right not in idxVs_In_Involved:
+                idxVs_In_Involved.append(idxV_In_Right)
+                rgV_Out_Added = rgB_Out.Vertices.Add(
+                    point=rgE_In.EndVertex.Location,
+                    vertexTolerance=sc.doc.ModelAbsoluteTolerance) # SetTolerancesBoxesAndFlags below should correct this.
+                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+            if idxV_In_Left not in idxVs_In_Involved:
+                idxVs_In_Involved.append(idxV_In_Left)
+                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+
+        idxEs_In_FindChains = list(set(idxEs_In_FindChains).difference(set(idxEs_Chain)))
 
 
     if bDebug:
@@ -330,7 +465,7 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
     idxVs_Out_Kept = []
     idxVs_In_Per_idxVs_Out_Kept = []
     for idxV_In, vertex_In in enumerate(rgB_In.Vertices):
-        if idxV_In in idxVs_In_ToRemove:
+        if idxV_In in idxVs_In_Involved:
             continue
 
         v_Out = rgB_Out.Vertices.Add(
@@ -356,14 +491,14 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
             continue
 
         idxV_In = rgE_In.StartVertex.VertexIndex
-        if idxV_In in idxVs_In_ToRemove:
-            idxV_S = idxVs_Out_Added_Per_idxVs_In_ToRemove[idxVs_In_ToRemove.index(idxV_In)]
+        if idxV_In in idxVs_In_Involved:
+            idxV_S = idxVs_Out_Per_idxVs_In_Involved[idxVs_In_Involved.index(idxV_In)]
         else:
             idxV_S = idxVs_Out_Kept[idxVs_In_Per_idxVs_Out_Kept.index(idxV_In)]
 
         idxV_In = rgE_In.EndVertex.VertexIndex
-        if idxV_In in idxVs_In_ToRemove:
-            idxV_E = idxVs_Out_Added_Per_idxVs_In_ToRemove[idxVs_In_ToRemove.index(idxV_In)]
+        if idxV_In in idxVs_In_Involved:
+            idxV_E = idxVs_Out_Per_idxVs_In_Involved[idxVs_In_Involved.index(idxV_In)]
         else:
             idxV_E = idxVs_Out_Kept[idxVs_In_Per_idxVs_Out_Kept.index(idxV_In)]
 
@@ -411,136 +546,69 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
             idxEs_Out_Per_idxTs_In_ToKeep.append(idxE_Out)
 
 
-    # Add trims NOT per loop.
-    for idxT_In, rgT_In in enumerate(rgB_In.Trims):
-        if idxT_In in idxTs_In_ToRemove:
-            continue
+    # Add trims per loop.
+    for idxL_In, rgL_In in enumerate(rgB_In.Loops):
+        rgL_Out = rgB_Out.Loops[idxL_In]
 
-        idxC2_Out = idxC2s_Out_Per_idxC2s_In[idxC2s_In.index(rgT_In.TrimCurveIndex)]
+        for idxTL_In, rgT_In in enumerate(rgL_In.Trims):
+            idxT_In = rgT_In.TrimIndex
+            if idxT_In in idxTs_In_ToRemove:
+                continue
 
-        rgL_Out = rgB_Out.Loops[rgT_In.Loop.LoopIndex]
+            idxC2_Out = idxC2s_Out_Per_idxC2s_In[idxC2s_In.index(rgT_In.TrimCurveIndex)]
 
-        if rgT_In.TrimType == rg.BrepTrimType.Singular:
 
-            idxV_In = rgT_In.StartVertex.VertexIndex
+            if rgT_In.TrimType == rg.BrepTrimType.Singular:
 
-            if idxV_In in idxVs_In_ToRemove:
-                idxV_Out = idxVs_Out_Added_Per_idxVs_In_ToRemove[idxVs_In_ToRemove.index(idxV_In)]
+                idxV_In = rgT_In.StartVertex.VertexIndex
+
+                if idxV_In in idxVs_In_Involved:
+                    idxV_Out = idxVs_Out_Per_idxVs_In_Involved[idxVs_In_Involved.index(idxV_In)]
+                else:
+                    idxV_Out = idxVs_Out_Kept[idxVs_In_Per_idxVs_Out_Kept.index(idxV_In)]
+
+                rgT_Out = rgB_Out.Trims.AddSingularTrim(
+                    vertex=rgB_Out.Vertices[idxV_Out],
+                    loop=rgL_Out,
+                    iso=rgT_In.IsoStatus,
+                    curve2dIndex=idxC2_Out)
             else:
-                idxV_Out = idxVs_Out_Kept[idxVs_In_Per_idxVs_Out_Kept.index(idxV_In)]
+                idxE_Out = idxEs_Out_Per_idxTs_In_ToKeep[idxTs_In_ToKeep.index(idxT_In)]
 
-            rgT_Out = rgB_Out.Trims.AddSingularTrim(
-                vertex=rgB_Out.Vertices[idxV_Out],
-                loop=rgL_Out,
-                iso=rgT_In.IsoStatus,
-                curve2dIndex=idxC2_Out)
-        else:
-            idxE_Out = idxEs_Out_Per_idxTs_In_ToKeep[idxTs_In_ToKeep.index(idxT_In)]
+                rgT_Out = rgB_Out.Trims.Add(
+                    edge=rgB_Out.Edges[idxE_Out],
+                    rev3d=rgT_In.IsReversed(),
+                    loop=rgL_Out,
+                    curve2dIndex=idxC2_Out)
 
-            rgT_Out = rgB_Out.Trims.Add(
-                edge=rgB_Out.Edges[idxE_Out],
-                rev3d=rgT_In.IsReversed(),
-                loop=rgL_Out,
-                curve2dIndex=idxC2_Out)
+                rgT_Out.IsoStatus = rgT_In.IsoStatus
 
-            rgT_Out.IsoStatus = rgT_In.IsoStatus
+            rgT_Out.SetTolerances(
+                toleranceU=Rhino.RhinoMath.ZeroTolerance,
+                toleranceV=Rhino.RhinoMath.ZeroTolerance) # SetTolerancesBoxesAndFlags below should correct this.
 
-        rgT_Out.SetTolerances(
-            toleranceU=Rhino.RhinoMath.ZeroTolerance,
-            toleranceV=Rhino.RhinoMath.ZeroTolerance) # SetTolerancesBoxesAndFlags below should correct this.
-
-
-
-
-    # Add trims PER loop.
-    #for idxL_In, rgL_In in enumerate(rgB_In.Loops):
-    #    rgL_Out = rgB_Out.Loops[rgT_In.Loop.LoopIndex]
-    #    for rgT_In in rgL_In.Trims:
-    #        idxT_In = rgT_In.TrimIndex
-    #    #for idxT_In, rgT_In in enumerate(rgB_In.Trims):
-    #        if idxT_In in idxTs_In_ToRemove:
-    #            continue
-
-    #        idxC2_Out = idxC2s_Out_Per_idxC2s_In[idxC2s_In.index(rgT_In.TrimCurveIndex)]
-
-    #        if rgT_In.TrimType == rg.BrepTrimType.Singular:
-
-    #            idxV_In = rgT_In.StartVertex.VertexIndex
-
-    #            if idxV_In in idxVs_In_ToRemove:
-    #                idxV_Out = idxVs_Out_Added_Per_idxVs_In_ToRemove[idxVs_In_ToRemove.index(idxV_In)]
-    #            else:
-    #                idxV_Out = idxVs_Out_Kept[idxVs_In_Per_idxVs_Out_Kept.index(idxV_In)]
-
-    #            rgT_Out = rgB_Out.Trims.AddSingularTrim(
-    #                vertex=rgB_Out.Vertices[idxV_Out],
-    #                loop=rgL_Out,
-    #                iso=rgT_In.IsoStatus,
-    #                curve2dIndex=idxC2_Out)
-    #        else:
-    #            idxE_Out = idxEs_Out_Per_idxTs_In_ToKeep[idxTs_In_ToKeep.index(idxT_In)]
-
-    #            rgT_Out = rgB_Out.Trims.Add(
-    #                edge=rgB_Out.Edges[idxE_Out],
-    #                rev3d=rgT_In.IsReversed(),
-    #                loop=rgL_Out,
-    #                curve2dIndex=idxC2_Out)
-
-    #            rgT_Out.IsoStatus = rgT_In.IsoStatus
-
-    #        rgT_Out.SetTolerances(
-    #            toleranceU=Rhino.RhinoMath.ZeroTolerance,
-    #            toleranceV=Rhino.RhinoMath.ZeroTolerance) # SetTolerancesBoxesAndFlags below should correct this.
-
-            #if rgT_Out.TrimIndex in (715,716):
-            #    sc.doc.Objects.AddCurve(rgT_Out.Edge); sc.doc.Views.Redraw()
-
-        #fMaxDev = _maxTrimEndDeviation(rgL_Out, bDebug)
-        #if fMaxDev == 0.0:
-        #    continue
-
-        #if bDebug: print("L[{}], Dev:{}".format(idxL_In, fMaxDev))
-
-        #bMatchedTrimEnds = rgB_Out.Trims.MatchEnds(rgL_Out)
-        ##if bDebug:
-        #if not bMatchedTrimEnds:
-        #    for idxLT, rgT in enumerate(rgL_Out.Trims):
-        #        if _getTrimEndDeviation(rgL_Out, idxLT) == 0.0:
-        #            continue
-        #        bMatchedTrimEnds_2 = rgB_Out.Trims.MatchEnds(rgT, rgL_Out.Trims[(idxLT + 1) % rgL_Out.Trims.Count])
-        #        if bMatchedTrimEnds_2:
-        #            continue
-
-        #        if bDebug:
-        #            for idxLT, rgT in enumerate(rgL_Out.Trims):
-        #                sc.doc.Objects.AddCurve(rgT)
-        #                rgDot = rg.TextDot(
-        #                    "idxLT[{}], idxT[{}]".format(idxLT, rgT.TrimIndex),
-        #                    rgT.PointAt(rgT.Domain.Mid))
-        #                sc.doc.Objects.AddTextDot(rgDot)
-
-        #            #sc.doc.Objects.AddBrep(rgL_In.Face.DuplicateFace(duplicateMeshes=True))
-
-        #        rgB_Out.Dispose()
-        #        #1/0
-        #        return None, "Failed to match BrepTrim ends in Loop[{}].".format(idxL_In)
-
-        #print("Matched BrepTrim ends in Loop[{}]: {}".format(idxL_In, bMatchedTrimEnds))
-
-        #fMaxDev = _maxTrimEndDeviation(rgL_Out)
-        #if fMaxDev > 0.0:
-        #print(idxL_In, fMaxDev)
-
-
-
+        #bMatchedTrimEnds_Loop = rgL_Out.Trims.MatchEnds(rgL_Out)
+        #if not bMatchedTrimEnds_Loop:
+        #    print("l[{}]: Trims.MathEnds failed.".format(idxL_In))
+        #    for rgT in rgL_Out.Trims:
+        #        sc.doc.Objects.AddCurve(rgT)
+        #        sc.doc.Objects.AddCurve(rgT.Edge)
+        #    sc.doc.Views.Redraw()
+        #    1/0
 
     bMatchedTrimEnds_All = rgB_Out.Trims.MatchEnds()
 
     if bDebug:
+        sEval = "rgB_In.Faces.Count"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "rgB_Out.Faces.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "rgB_In.Loops.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "rgB_Out.Loops.Count"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "rgB_In.Edges.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "rgB_Out.Edges.Count"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "rgB_In.Vertices.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "rgB_Out.Vertices.Count"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "rgB_In.Trims.Count"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "rgB_Out.Trims.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "bMatchedTrimEnds_All"; print("{}: {}".format(sEval, eval(sEval)))
 
 
@@ -639,7 +707,7 @@ def createBrep_RemoveMicroEdges(rgBrep_In, fMaxMicroLength, bDupEdgesRemoved=Fal
     #    if rgB_Res:
     #        idxEs_Micro_End = getMicroEdges(rgB_Res)
 
-    #        sLog = "Micro edge count change: {} -> {}".format(
+    #        sLog = "Micro-edge count change: {} -> {}".format(
     #            len(idxEs_Micro_In), len(idxEs_Micro_End))
     #        #if bEcho: print(sLog)
     #        return rgB_Res, sLog
@@ -662,7 +730,7 @@ def createBrep_RemoveMicroEdges(rgBrep_In, fMaxMicroLength, bDupEdgesRemoved=Fal
 
         idxEs_Micro_End = getMicroEdges(rgB_Res)
 
-        sLog = "Micro edge count change: {} -> {}".format(
+        sLog = "Micro-edge count change: {} -> {}".format(
             len(idxEs_Micro_In), len(idxEs_Micro_End))
         #if bEcho: print(sLog)
         return rgB_Res, sLog
@@ -675,7 +743,7 @@ def createBrep_RemoveMicroEdges(rgBrep_In, fMaxMicroLength, bDupEdgesRemoved=Fal
         return None, sLog
 
 
-    print("Now, trying to remove one at a time ...")
+    print("Now, attempting to remove one at a time ...")
 
     rgB_LastGood = rgB_In.DuplicateBrep()
 
@@ -706,7 +774,7 @@ def createBrep_RemoveMicroEdges(rgBrep_In, fMaxMicroLength, bDupEdgesRemoved=Fal
     idxEs_Micro_End = getMicroEdges(rgB_LastGood)
 
     if len(idxEs_Micro_End) < len(idxEs_Micro_In):
-        sLog = "Micro edge count change: {} -> {}".format(
+        sLog = "Micro-edge count change: {} -> {}".format(
             len(idxEs_Micro_In), len(idxEs_Micro_End))
         #if bEcho: print(sLog)
         return rgB_LastGood, sLog

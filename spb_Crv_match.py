@@ -28,7 +28,7 @@ the unitized tangent vector than when using the 1st derivative vector of Curve B
         Improved printed feedback when curve is not modified.
 201122, 210908: Import-related updates.
 211029: Simplified curve to modify option from 3 to 2 choices.  Added fAngleTol_Deg.
-220328: Import-related update.
+220328, 0425: Import-related update.
 
 TODO:
 Try to adjust for G1 to same G0G1 length as original curve.  Check its deviation against SetEndCondition result.
@@ -45,7 +45,7 @@ from System import Enum
 from System import Guid
 from System.Drawing import Color
 
-import spb_Curve_continuityBetween2
+import spb_Crv_continuityBetween2
 import xCurve_inflections
 import xCurve_radiusMinima
 import spb_Crv_fitRebuild
@@ -385,7 +385,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             idxCp_Pos_B = 0
             idxCp_Tan_B = 1
 
-        rc = spb_Curve_continuityBetween2.processCurves(
+        rc = spb_Crv_continuityBetween2.processCurves(
                 nc0_A,
                 nc0_B,
                 bEvalT1End_A=bT1WorkEnd_A,
@@ -396,7 +396,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                 bDebug=bDebug,
         )
         if not rc:
-            print "Error in obtaining data from spb_Curve_continuityBetween2.processCurves."
+            print "Error in obtaining data from spb_Crv_continuityBetween2.processCurves."
             return
         iContinuity0_G, iContinuity0_C, sContinuityDescr = rc
         if bDebug:

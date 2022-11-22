@@ -15,7 +15,8 @@
 210327: Bug fix.
 210330: Modified some tolerances to test for 'perfect' primitive match.
 210604: Bug fix in knot multiplicity routine.
-220317: Added a function.
+220317: Added splitSurfaceIntoBrep.
+220623: Bug fix.
 
 Known Issues with RhinoCommon:
     
@@ -260,6 +261,14 @@ def splitSurfaceIntoBrep(rgSrf_toSplit, rgCrvs_Splitters, **kwargs):
         rgFace_toSplit = rgBrep_TempForUnderlyingSrf.Faces[0]
     else:
         return
+
+
+    def getFormattedDistance(fDistance):
+        if fDistance is None: return "(No deviation provided)"
+        if fDistance < 0.001:
+            return "{:.2e}".format(fDistance)
+        else:
+            return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
 
 
     # Create tolerance loop.

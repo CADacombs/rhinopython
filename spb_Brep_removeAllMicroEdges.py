@@ -22,7 +22,7 @@ Send any questions, comments, or script development service needs to
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-221114-20: Created.
+221114-22: Created.
 """
 
 import Rhino
@@ -315,6 +315,12 @@ def _getEdgeChain(rgB, idxE_Start, idxsEs):
     return idxEs_Chain, idxVs_Chain
 
 
+def _copyUserDictionaryAndStrings(obj_From, obj_To):
+    obj_To.UserDictionary.AddContentsFrom(obj_From.UserDictionary)
+    nameValues = obj_From.GetUserStrings()
+    for sKey in nameValues.AllKeys:
+        obj_To.SetUserString(sKey, nameValues[sKey])
+
 
 def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
     """
@@ -337,6 +343,8 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
     idxEs_In_ToRemove = idxEdges_In
 
     rgB_Out = rg.Brep()
+    _copyUserDictionaryAndStrings(rgB_In, rgB_Out)
+
 
     idxTs_In_ToRemove = []
 
@@ -370,6 +378,7 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
 
             idxTs_In_ToRemove.extend(rgE_In.TrimIndices())
 
+        # None of the inner vertices of the chain will be added to the new brep.
         if len(idxVs_Chain) > 2:
             for idxV_In in idxVs_Chain[1:-1]:
                 idxVs_In_Involved.append(idxV_In)
@@ -378,43 +387,58 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
         idxV_In_Left = idxVs_Chain[0]
         idxV_In_Right = idxVs_Chain[-1]
 
-        idxEs_at_V_In_Left = rgB_In.Vertices[idxV_In_Left].EdgeIndices()
-        idxEs_at_V_In_Right = rgB_In.Vertices[idxV_In_Right].EdgeIndices()
+        rgV_In_Left = rgB_In.Vertices[idxV_In_Left]
+        rgV_In_Right = rgB_In.Vertices[idxV_In_Right]
+
+        idxEs_at_V_In_Left = rgV_In_Left.EdgeIndices()
+        idxEs_at_V_In_Right = rgV_In_Right.EdgeIndices()
 
 
         if len(idxEs_at_V_In_Left) == len(idxEs_at_V_In_Right):
-            pt = 0.5*(rgE_In.StartVertex.Location + rgE_In.EndVertex.Location)
-            rgV_Out_Added = rgB_Out.Vertices.Add(
+            pt = 0.5*(rgV_In_Left.Location + rgV_In_Right.Location)
+            rgV_Out = rgB_Out.Vertices.Add(
                 point=pt,
                 vertexTolerance=sc.doc.ModelAbsoluteTolerance) # SetTolerancesBoxesAndFlags below should correct this.
+            idxV_Out = rgV_Out.VertexIndex
+
+            # No UserData, etc. will be transfered to this vertex since it is
+            # derived from multiple others.
 
             if idxV_In_Left not in idxVs_In_Involved:
                 idxVs_In_Involved.append(idxV_In_Left)
-                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+                idxVs_Out_Per_idxVs_In_Involved.append(idxV_Out)
 
             if idxV_In_Right not in idxVs_In_Involved:
                 idxVs_In_Involved.append(idxV_In_Right)
-                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+                idxVs_Out_Per_idxVs_In_Involved.append(idxV_Out)
         elif len(idxEs_at_V_In_Left) > len(idxEs_at_V_In_Right):
-            if idxV_In_Left not in idxVs_In_Involved:
+            if idxV_In_Left in idxVs_In_Involved:
+                idxV_Out = idxVs_Out_Per_idxVs_In_Involved[idxVs_In_Involved.index(idxV_In_Left)]
+            else:
                 idxVs_In_Involved.append(idxV_In_Left)
-                rgV_Out_Added = rgB_Out.Vertices.Add(
-                    point=rgE_In.StartVertex.Location,
+                rgV_Out = rgB_Out.Vertices.Add(
+                    point=rgV_In_Left.Location,
                     vertexTolerance=sc.doc.ModelAbsoluteTolerance) # SetTolerancesBoxesAndFlags below should correct this.
-                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+                idxV_Out = rgV_Out.VertexIndex
+                idxVs_Out_Per_idxVs_In_Involved.append(idxV_Out)
+                _copyUserDictionaryAndStrings(rgV_In_Left, rgV_Out)
             if idxV_In_Right not in idxVs_In_Involved:
                 idxVs_In_Involved.append(idxV_In_Right)
-                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+                idxVs_Out_Per_idxVs_In_Involved.append(idxV_Out)
         else: # len(idxEs_at_V_In_S) < len(idxEs_at_V_In_E)
-            if idxV_In_Right not in idxVs_In_Involved:
+            if idxV_In_Right in idxVs_In_Involved:
+                idxV_Out = idxVs_Out_Per_idxVs_In_Involved[idxVs_In_Involved.index(idxV_In_Right)]
+            else:
                 idxVs_In_Involved.append(idxV_In_Right)
-                rgV_Out_Added = rgB_Out.Vertices.Add(
-                    point=rgE_In.EndVertex.Location,
+                rgV_Out = rgB_Out.Vertices.Add(
+                    point=rgV_In_Right.Location,
                     vertexTolerance=sc.doc.ModelAbsoluteTolerance) # SetTolerancesBoxesAndFlags below should correct this.
-                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+                idxV_Out = rgV_Out.VertexIndex
+                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out.VertexIndex)
+                _copyUserDictionaryAndStrings(rgV_In_Right, rgV_Out)
             if idxV_In_Left not in idxVs_In_Involved:
                 idxVs_In_Involved.append(idxV_In_Left)
-                idxVs_Out_Per_idxVs_In_Involved.append(rgV_Out_Added.VertexIndex)
+                idxVs_Out_Per_idxVs_In_Involved.append(idxV_Out)
 
         idxEs_In_FindChains = list(set(idxEs_In_FindChains).difference(set(idxEs_Chain)))
 
@@ -425,9 +449,9 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
 
 
     # Add surfaces.
-    for srf_In in rgB_In.Surfaces:
-        srf_Out = srf_In.Duplicate()
-        rgB_Out.AddSurface(srf_Out)
+    for idxS_In, srf_In in enumerate(rgB_In.Surfaces):
+        srf_Out = srf_In.Duplicate() # This also copies UserDictionary and UserStrings.
+        idxS_Out = rgB_Out.AddSurface(srf_Out)
 
 
     # Add edge curves (Curve3D).
@@ -436,7 +460,8 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
     for idxE_In, rgE_In in enumerate(rgB_In.Edges):
         if rgE_In.EdgeIndex in idxEs_In_ToRemove:
             continue
-        rgC3_Out = rgE_In.EdgeCurve.Duplicate()
+        rgC3_In = rgE_In.EdgeCurve
+        rgC3_Out = rgC3_In.Duplicate() # This also copies UserDictionary and UserStrings.
         idxC3_Out = rgB_Out.AddEdgeCurve(rgC3_Out)
         idxC3s_Out_Per_idxC3s_In.append(idxC3_Out)
         idxC3s_In.append(rgE_In.EdgeCurveIndex)
@@ -448,38 +473,43 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
     for idxT_In, rgT_In in enumerate(rgB_In.Trims):
         if rgT_In.TrimIndex in idxTs_In_ToRemove:
             continue
-        rgC2_Out = rgT_In.TrimCurve.Duplicate()
+        rgC2_In = rgT_In.TrimCurve
+        rgC2_Out = rgC2_In.Duplicate() # This also copies UserDictionary and UserStrings.
         idxC2_Out = rgB_Out.AddTrimCurve(rgC2_Out)
         idxC2s_Out_Per_idxC2s_In.append(idxC2_Out)
         idxC2s_In.append(rgT_In.TrimCurveIndex)
 
 
     # Add faces.
-    for iF, face_In in enumerate(rgB_In.Faces):
-        rgB_Out.Faces.Add(face_In.SurfaceIndex)
-        rgB_Out.Faces[iF].OrientationIsReversed = face_In.OrientationIsReversed
-        rgB_Out.Faces[iF].PerFaceColor = face_In.PerFaceColor
+    for idxF_In, rgF_In in enumerate(rgB_In.Faces):
+        rgF_Out = rgB_Out.Faces.Add(rgF_In.SurfaceIndex)
+        rgF_Out.OrientationIsReversed = rgF_In.OrientationIsReversed
+        rgF_Out.PerFaceColor = rgF_In.PerFaceColor
+        rgF_Out.Id = rgF_In.Id
+        _copyUserDictionaryAndStrings(rgF_In, rgF_Out)
 
 
     # Add kept vertices.  New ones were already added.
     idxVs_Out_Kept = []
     idxVs_In_Per_idxVs_Out_Kept = []
-    for idxV_In, vertex_In in enumerate(rgB_In.Vertices):
+    for idxV_In, rgV_In in enumerate(rgB_In.Vertices):
         if idxV_In in idxVs_In_Involved:
             continue
 
-        v_Out = rgB_Out.Vertices.Add(
-            point=vertex_In.Location,
+        rgV_Out = rgB_Out.Vertices.Add(
+            point=rgV_In.Location,
             vertexTolerance=sc.doc.ModelAbsoluteTolerance)  # SetTolerancesBoxesAndFlags below should correct this.
-        idxVs_Out_Kept.append(v_Out.VertexIndex)
+        idxVs_Out_Kept.append(rgV_Out.VertexIndex)
         idxVs_In_Per_idxVs_Out_Kept.append(idxV_In)
+        _copyUserDictionaryAndStrings(rgV_In, rgV_Out)
 
 
     # Add loops.
-    for iL, loop_In in enumerate(rgB_In.Loops):
-        rgB_Out.Loops.Add(
-            loopType=loop_In.LoopType,
-            face=rgB_Out.Faces[loop_In.Face.FaceIndex])
+    for idxL_In, rgL_In in enumerate(rgB_In.Loops):
+        rgL_Out = rgB_Out.Loops.Add(
+            loopType=rgL_In.LoopType,
+            face=rgB_Out.Faces[rgL_In.Face.FaceIndex])
+        _copyUserDictionaryAndStrings(rgL_In, rgL_Out)
 
 
     # Add edges.
@@ -527,6 +557,8 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
                 curve3dIndex=idxC3_Out,
                 subDomain=rgE_In.Domain,
                 edgeTolerance=sc.doc.ModelAbsoluteTolerance) # SetTolerancesBoxesAndFlags below should correct this.
+
+        _copyUserDictionaryAndStrings(rgE_In, rgE_Out)
 
         if idxV_S == idxV_E:
             if not rgE_Out.IsClosed:
@@ -586,6 +618,8 @@ def createBrep_RemoveEdges(rgBrep_In, idxEdges_In, bDebug=False):
             rgT_Out.SetTolerances(
                 toleranceU=Rhino.RhinoMath.ZeroTolerance,
                 toleranceV=Rhino.RhinoMath.ZeroTolerance) # SetTolerancesBoxesAndFlags below should correct this.
+
+            _copyUserDictionaryAndStrings(rgT_In, rgT_Out)
 
         #bMatchedTrimEnds_Loop = rgL_Out.Trims.MatchEnds(rgL_Out)
         #if not bMatchedTrimEnds_Loop:

@@ -28,7 +28,7 @@ the unitized tangent vector than when using the 1st derivative vector of Curve B
         Improved printed feedback when curve is not modified.
 201122, 210908: Import-related updates.
 211029: Simplified curve to modify option from 3 to 2 choices.  Added fAngleTol_Deg.
-220328, 0425: Import-related update.
+220328, 0425, 1122: Import-related update.
 
 TODO:
 Try to adjust for G1 to same G0G1 length as original curve.  Check its deviation against SetEndCondition result.
@@ -46,10 +46,10 @@ from System import Guid
 from System.Drawing import Color
 
 import spb_Crv_continuityBetween2
-import xCurve_inflections
-import xCurve_radiusMinima
 import spb_Crv_fitRebuild
-import xNurbsCurve_maximizeMinimumRadius
+import spb_Crv_inflections
+import spb_Crv_radiusMinima
+import spb_NurbsCrv_maximizeMinimumRadius
 
 
 sOpts_Continuity = ['G0', 'G1', 'C1', 'G2']
@@ -698,7 +698,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                 if bEcho: print s
                 nc_WIPs = [nc_WIP_A.ToNurbsCurve(), nc_WIP_B.ToNurbsCurve()]
                 for i in 0,1:
-                    rc = xNurbsCurve_maximizeMinimumRadius.adjustTanCpSpread_OneEndOnly(
+                    rc = spb_NurbsCrv_maximizeMinimumRadius.adjustTanCpSpread_OneEndOnly(
                             nc_WIPs[i],
                             bT1WorkEnds[i],
                             fDevTol,
@@ -1007,7 +1007,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             ncs.append(ncOne_PreMatch.Duplicate())
             ncs[-1].Points[idxCp_Pos_One] = nc_Ref.Points[idxCp_Pos_Ref]
 
-            fRadius_Min_MoveEndCp = xCurve_radiusMinima.getMinimumRadius(ncs[-1])
+            fRadius_Min_MoveEndCp = spb_Crv_radiusMinima.getMinimumRadius(ncs[-1])
 
             # Version: Using Curve.SetStartPoint / SetEndPoint method.
             ncs.append(ncOne_PreMatch.Duplicate())
@@ -1019,7 +1019,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             else:
                 ncs[-1].SetStartPoint(nc_Ref.Points[idxCp_Pos_Ref].Location)
 
-            fRadius_Min_RcSet = xCurve_radiusMinima.getMinimumRadius(ncs[-1])
+            fRadius_Min_RcSet = spb_Crv_radiusMinima.getMinimumRadius(ncs[-1])
 
             if fRadius_Min_MoveEndCp >= fRadius_Min_RcSet:
                 print "Moving just the end control point produces a result with" \
@@ -1050,7 +1050,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             if bEcho: print s #Rhino.RhinoApp.CommandPrompt = s
             nc_MaxMinRads = []
             for nc in ncs:
-                rc = xNurbsCurve_maximizeMinimumRadius.adjustTanCpSpread_OneEndOnly(
+                rc = spb_NurbsCrv_maximizeMinimumRadius.adjustTanCpSpread_OneEndOnly(
                         nc,
                         bT1WorkEnd_One,
                         fDevTol,
@@ -1070,7 +1070,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
         minRadii = []
         for nc in ncs:
-            rad = xCurve_radiusMinima.getMinimumRadius(nc)
+            rad = spb_Crv_radiusMinima.getMinimumRadius(nc)
             minRadii.append(rad)
         if bDebug: sEval='minRadii'; print sEval+': ',eval(sEval)
 
@@ -1417,15 +1417,15 @@ def processCurveObjects(objrefs, **kwargs):
 
         s = ""
 
-        rc = xCurve_inflections.getInflectionParameters(rgCrv0_ToMod)
+        rc = spb_Crv_inflections.getInflectionParameters(rgCrv0_ToMod)
         i_Infl_Ct_Pre = len(rc) if rc else None
-        rc = xCurve_inflections.getInflectionParameters(rgNurbsCrv1)
+        rc = spb_Crv_inflections.getInflectionParameters(rgNurbsCrv1)
         i_Infl_Ct_Post = len(rc) if rc else None
         s = "InflectionCount:{}->{}".format(i_Infl_Ct_Pre, i_Infl_Ct_Post)
     
-        rc = xCurve_radiusMinima.getMinimumRadius(rgCrv0_ToMod)
+        rc = spb_Crv_radiusMinima.getMinimumRadius(rgCrv0_ToMod)
         fRadius_Min_Original = rc if rc is not None else None
-        rc = xCurve_radiusMinima.getMinimumRadius(rgNurbsCrv1)
+        rc = spb_Crv_radiusMinima.getMinimumRadius(rgNurbsCrv1)
         fRadius_Min_New = rc if rc is not None else None
         sRadius_Min_Original = formatDistance(fRadius_Min_Original)
         if bDebug: sEval='fRadius_Min_New'; print sEval+': ',eval(sEval)

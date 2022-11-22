@@ -6,26 +6,11 @@ TODO:
     Limit distance between consecutive control points?
 """
 
-from __future__ import absolute_import, print_function, unicode_literals
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 170624-27: Created.
 ...
-190609-11: Now, only curve of a single, specified degree are output.  Modified printed output.
-190620: Corrected count in command prompt string.
-190627: Bug fix.  Again, will now will wait for more input if curves are preselected.
-190629: Added an import.  Bug fixes.
-190825: Removed an option.  Added bProcessOtherRat.  Modified an option default value.
-        Now, correctly processes PolyCurves with 1 segment.
-190831: Modified behavior of an option value entry.
-190903: Added some default values to a function.
-190923: Added xNurbsCurve_fitByTranslatingControlPts.
-191020: Corrected a return value of a function.
-191021: Import-related update.
-191209: Added code for debugging.
-200113: Now, 0 for fDevTol will allow any deviation.  Now, preselected curve will immediately be processed.
-200115-19: Added dialog box.  Added option to process PolyCurve segments individually.
-        Removed a couple of options.
 200307: When degree is not specified, now iterates from degree 3 to 5 before incrementing the number of control points.
 200401, 10: Improved handling of bad deviation result for closed curves.
 200610: Import-related update.  Purged some of this history.
@@ -34,7 +19,9 @@ from __future__ import absolute_import, print_function, unicode_literals
 210312: Modified some option default values.  Removed a print(statement used for debugging.
 210412: Added filter for PolylineCurves.
 220328: Added bPreserveEndG2 option.
+220809, 0823, 0910: Import-related update.
 """
+
 
 import Rhino
 import Rhino.DocObjects as rd
@@ -49,8 +36,8 @@ import Eto.Drawing as drawing
 import Eto.Forms as forms
 
 import xCurve
-import xCurve_deviation
-import xNurbsCurve_fitByTranslatingControlPts
+import spb_Crv_deviation
+import spb_NurbsCrv_fitByTranslatingControlPts
 
 
 class Opts:
@@ -1117,7 +1104,7 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, bPreserveEndG1=True, bPreserveEnd
             return None, None, "Could not rebuild curve to a 2-point degree 1."
 
 
-        rc = xCurve_deviation.isMaxClosestDistBtwn2CrvsWithinTol(
+        rc = spb_Crv_deviation.isMaxClosestDistBtwn2CrvsWithinTol(
             nc_In,
             nc_Out,
             tolerance=fDevTol)
@@ -1192,17 +1179,17 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, bPreserveEndG1=True, bPreserveEnd
 
 
             if bFurtherTranslateCps:
-                rc = xNurbsCurve_fitByTranslatingControlPts.fitCurve(
-                        rgNurbsCrv_toDeform=nc_Out,
-                        rgNurbsCrv_forDevComp=rgCurve0,
-                        bPreserveEndG1=bPreserveEndG1,
+                rc = spb_NurbsCrv_fitByTranslatingControlPts.fitCurve(
+                        nc_Out,
+                        rgCurve0,
+                        bPreserveEndTans=bPreserveEndG1,
                         bDebug=bDebug)
                 if rc is not None:
                     nc_Out.Dispose()
                     nc_Out = rc
 
 
-            rc = xCurve_deviation.isMaxClosestDistBtwn2CrvsWithinTol(
+            rc = spb_Crv_deviation.isMaxClosestDistBtwn2CrvsWithinTol(
                 nc_In,
                 nc_Out,
                 tolerance=fDevTol)

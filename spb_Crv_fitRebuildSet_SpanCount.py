@@ -4,12 +4,7 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-190417: This script started as a split from another.
-191019-200121: Import-related updates.
-200210: Bug fix.  Import-related update.
-210316: Bug fix for BrepEdge support.
-220328: Import-related update.
-221221-22: Import-related update.  Removed an option.  Refactored.
+221221-22: Created, starting with another script.
 """
 
 import Rhino
@@ -18,8 +13,6 @@ import Rhino.Geometry as rg
 import Rhino.Input as ri
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
-
-import spb_Crv_fitRebuild
 
 
 class Opts:
@@ -44,12 +37,12 @@ class Opts:
 
     key = 'iDegree'; keys.append(key)
     values[key] = 3
-    riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=1)
+    riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=2)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iMaxCpCt'; keys.append(key)
-    values[key] = 40
-    riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=2)
+    key = 'iPowerOf2ForMaxKnotSpanCt'; keys.append(key)
+    values[key] = 6
+    riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bReplace'; keys.append(key)
@@ -154,11 +147,6 @@ def getInput():
 
     def addOption(key): idxs_Opts[key] = Opts.addOption(go, key)
 
-    s  = "For MaxCpCt, \"0\" will use the curve's current control point count."
-    s += "  Other values are the absolute maximum to allow."
-    print(s)
-
-
     while True:
         go.ClearCommandOptions()
 
@@ -167,7 +155,7 @@ def getInput():
         addOption('fDevTol')
         addOption('bPreserveEndG1')
         addOption('iDegree')
-        addOption('iMaxCpCt')
+        addOption('iPowerOf2ForMaxKnotSpanCt')
         addOption('bReplace')
         addOption('bEcho')
         addOption('bDebug')
@@ -203,13 +191,45 @@ def getInput():
                 break
 
 
-def processCurves(rgCrvs_In, **kwargs):#fDevTol=None, iDegree=None, bPreserveEndG1=None, iMaxCpCt=None, bReplace=None, bEcho=None, bDebug=None):
+def getMaximumDeviation(rgCrvA, rgCrvB):
+    rc = rg.Curve.GetDistancesBetweenCurves(
+            rgCrvA,
+            rgCrvB,
+            tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+    if rc[0]:
+        return rc[1]
+
+
+def rebuildFit(rgCrv_In, spanCount, degree, preserveTangents, tolerance):
+    """
+    Returns on success:
+        rg.NurbsCurve,
+        fDeviation
+    Returns on fail:
+        None
+    """
+
+    pointCount = degree + spanCount
+
+    nc_Res = rgCrv_In.Rebuild(pointCount, degree, preserveTangents)
+
+    if nc_Res is None: return
+
+    dev = getMaximumDeviation(nc_Res, rgCrv_In)
+    if dev is None or dev > tolerance:
+        nc_Res.Dispose()
+        return
+
+    return nc_Res, dev
+
+
+def processCurves(rgCrvs_In, **kwargs):
     """
     rgCrvs_In = rg.Curve
     fDevTol
     iDegree
     bPreserv
-    iMaxCpCt
+    iPowerOf2ForMaxKnotSpanCt
     bEcho
     bDebug
     """
@@ -219,75 +239,76 @@ def processCurves(rgCrvs_In, **kwargs):#fDevTol=None, iDegree=None, bPreserveEnd
     fDevTol = getOpt('fDevTol')
     bPreserveEndG1 = getOpt('bPreserveEndG1')
     iDegree = getOpt('iDegree')
-    iMaxCpCt = getOpt('iMaxCpCt')
+    iPowerOf2ForMaxKnotSpanCt = getOpt('iPowerOf2ForMaxKnotSpanCt')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
 
-    ncs1 = []
-    devs1 = []
+    ncs_Out = []
+    devs_Out = []
+
+
+    iPossibleKnotCts = [2**p for p in range(iPowerOf2ForMaxKnotSpanCt+1)]
+
 
     for i, nc0 in enumerate(rgCrvs_In):
-        nc1, dev1, sLog = spb_Crv_fitRebuild.rebuildCurve(
-                rgCurve0=nc0,
-                fDevTol=fDevTol,
-                iDegree=iDegree,
-                bPreserveEndG1=bPreserveEndG1,
-                bFurtherTranslateCps=False,
-                iMinCpCt=None,
-                iMaxCpCt=iMaxCpCt,
-                bDebug=bDebug,
-        )
-        if nc1 is None:
-            if bEcho:
-                print("Dev:{}  Log:{} for Curve[{}]".format(
-                    dev1, sLog, i))
+
+        if isinstance(nc0, rg.NurbsCurve):
+            if nc0.SpanCount == 1:
+                ncs_Out.append(nc0)
+                devs_Out.append(0.0)
+                continue # to next curve.
+
+        # Try single knot span count.
+        rc = rebuildFit(nc0, 1, iDegree, bPreserveEndG1, fDevTol)
+        if rc is not None:
+            nc_Res, dev = rc
+            ncs_Out.append(nc_Res)
+            devs_Out.append(dev)
+            continue # to next curve.
+
+        # Try maximum knot span counts.  Failure results in failure for all.
+        rc = rebuildFit(nc0, iPossibleKnotCts[-1], iDegree, bPreserveEndG1, fDevTol)
+        if rc is None:
+            print("Need more than {} knot spans for curve[{}].".format(
+                iPossibleKnotCts[-1], i))
             return
-        
-        ncs1.append(nc1)
-        devs1.append(dev1)
-    
-    iMax_cpCt_ncs1 = max([nc1.Points.Count for nc1 in ncs1])
-    if iMax_cpCt_ncs1 > iMaxCpCt:
-        s  = "Required control point count to create all curves within tolerance:"
-        s += " {}".format(iMax_cpCt_ncs1)
-        for c in ncs1: c.Dispose()
-        return
 
-    if min([nc1.Points.Count for nc1 in ncs1]) == iMax_cpCt_ncs1:
-        # NurbsCurve are already at same control point count.
-        ncs2 = [nc1.DuplicateCurve() for nc1 in ncs1]
-        devs2 = devs1[:]
-    else:
-        pointCount = iMax_cpCt_ncs1
-        while pointCount <= iMaxCpCt:
+        nc_Res, dev = rc
+
+
+        # Binary search
+        nc_Hi = nc_Res
+        dev_Hi = dev
+
+        # Po2 == Power of 2
+
+        iPo2_SpanCt_Lo = 0
+        iPo2_SpanCt_Hi = iPowerOf2ForMaxKnotSpanCt
+
+        while True:
             sc.escape_test()
-            ncs2 = []
-            devs2 = []
-            for nc0 in rgCrvs_In:
-                nc2 = nc0.Rebuild(
-                        pointCount=pointCount,
-                        degree=iDegree,
-                        preserveTangents=bPreserveEndG1)
 
-                if nc2 is None:
-                    raise ValueError("NurbsCurve.Rebuild returned None.")
-            
-                ncs2.append(nc2)
+            iPo2_SpanCt_Md = (iPo2_SpanCt_Hi + iPo2_SpanCt_Lo) // 2
 
-                rc = rg.Curve.GetDistancesBetweenCurves(nc0, nc2, 0.1*fDevTol)
-                if rc[0]:
-                    dev2 = rc[1]
-                    if dev2 > fDevTol:
-                        for c in ncs2: c.Dispose()
-                        pointCount += 1
-                        break # for loop back to while to try to Rebuild all curves to new pointCount.
-                    devs2.append(dev2)
-            else:
-                # All curves were rebuilt within fDevTol.
-                break
+            if iPo2_SpanCt_Md in (iPo2_SpanCt_Lo, iPo2_SpanCt_Hi):
+                ncs_Out.append(nc_Hi)
+                devs_Out.append(dev_Hi)
+                break # out of while loop.
 
-    return ncs2, devs2
+            rc = rebuildFit(nc0, 2**iPo2_SpanCt_Md, iDegree, bPreserveEndG1, fDevTol)
+            if rc is None:
+                iPo2_SpanCt_Lo = iPo2_SpanCt_Md
+                continue
+
+            nc_Res, dev = rc
+
+            nc_Hi.Dispose()
+            nc_Hi = nc_Res
+            dev_Hi = dev
+            iPo2_SpanCt_Hi = iPo2_SpanCt_Md
+
+    return ncs_Out, devs_Out
 
 
 def processCurveObjects(curvesAndEdges0, **kwargs):
@@ -299,7 +320,7 @@ def processCurveObjects(curvesAndEdges0, **kwargs):
     fDevTol = getOpt('fDevTol')
     bPreserveEndG1 = getOpt('bPreserveEndG1')
     iDegree = getOpt('iDegree')
-    iMaxCpCt = getOpt('iMaxCpCt')
+    iPowerOf2ForMaxKnotSpanCt = getOpt('iPowerOf2ForMaxKnotSpanCt')
     bReplace = getOpt('bReplace')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
@@ -329,7 +350,7 @@ def processCurveObjects(curvesAndEdges0, **kwargs):
         fDevTol=fDevTol,
         bPreserveEndG1=bPreserveEndG1,
         iDegree=iDegree,
-        iMaxCpCt=iMaxCpCt,
+        iPowerOf2ForMaxKnotSpanCt=iPowerOf2ForMaxKnotSpanCt,
         bEcho=bEcho,
         bDebug=bDebug,
         )
@@ -384,7 +405,7 @@ def main():
     fDevTol = Opts.values['fDevTol']
     bPreserveEndG1 = Opts.values['bPreserveEndG1']
     iDegree = Opts.values['iDegree']
-    iMaxCpCt = Opts.values['iMaxCpCt']
+    iPowerOf2ForMaxKnotSpanCt = Opts.values['iPowerOf2ForMaxKnotSpanCt']
     bReplace = Opts.values['bReplace']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -398,7 +419,7 @@ def main():
         fDevTol=fDevTol,
         bPreserveEndG1=bPreserveEndG1,
         iDegree=iDegree,
-        iMaxCpCt=iMaxCpCt,
+        iPowerOf2ForMaxKnotSpanCt=iPowerOf2ForMaxKnotSpanCt,
         bReplace=bReplace,
         bEcho=bEcho,
         bDebug=bDebug,

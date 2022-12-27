@@ -1,13 +1,16 @@
 """
-
+NurbsSurfaceKnotList.RemoveMultipleKnots appears to not remove multiplicities
+from full (== degree) multiplicities.
+_RemoveMultiKnot does the same (at least up through version 7.25).
 """
 
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-221224: WIP: Created, starting with another script.
+221224,26: WIP: Created, starting with another script.
 
-TODO: Add support for periodic surfaces.
+TODO: Filter out conical cross-section directions.
+      Add support for periodic surfaces.
 """
 
 
@@ -15,13 +18,14 @@ import Rhino
 import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
+import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from System import Guid
 from System.Collections.Generic import List
-from System.Diagnostics import Stopwatch
 
 import xBrep_getDistancesBetween2
+import xBrepFace
 import xBrepObject
 
 
@@ -34,6 +38,12 @@ class Opts:
     listValues = {}
     stickyKeys = {}
 
+
+    key = 'bAllowBrepSelection'; keys.append(key)
+    values[key] = False
+    names[key] = 'SelectionMode'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'FacesOnly', 'FacesAndBreps')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bLimitDev'; keys.append(key)
     values[key] = True
@@ -137,6 +147,51 @@ class Opts:
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
+def _sortBrepsAndFaces(objrefs):
+    """
+    Parameters:
+        list(objrefs)
+    Returns:
+        list(Brep GUIDs)
+        list(lists(integers of Face indices) per brep)
+    """
+        
+    gBs = []
+    rdBs = []
+    idxFs_perB = []
+    
+    for o in objrefs:
+        gB = o.ObjectId
+        rdB = o.Object()
+        rgB = o.Brep()
+
+        if not rgB.IsValid:
+            print("Brep {} is invalid.  Fix first.".format(gB))
+            continue
+
+        idx_CompIdx = o.GeometryComponentIndex.Index
+        if idx_CompIdx == -1:
+            if gB in gBs:
+                idxFs_perB[gBs.index(gB)] = range(rgB.Faces.Count)
+            else:
+                gBs.append(gB)
+                rdBs.append(rdB)
+                idxFs_perB.append(range(rgB.Faces.Count))
+        else:
+            rgFace_Brep0 = o.Face()
+            if gB in gBs:
+                if rgFace_Brep0 in idxFs_perB[gBs.index(gB)]:
+                    continue
+                else:
+                    idxFs_perB[gBs.index(gB)].append(rgFace_Brep0.FaceIndex)
+            else:
+                gBs.append(gB)
+                rdBs.append(rdB)
+                idxFs_perB.append([rgFace_Brep0.FaceIndex])
+
+    return rdBs, idxFs_perB
+
+
 def getInput():
     """
     Get BrepFaces with optional input.
@@ -146,11 +201,13 @@ def getInput():
 
     go.SetCommandPrompt("Select faces")
 
-    go.GeometryFilter = rd.ObjectType.Surface
+    go.SetCommandPromptDefault("All normal breps when none are selected")
+
+    go.AcceptNothing(True)
 
     go.AlreadySelectedObjectSelect = True
     go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
-    go.SubObjectSelect = False
+    #go.SubObjectSelect = False
     go.EnableClearObjectsOnEntry(False) # Keep objects in go on repeats of While loop.
     go.EnableUnselectObjectsOnExit(False)
 
@@ -161,12 +218,20 @@ def getInput():
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
     while True:
+        if Opts.values['bAllowBrepSelection']:
+            go.SetCommandPrompt("Select breps and/or faces")
+            go.GeometryFilter = rd.ObjectType.Brep | rd.ObjectType.Curve
+        else:
+            go.SetCommandPrompt("Select faces")
+            go.GeometryFilter = rd.ObjectType.Surface
+
         go.ClearCommandOptions()
 
         idxs_Opt.clear()
 
         go.AcceptNumber(Opts.values['bLimitDev'], acceptZero=Opts.values['bLimitDev'])
 
+        addOption('bAllowBrepSelection')
         addOption('bLimitDev')
         if Opts.values['bLimitDev']:
             addOption('fDevTol')
@@ -194,7 +259,25 @@ def getInput():
         if res == ri.GetResult.Object:
             objrefs = go.Objects()
             go.Dispose()
-            return objrefs
+            return _sortBrepsAndFaces(objrefs)
+
+        if res == ri.GetResult.Nothing:
+            oes = rd.ObjectEnumeratorSettings()
+            oes.NormalObjects = True
+            oes.LockedObjects = False
+            oes.IncludeLights = False
+            oes.IncludeGrips = False
+            oes.ObjectTypeFilter = rd.ObjectType.Brep
+
+            rdBs = list(sc.doc.Objects.GetObjectList(oes))
+            go.Dispose()
+            if len(rdBs) == 0: return
+
+            return (
+                rdBs,
+                [[iF for iF in range(rdBs[iB].BrepGeometry.Faces.Count)]
+                for iB in range(len(rdBs))]
+                )
 
         if res == ri.GetResult.Number:
             if Opts.values['bLimitDev']:
@@ -213,6 +296,22 @@ def getInput():
                 break
 
 
+def knotMultiplicityList(knots):
+    """Returns a list."""
+    i = 0
+    iMulties = []
+    fKnotTs_Unique = []
+    while i < knots.Count:
+        sc.escape_test()
+        knot = knots[i]
+        fKnotTs_Unique.append(knot)
+        iMulti = knots.KnotMultiplicity(index=i)
+        iMulties.append(iMulti)
+        #print("{} at {:.4f}".format(iMulti, knot),
+        i += iMulti
+    return iMulties
+
+
 def multiplicityRangeOfInteriorKnots(ns, iDir):
     degree = ns.Degree(iDir)
     knots = ns.KnotsV if iDir else ns.KnotsU
@@ -226,30 +325,15 @@ def multiplicityRangeOfInteriorKnots(ns, iDir):
     return ms
 
 
-def someInteriorKnotsHaveMultiplicityAbove1(ns):
-    for iDir in (0,1):
-        degree = ns.Degree(iDir)
-        knots = ns.KnotsV if iDir else ns.KnotsU
-
-        for iK in range(degree, knots.Count-degree):
-            if knots.KnotMultiplicity(iK) > 1:
-                return True
-
-    return False
-
-
-def processSrf(ns_In, fDevTol, **kwargs):
+def removeMultipleKnots(ns_In, bDebug=False):
+    """
+    This is a replacement for NurbsSurfaceKnotList.RemoveMultipleKnots,
+    also reducing full (== degree) multiplicities to 1.
+    """
 
     if Rhino.RhinoApp.ExeVersion < 6:
         print("This script only works in Rhino V6 and above.")
         return
-
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
-
 
     if not isinstance(ns_In, rg.NurbsSurface):
         if bDebug: print("{} skipped.".format(ns_In.GetType().Name))
@@ -259,41 +343,93 @@ def processSrf(ns_In, fDevTol, **kwargs):
         if bDebug: print("No interior knots.")
         return
 
-    degrees = ns_In.Degree(0), ns_In.Degree(1)
     knots_In = ns_In.KnotsU, ns_In.KnotsV
 
-    ms = (
-        multiplicityRangeOfInteriorKnots(ns_In, 0),
-        multiplicityRangeOfInteriorKnots(ns_In, 1),
-        )
+    ms_U = knotMultiplicityList(ns_In.KnotsU)
+    ms_V = knotMultiplicityList(ns_In.KnotsV)
 
-    if max(ms[0]) == 1 and max(ms[1]) == 1:
+    if (
+        (len(ms_U[1:-1]) == 0 or max(ms_U[1:-1]) == 1) and
+        (len(ms_V[1:-1]) == 0 or max(ms_V[1:-1]) == 1)
+        ):
         if bDebug: print("No interior knots with multiplicity above 1.")
         return
 
-
-    if bDebug: print("In removeKnots function:")
-
-
-    # Duplicate NurbsSurface since RemoveKnots modifies the input surface.
     ns_Out = ns_In.Duplicate()
-    
+
     knots_Out = ns_Out.KnotsU, ns_Out.KnotsV
+
+    # https://developer.rhino3d.com/api/RhinoCommon/html/M_Rhino_Geometry_Collections_NurbsSurfaceKnotList_RemoveKnots.htm
+    # Remove knots from the knot vector and adjusts the remaining control points to maintain surface position as closely as possible.
+    # The knots from Knots[index0] through Knots[index1 - 1] will be removed.
+
+    for iDir in (0,1):
+        knots = knots_Out[iDir]
+        degree = ns_Out.Degree(iDir)
+        iK = knots.Count - degree - 1
+        if bDebug: sEval = 'iK'; print("{}: {}".format(sEval, eval(sEval)))
+        while iK > degree:
+            sc.escape_test()
+            m = knots.KnotMultiplicity(iK)
+            if bDebug: sEval = 'm'; print("{}: {}".format(sEval, eval(sEval)))
+            index0 = iK - m + 1
+            index1 = iK
+            if bDebug: sEval = 'index0'; print("{}: {}".format(sEval, eval(sEval)))
+            if bDebug: sEval = 'index1'; print("{}: {}".format(sEval, eval(sEval)))
+            knots_Out[iDir].RemoveKnots(index0, index1)
+
+            if bDebug: sEval = 'ns_Out.KnotsU.Count'; print("{}: {}".format(sEval, eval(sEval)))
+            if bDebug: sEval = 'ns_Out.KnotsV.Count'; print("{}: {}".format(sEval, eval(sEval)))
+            iK -= m
+            if bDebug: sEval = 'iK'; print("{}: {}".format(sEval, eval(sEval)))
+
+    return ns_Out
+
+
+def createSurface(ns_In, fDevTol, bDebug=False):
+    """
+    Returns on success:
+        rg.NurbsSurface
+        float(surface deviation)
+        None
+    Returns on deviation fail:
+        None
+        float(surface deviation needed)
+        None
+    Returns on other fails:
+        None
+        None
+        str(Reason of failure)
+    """
+
+    if Rhino.RhinoApp.ExeVersion < 6:
+        raise Exception("This script only works in Rhino V6 and above.")
+
+
+    if not isinstance(ns_In, rg.NurbsSurface):
+        return None, None, "{} skipped.".format(ns_In.GetType().Name)
+
+    if ns_In.SpanCount(0) == 1 and ns_In.SpanCount(1) == 1:
+        return None, None, "NurbsSurface has no interior knots."
+
+    if bDebug:
+        sEval = 'ns_In.KnotsU.Count'; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = 'ns_In.KnotsV.Count'; print("{}: {}".format(sEval, eval(sEval)))
+
+    ms_U = knotMultiplicityList(ns_In.KnotsU)
+    ms_V = knotMultiplicityList(ns_In.KnotsV)
+
+    if (
+        (len(ms_U[1:-1]) == 0 or max(ms_U[1:-1]) == 1) and
+        (len(ms_V[1:-1]) == 0 or max(ms_V[1:-1]) == 1)
+        ):
+        return None, None, "No interior knots with multiplicity above 1."
+
+
+    ns_Out = removeMultipleKnots(ns_In, bDebug)
 
 
     rgMeshParams = rg.MeshingParameters.QualityRenderMesh
-
-
-    # NurbsCurveKnotList.RemoveMultipleKnots' minimumMultiplicity and
-    # maximumMultiplicity are, respectively, the
-    # minimum and maximum allowed (not to remove) knot multiplicities.
-
-    for iDir in (0,1):
-        knots_Out[iDir].RemoveMultipleKnots(
-            minimumMultiplicity=0,
-            maximumMultiplicity=degrees[iDir]+1,
-            tolerance=Rhino.RhinoMath.UnsetValue)
-
 
     rc = xBrep_getDistancesBetween2.getDistancesBetweenBreps(
         ns_In,
@@ -304,382 +440,6 @@ def processSrf(ns_In, fDevTol, **kwargs):
     if rc[0]:
         rgSrf1_LastGood = ns_Out.Duplicate()
         fDev = rc[1]
-
-    if fDevTol is None or (fDev <= fDevTol):
-
-        iCt_KnotsRemoved = (
-            knots_In[0].Count - knots_Out[0].Count +
-            knots_In[1].Count - knots_Out[1].Count)
-
-        return ns_Out, iCt_KnotsRemoved, fDev
-
-    ns_Out.Dispose()
-
-
-    print(ms[0])
-    print(ms[1])
-
-    for iDir in (0,1):
-        if len(ms[(iDir+1)%2]) == 0:
-            for minimumMultiplicity in range(max(ms[iDir])-1, 0, -1):
-                print(minimumMultiplicity)
-
-    return
-
-    for minimumMultiplicity_U in range(1, degrees[0]-1):
-        for minimumMultiplicity_V in range(1, degrees[1]-1):
-            pass
-
-
-    ns_Out = ns_In.Duplicate()
-
-
-
-
-
-
-    # If surface is within deviation tolerance,
-    # make a backup of the new surface for the next iteration
-    # and continue.
-    # Otherwise, revert rgSrf1 to rgSrf1_LastGood.
-
-    # Duplicate rgSrf1 in case removing a knot creates an unacceptable deviation, etc.
-    rgSrf1_LastGood = ns_Out.Duplicate()
-    fDev_LastGood = None
-    
-    for iDir in 0,1:
-        sc.escape_test()
-        
-        idxKnot1 = degrees[iDir]
-        
-        # Iterate through each interior knot of original NurbsSurface.
-        for idxKnot0 in xrange(degrees[iDir], knots_In[iDir].Count-degrees[iDir]-1):
-            sc.escape_test()
-            
-            if bDebug:
-                s = ""
-                sEval = 'iDir'; s += "{}:{}".format(sEval, eval(sEval))
-                sEval = 'knots0[iDir].Count'; s += "  {}:{}".format(sEval, eval(sEval))
-                sEval = 'idxKnot0'; s += "  {}:{}".format(sEval, eval(sEval))
-                sEval = 'idxKnot1'; s += "  {}:{}".format(sEval, eval(sEval))
-                sEval = 'knots1[iDir].Count'; s += "  {}:{}".format(sEval, eval(sEval))
-                print(s)
-            
-            knot0Multiplicity = knots_In[iDir].KnotMultiplicity(idxKnot0)
-
-            if (
-                knot0Multiplicity >= nKnotMulti_Min and
-                knot0Multiplicity <= nKnotMulti_Max
-            ):
-                if knots_Out[iDir].RemoveKnots(index0 = idxKnot1,
-                                      index1 = idxKnot1 + 1):
-                    rc = xBrep_getDistancesBetween2.getDistancesBetweenBreps(ns_In, ns_Out,
-                            rgMeshParams, bCalcBrepIntersection=False)
-
-                    # If surface is within deviation tolerance,
-                    # make a backup of the new surface for the next iteration
-                    # and continue.
-                    # Otherwise, revert rgSrf1 to rgSrf1_LastGood.
-                    if rc[0] and rc[1] <= fDevTol:
-                        rgSrf1_LastGood = ns_Out.Duplicate()
-                        fDev_LastGood = rc[1]
-                        # Notice that since the knot was removed,
-                        # the next knot index will be the same as this iteration.
-        #                    if bDebug:
-        #                        sEval = 'idxKnot0'; print(sEval + ':', eval(sEval)
-                        continue
-                    else:
-                        ns_Out = rgSrf1_LastGood.Duplicate()
-                        knots_Out = ns_Out.KnotsU, ns_Out.KnotsV
-                        idxKnot1 += 1 # Advance knot index to try next knot.
-                
-                else:
-                    print("knots1[iDir].RemoveKnots fail!")
-                    return
-    
-    if bDebug:
-        print("Final")
-        for iDir in 0,1:
-            sEval = 'iDir'; s = "{}:{}".format(sEval, eval(sEval))
-            sEval = 'knots0[iDir].Count'; s += "  {}:{}".format(sEval, eval(sEval))
-            sEval = 'idxKnot0'; s += "  {}:{}".format(sEval, eval(sEval))
-            sEval = 'idxKnot1'; s += "  {}:{}".format(sEval, eval(sEval))
-            sEval = 'knots1[iDir].Count'; s += "  {}:{}".format(sEval, eval(sEval))
-            print(s)
-    
-    iCt_KnotsRemoved = (
-        knots_In[0].Count - knots_Out[0].Count +
-        knots_In[1].Count - knots_Out[1].Count)
-
-
-
-    if iCt_KnotsRemoved > 0:
-        return ns_Out, iCt_KnotsRemoved, fDev_LastGood
-
-
-def processFace(rgFace_In, fDevTol, **kwargs):
-    """
-    Parameters:
-        rgFace_In
-        fDevTol
-        bDebug
-    Returns:
-        (rg.Brep (1-face), float(deviation)), None
-        (None, float(deviation needed)), sLog
-        None, None
-    """
-    
-    if Rhino.RhinoApp.ExeVersion < 6:
-        print("This script only works in Rhino V6 and above.")
-        return
-
-
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
-
-
-    rgSrf_In = rgFace_In.UnderlyingSurface()
-
-
-    rgNurbsSrf0 = rgSrf_In
-
-
-    rc = processSrf(
-        rgNurbsSrf0,
-        fDevTol,
-        bEcho=bEcho,
-        bDebug=bDebug,
-        )
-    if rc is None or rc[0] is None:
-        return rc
-
-    rgNurbsSrf_Converted, iCt_KnotsRemoved, srf_dev = rc
-
-    # Success in creating NurbsSurface.  Now, create correctly trimmed brep.
-    
-    rgBrep0_1Face = rgFace_In.DuplicateFace(duplicateMeshes=False)
-    
-    rgBrep0_1Face.Faces[0].RebuildEdges(0.1*sc.doc.ModelAbsoluteTolerance, True, True)
-    #rgBrep0_1Face.Faces.ShrinkFaces()
-
-    if rgBrep0_1Face.IsSurface:
-        rgBrep0_1Face.Dispose()
-        rgBrep1_1Face = rgNurbsSrf_Converted.ToBrep()
-        rgNurbsSrf_Converted.Dispose()
-        if not rgBrep1_1Face.IsValid:
-            rgBrep1_1Face.Dispose()
-            return None, "Invalid brep geometry after ToBrep."
-        return rgBrep1_1Face, srf_dev, None
-    
-    # Test areas before trimming.
-    fArea_Trimmed = rgBrep0_1Face.GetArea()
-    if fArea_Trimmed:
-        rgBrep_Untrimmed = rgBrep0_1Face.Faces[0].UnderlyingSurface().ToBrep()
-        fArea_Untrimmed = rgBrep_Untrimmed.GetArea()
-        rgBrep_Untrimmed.Dispose()
-        if fArea_Untrimmed:
-            if abs(fArea_Trimmed - fArea_Untrimmed) <= sc.doc.ModelAbsoluteTolerance:
-                rgBrep1_1Face = rgNurbsSrf_Converted.ToBrep()
-                rgNurbsSrf_Converted.Dispose()
-                if not rgBrep1_1Face.IsValid:
-                    rgBrep1_1Face.Dispose()
-                    return None, "Invalid brep geometry after ToBrep."
-                return rgBrep1_1Face, srf_dev, None
-
-    rgBrep1_1Face = xBrepFace.retrimFace(
-            rgBrep0_1Face.Faces[0],
-            rgSrf_Replacement=rgNurbsSrf_Converted,
-            fSplitTol=1.0*sc.doc.ModelAbsoluteTolerance if fDevTol is None else fDevTol,
-            bDebug=bDebug
-    )
-    rgNurbsSrf_Converted.Dispose()
-    rgBrep0_1Face.Dispose()
-
-    if rgBrep1_1Face is None:
-        return None, "xBrepFace.createMonofaceBrep returned None."
-
-    if not rgBrep1_1Face.IsValid:
-        rgBrep1_1Face.Dispose()
-        return None, "An invalid brep was skipped."
-
-    return rgBrep1_1Face, srf_dev, None
-
-
-def processBrep(rgBrep_In, idxs_rgFaces, fDevTol, **kwargs):
-    """
-    Returns:
-        (rgBreps_1F_Mod, idxs_rgFaces_Rebuilt, srf_devs), sLogs
-        None
-    """
-    
-    if Rhino.RhinoApp.ExeVersion < 6:
-        print("This script only works in Rhino V6 and above.")
-        return
-
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
-
-
-    rgBreps_1F_Mod = []
-    idxs_rgFaces_Rebuilt = []
-    srf_devs = []
-    srf_devs_Needed = []
-    
-    rgB_WIP = rgBrep_In.DuplicateBrep()
-    
-    sLogs = []
-    
-    sCmdPrompt0 = Rhino.RhinoApp.CommandPrompt
-    
-    idxs_AtTenths = [int(round(0.1*i*len(idxs_rgFaces),0)) for i in range(10)]
-    
-    for iF, idx_rgFace in enumerate(idxs_rgFaces):
-        if sc.escape_test(False):
-            print("Searching interrupted by user.")
-            return
-        
-        if iF in idxs_AtTenths:
-            s = sCmdPrompt0 + ", {:d}% of {} faces in current brep ...".format(
-                int(100.0 * (iF+1) / len(idxs_rgFaces)), len(idxs_rgFaces))
-            
-            if bDebug:
-                print(s)
-            else:
-                Rhino.RhinoApp.SetCommandPrompt(s)
-        
-        rgFace_In = rgB_WIP.Faces[idx_rgFace]
-
-
-        rc = processFace(
-            rgFace_In,
-            fDevTol=fDevTol,
-            bDebug=bDebug
-            )
-
-        if rc is None: return
-
-        rgBrep_1F_Converted, srf_dev, sLog = rc
-
-        if rgBrep_1F_Converted is None:
-            if srf_dev is not None:
-                srf_devs_Needed.append(srf_dev)
-            if sLog is not None:
-                sLogs.append(sLog)
-            continue
-        
-        rgBreps_1F_Mod.append(rgBrep_1F_Converted)
-        idxs_rgFaces_Rebuilt.append(idx_rgFace)
-        srf_devs.append(srf_dev)
-    
-    rgB_WIP.Dispose()
-    
-    if srf_devs_Needed:
-        s  = "Need tolerances of {:.2e} through {:.2e}".format(
-                min(srf_devs_Needed), max(srf_devs_Needed))
-        s += " to convert remaining convertible surfaces."
-        sLogs.append(s)
-    
-    return (rgBreps_1F_Mod, idxs_rgFaces_Rebuilt, srf_devs), sLogs
-
-
-def processBrepObjects(rhBreps, idx_Faces=None, fDevTol=None, **kwargs):
-    """
-    Parameters:
-        rhBreps: Objrefs of brep with face components, GUIDs, rd.Breps.
-    """
-    
-    if Rhino.RhinoApp.ExeVersion < 6:
-        print("This script only works in Rhino V6 and above.")
-        return
-
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    bReplace = getOpt('bReplace')
-    bExtract = getOpt('bExtract')
-    bSrfOnFail = getOpt('bSrfOnFail')
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
-
-
-    def getRhinoObject(rhObj):
-        """
-        'Deleted objects cannot be found by id.'
-        (https://developer.rhino3d.com/api/RhinoCommon/html/M_Rhino_DocObjects_Tables_ObjectTable_FindId.htm)
-        """
-        rdObj = None
-        if isinstance(rhObj, rd.RhinoObject):
-            rdObj = rhObj
-        elif isinstance(rhObj, rd.ObjRef):
-            rdObj = rhObj.Object()
-        elif isinstance(rhObj, Guid):
-            rdObj = sc.doc.Objects.FindId(rhObj) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(rhObj)
-        return rdObj
-
-
-    def getBrepObject(rhObj):
-        rdObj = getRhinoObject(rhObj)
-        if rdObj and (rdObj.ObjectType == rd.ObjectType.Brep):
-            return rdObj
-
-
-    def getSortedBrepIdsAndFaces(objrefs):
-        """
-        Parameters:
-            list(objrefs)
-        Returns:
-            list(Brep GUIDs)
-            list(lists(integers of Face indices) per brep)
-        """
-        
-        gBreps0 = []
-        idxs_Faces_perBrep = []
-    
-        for o in objrefs:
-            gBrep0 = o.ObjectId
-            rdBrep_In = o.Object()
-            rgBrep_In = o.Brep()
-        
-            if not rgBrep_In.IsValid:
-                print("Brep {} is invalid.  Fix first.".format(gBrep0))
-                rgBrep_In.Dispose()
-                continue
-        
-            idx_CompIdx = o.GeometryComponentIndex.Index
-            if idx_CompIdx == -1:
-                if gBrep0 in gBreps0:
-                    idxs_Faces_perBrep[gBreps0.index(gBrep0)] = range(rgBrep_In.Faces.Count)
-                else:
-                    gBreps0.append(gBrep0)
-                    idxs_Faces_perBrep.append(range(rgBrep_In.Faces.Count))
-            else:
-                rgFace_Brep0 = o.Face()
-                if gBrep0 in gBreps0:
-                    if rgFace_Brep0 in idxs_Faces_perBrep[gBreps0.index(gBrep0)]:
-                        continue
-                    else:
-                        idxs_Faces_perBrep[gBreps0.index(gBrep0)].append(rgFace_Brep0.FaceIndex)
-                else:
-                    gBreps0.append(gBrep0)
-                    idxs_Faces_perBrep.append([rgFace_Brep0.FaceIndex])
-
-        return gBreps0, idxs_Faces_perBrep
-
-
-    def isKnotVectorUniform(knots):
-        return (
-            (knots.KnotStyle == rg.KnotStyle.Uniform) or
-            (knots.KnotStyle == rg.KnotStyle.QuasiUniform) or
-            (
-                (knots.KnotStyle == rg.KnotStyle.PiecewiseBezier) and
-                knots.Count == knots.KnotMultiplicity(0) * 2)
-            )
 
 
     def getNurbsSurfaceChangeDescription(rgNurbsSrf1, rgNurbsSrf2):
@@ -729,117 +489,292 @@ def processBrepObjects(rhBreps, idx_Faces=None, fDevTol=None, **kwargs):
         return s
 
 
-    gBreps0, idxs_rgFace_PerBrep = getSortedBrepIdsAndFaces(rhBreps)
-    if not gBreps0: return
+    if fDevTol is None or (fDev <= fDevTol):
 
-    gBs1_perB0 = []
-    srf_devs_All = []
-    sLogs_All = []
-    
-    len_gBreps0 = len(gBreps0)
-    idxs_AtTenths = [int(round(0.1*i*len_gBreps0,0)) for i in range(10)]
-    
-    sCmdPrompt0 = Rhino.RhinoApp.CommandPrompt
-    
-    if len(rhBreps) == 1:
-        s = sCmdPrompt0 + "Brep"
-        Rhino.RhinoApp.SetCommandPrompt(s)
-    
-    for iB, (gBrep0, idxFaces) in enumerate(zip(gBreps0, idxs_rgFace_PerBrep)):
-        rdBrep_In = getBrepObject(gBrep0)
-        rgBrep_In = rdBrep_In.Geometry
+        if bDebug:
+            rgBrep_1F_Mod = rgBs_1F_Res[0]
+            s  = getNurbsSurfaceChangeDescription(ns_In, ns_Out)
+            s += "  Deviation: {0:.2e}".format(fDev)
+            print(s)
 
-        if len(rhBreps) > 1:
-            if iB in idxs_AtTenths:
-                s = sCmdPrompt0 + "  At {:d}% of {} breps".format(
-                    int(100.0 * (iB+1) / len_gBreps0), len_gBreps0)
-        
+        return ns_Out, fDev, None
+
+    ns_Out.Dispose()
+
+    return None, fDev, None
+
+
+def addBrepOfSrf(rgSrf, bDebug=False):
+    gB_Out = sc.doc.Objects.AddSurface(rgSrf)
+    if bDebug:
+        if gB_Out.Guid != gB_Out.Empty:
+            print("Converted underlying surface was added.")
+        else:
+            print("Converted underlying surface could not be added.")
+
+
+def create1FaceBrepWithNewSurface(rgFace_In, **kwargs):
+    """
+    Parameters:
+        rgFace_In
+        fDevTol
+        bSrfOnFail
+        bDebug
+    Returns on success:
+        rg.Brep
+        float(surface deviation)
+        None
+    Returns on deviation fail:
+        None
+        float(surface deviation needed)
+        None
+    Returns on other fails:
+        None
+        None
+        str(Reason of failure)
+    """
+
+    if Rhino.RhinoApp.ExeVersion < 6:
+        raise Exception("This script only works in Rhino V6 and above.")
+
+
+    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
+
+    fDevTol = getOpt('fDevTol')
+    bExtract = getOpt('bExtract')
+    bSrfOnFail = getOpt('bSrfOnFail')
+    bDebug = getOpt('bDebug')
+
+
+    rgSrf_In = rgFace_In.UnderlyingSurface()
+
+    if not isinstance(rgSrf_In, rg.NurbsSurface):
+        return None, None, "Skipped {}.".format(rgSrf_In.GetType().Name)
+
+
+    rc = createSurface(
+        rgSrf_In,
+        fDevTol,
+        bDebug=bDebug,
+        )
+    if rc[0] is None: return rc
+
+    ns_Res, fDev, sLog = rc
+
+    # Success in creating NurbsSurface.  Now, create correctly trimmed brep.
+    
+    rgB_1F_In = rgFace_In.DuplicateFace(duplicateMeshes=False)
+
+    rgB_1F_In.Faces[0].RebuildEdges(
+        tolerance=max((1e-6, 0.1*sc.doc.ModelAbsoluteTolerance)),
+        rebuildSharedEdges=True,
+        rebuildVertices=True)
+    #rgBrep0_1Face.Faces.ShrinkFaces()
+
+    if rgB_1F_In.IsSurface:
+        rgB_1F_In.Dispose()
+        rgB_1F_Out = ns_Res.ToBrep()
+        ns_Res.Dispose()
+        if not rgB_1F_Out.IsValid:
+            rgB_1F_Out.Dispose()
+            if bSrfOnFail: addBrepOfSrf(ns_Res, bDebug)
+            return None, None, "Invalid brep geometry after ToBrep."
+        return rgB_1F_Out, fDev, None
+    
+    # Test areas before trimming.
+    fArea_Trimmed = rgB_1F_In.GetArea()
+    if fArea_Trimmed:
+        rgBrep_Untrimmed = rgB_1F_In.Faces[0].UnderlyingSurface().ToBrep()
+        fArea_Untrimmed = rgBrep_Untrimmed.GetArea()
+        rgBrep_Untrimmed.Dispose()
+        if fArea_Untrimmed:
+            if abs(fArea_Trimmed - fArea_Untrimmed) <= sc.doc.ModelAbsoluteTolerance**2:
+                rgB_1F_Out = ns_Res.ToBrep()
+                ns_Res.Dispose()
+                if not rgB_1F_Out.IsValid:
+                    rgB_1F_Out.Dispose()
+                    if bSrfOnFail: addBrepOfSrf(ns_Res, bDebug)
+                    return None, None, "Invalid brep geometry after ToBrep."
+                return rgB_1F_Out, fDev, None
+
+    rgB_1F_Out = xBrepFace.retrimFace(
+            rgB_1F_In.Faces[0],
+            rgSrf_Replacement=ns_Res,
+            fSplitTol=1.0*sc.doc.ModelAbsoluteTolerance if fDevTol is None else fDevTol,
+            bDebug=bDebug
+    )
+    rgB_1F_In.Dispose()
+    ns_Res.Dispose()
+
+    if rgB_1F_Out is None:
+        if bSrfOnFail: addBrepOfSrf(ns_Res, bDebug)
+        return None, None, "xBrepFace.createMonofaceBrep returned None."
+
+    if not rgB_1F_Out.IsValid:
+        rgB_1F_Out.Dispose()
+        if bSrfOnFail: addBrepOfSrf(ns_Res, bDebug)
+        return None, None, "An invalid brep was skipped."
+
+    return rgB_1F_Out, fDev, None
+
+
+def processBrepObject(rhBrep, idxFaces=None, **kwargs):
+    """
+    Parameters:
+        rhBrep: rd.BrepObject or GUID of brep.
+        idxFaces
+        fDevTol
+        bReplace
+        bExtract
+        bSrfOnFail
+        bEcho
+        bDebug
+    """
+
+    if Rhino.RhinoApp.ExeVersion < 6:
+        raise Exception("This script only works in Rhino V6 and above.")
+
+
+    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
+
+    fDevTol = getOpt('fDevTol')
+    bReplace = getOpt('bReplace')
+    bExtract = getOpt('bExtract')
+    bSrfOnFail = getOpt('bSrfOnFail')
+    bEcho = getOpt('bEcho')
+    bDebug = getOpt('bDebug')
+
+
+    def isKnotVectorUniform(knots):
+        return (
+            (knots.KnotStyle == rg.KnotStyle.Uniform) or
+            (knots.KnotStyle == rg.KnotStyle.QuasiUniform) or
+            (
+                (knots.KnotStyle == rg.KnotStyle.PiecewiseBezier) and
+                knots.Count == knots.KnotMultiplicity(0) * 2)
+            )
+
+
+    rgBs_1F_Res = []
+    idxsFs_Success = []
+    fDevs = []
+    fDevs_Needed = []
+    sLogs = []
+
+
+    if isinstance(rhBrep, rd.BrepObject):
+        rdB_In = rhBrep
+    else:
+        rdB_In = rs.coercerhinoobject(rhBrep)
+    rgB_In = rdB_In.BrepGeometry
+
+    sCmdPrompt_In = Rhino.RhinoApp.CommandPrompt
+    
+    idxs_AtTenths = [int(round(0.1*i*len(idxFaces),0)) for i in range(10)]
+    
+    for iF, idx_rgFace in enumerate(idxFaces):
+        if sc.escape_test(False):
+            raise Exception("Searching interrupted by user.")
+
+        if iF in idxs_AtTenths:
+            s = sCmdPrompt_In + ", {:d}% of {} faces in current brep ...".format(
+                int(100.0 * (iF+1) / len(idxFaces)), len(idxFaces))
+            
             if bDebug:
                 print(s)
             else:
                 Rhino.RhinoApp.SetCommandPrompt(s)
 
+        rgFace_In = rgB_In.Faces[idx_rgFace]
 
-        rc = processBrep(
-            rgBrep_In,
-            idxFaces,
+
+        rc = create1FaceBrepWithNewSurface(
+            rgFace_In,
             fDevTol=fDevTol,
-            bDebug=bDebug)
-        if rc is None: return
+            bSrfOnFail=bSrfOnFail,
+            bDebug=bDebug
+            )
 
-        sLogs_All.extend(rc[1])
-        if not rc[0]: continue
+        rgB_1F_Res, fDev, sLog = rc
 
-        rgBreps_1F_Mod_thisBrep, idxsFs_Mod, srf_devs = rc[0]
-        
-        if not rgBreps_1F_Mod_thisBrep:
-            rgBrep_In.Dispose()
+        if rgB_1F_Res is None:
+            if fDev is not None:
+                fDevs_Needed.append(fDev)
+            if sLog is not None:
+                sLogs.append(sLog)
             continue
+
+        rgBs_1F_Res.append(rgB_1F_Res)
+        idxsFs_Success.append(idx_rgFace)
+        fDevs.append(fDev)
+
+
+    if not rgBs_1F_Res:
+        return [], [], fDevs_Needed, sLogs
+
+
+    gBs_NewFs = []
+    gBs_Res = []
+
+
+    if not bReplace:
+        # Adding the new face over each old one.
+        gBrep1_thisBrep = []
+        for rgBrep_1F_New, idxF in zip(rgBs_1F_Res, idxsFs_Success):
+            gBrep1 = sc.doc.Objects.AddBrep(rgBrep_1F_New)
+            if gBrep1 != gBrep1.Empty:
+                gBrep1_thisBrep.append(gBrep1)
+        gBs_Res.append(gBrep1_thisBrep)
         
-        srf_devs_All.extend(srf_devs)
+        if bEcho: print("{} monofaces added.".format(len(gBs_Res)))
         
-        if not bReplace:
-            gBrep1_thisBrep = []
-            for rgBrep_1F_New, idxF in zip(rgBreps_1F_Mod_thisBrep, idxsFs_Mod):
-                gBrep1 = sc.doc.Objects.AddBrep(rgBrep_1F_New)
-                if gBrep1 != Guid.Empty:
-                    gBrep1_thisBrep.append(gBrep1)
-            gBs1_perB0.append(gBrep1_thisBrep)
+        if bExtract:
+            rc = xBrepObject.extractFaces(rdB_In, idxsFs_Success)
+            gBs_1Fs_Extracted, gBs_RemainingGeom = rc
+            if bEcho:
+                print("{} monofaces extracted.".format(len(gBs_1Fs_Extracted)))
+                print("{} breps of unmodified faces remain.".format(len(gBs_RemainingGeom)))
+    else:
+        # bReplace==True.
+        if bExtract:
+            rc = xBrepObject.replaceFaces(
+                rdB_In,
+                idxsFs_Success,
+                rgBs_1F_Res,
+                bExtract=True,
+                fTolerance_Join=max(fDevs))
+            if rc:
+                gBs_NewFaces, gBs_RemainingGeom = rc
+                if bEcho:
+                    print("{} monofaces extracted.".format(len(gBs_NewFaces)))
+                    print("{} breps of unmodified faces remain.".format(len(gBs_RemainingGeom)))
+                gBs_Res = gBs_NewFaces + gBs_RemainingGeom
         else:
-            # bReplace==True.
-            if bExtract:
-                rc = xBrepObject.replaceFaces(
-                        rdBrep_In,
-                        idxsFs_Mod,
-                        rgBreps_1F_Mod_thisBrep,
-                        bExtract=True,
-                        fTolerance_Join=max(srf_devs))
-                if rc:
-                    gBreps1_NewFaces_thisBrep, gBreps_RemainingBrep = rc
-                    gBs1_perB0.append(gBreps1_NewFaces_thisBrep)
+            fTols_Edges = [edge.Tolerance for edge in rgB_In.Edges]
+            fTolerance_Join = max((
+                    2.0*fDevTol if fDevTol is not None else 0.0,
+                    1.1*max(fTols_Edges),
+                    sc.doc.ModelAbsoluteTolerance))
+            rc = xBrepObject.replaceFaces(
+                    rdB_In,
+                    idxsFs_Success,
+                    rgBs_1F_Res,
+                    bExtract=False,
+                    fTolerance_Join=fTolerance_Join)
+            if rc:
+                gBs_Res = rc
+                if bEcho:
+                    print("Brep was replaced with {} revised faces.".format(
+                        len(idxsFs_Success)))
             else:
-                fTols_Edges = [edge.Tolerance for edge in rgBrep_In.Edges]
-                fTolerance_Join = max((
-                        2.0*fDevTol if fDevTol is not None else 0.0,
-                        1.1*max(fTols_Edges),
-                        sc.doc.ModelAbsoluteTolerance))
-                rc = xBrepObject.replaceFaces(
-                        rdBrep_In,
-                        idxsFs_Mod,
-                        rgBreps_1F_Mod_thisBrep,
-                        bExtract=False,
-                        fTolerance_Join=fTolerance_Join)
-                if rc:
-                    gBreps_withReplacedFaces_thisBrep = rc
-                    gBs1_perB0.append(gBreps_withReplacedFaces_thisBrep)
+                if bEcho:
+                    print("Brep could not be replaced with {} revised faces.".format(
+                        len(idxsFs_Success)))
 
-        if bDebug or bEcho and len(gBreps0) == 1 and len(idxsFs_Mod)==1:
-            rgBrep_1F_Mod = rgBreps_1F_Mod_thisBrep[0]
-            s  = getNurbsSurfaceChangeDescription(
-                    rgBrep_In.Faces[idxsFs_Mod[0]].UnderlyingSurface(),
-                    rgBrep_1F_Mod.Surfaces[0])
-            s += "  Deviation: {0:.2e}".format(srf_devs[0])
-            print(s)
+    for brep in rgBs_1F_Res: brep.Dispose()
+    rgB_In.Dispose()
 
-        for brep in rgBreps_1F_Mod_thisBrep: brep.Dispose()
-        rgBrep_In.Dispose()
-
-        if (
-                any(g for gs in gBs1_perB0 for g in gs) and
-                len(gBreps0)==1
-                and (bDebug or bEcho)
-        ):
-            sc.doc.Objects.UnselectAll()
-            if bReplace:
-                if bExtract:
-                    print("{} face(s) extracted from brep and replaced.".format(len(gBreps1_NewFaces_thisBrep)))
-                else:
-                    print("{} face(s) replaced in brep.".format(len(idxsFs_Mod)))
-            else:
-                print("{} monoface brep(s) added.".format(
-                    sum(len(bs) for bs in rgBreps_1F_Mod_thisBrep)))
-    
-    return (gBs1_perB0, srf_devs_All), sLogs_All
+    return gBs_Res, fDevs, fDevs_Needed, sLogs
 
 
 def formatDistance(fDistance):
@@ -849,7 +784,7 @@ def formatDistance(fDistance):
     elif fDistance == 0.0:
         return "exactly 0".format(fDistance)
     elif fDistance < 10.0**(-(sc.doc.DistanceDisplayPrecision-2)):
-        return "{:.1e}".format(fDistance)
+        return "{:.2e}".format(fDistance)
     else:
         return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
 
@@ -860,14 +795,15 @@ def main():
         print("This script works only in Rhino V6 and above.")
         return
 
-    objrefs_In = getInput()
-    if objrefs_In is None: return
+    rc = getInput()
+    if rc is None: return
 
-    Rhino.RhinoApp.SetCommandPrompt("Working ...")
+    rdBs_In, idxFs_PerB = rc
+    if not rdBs_In: return
 
     fDevTol = Opts.values['fDevTol'] if Opts.values['bLimitDev'] else None
-    bReplace = Opts.values['bReplace']
     bExtract = Opts.values['bExtract']
+    bReplace = Opts.values['bReplace']
     bSrfOnFail = Opts.values['bSrfOnFail']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -877,245 +813,85 @@ def main():
 
     sc.doc.Objects.UnselectAll()
 
-
     bDocModified = False
 
-
-    rc = processBrepObjects(
-        rhBreps=objrefs_In,
-        idxs_Faces=None,
-        fDevTol=fDevTol,
-        bSrfOnFail=bSrfOnFail,
-        bReplace=bReplace,
-        bExtract=bExtract,
-        bEcho=bEcho,
-        bDebug=bDebug,
-        )
-    if rc is None: return
+    gBs_Res_perBs_In = []
+    fDevs_All = []
+    fDevs_Needed_All = []
+    sLogs_All = []
 
 
-    (
-        (gBreps1, srf_devs_All),
-        sLogs,
-       ) = rc
+    if len(rdBs_In) == 1:
+        s = "Processing brep"
+    else:
+        idxs_AtTenths = [int(round(0.1*i*len(rdBs_In),0)) for i in range(10)]
+
+
+    for iB, (rdB_In, idxFs) in enumerate(zip(rdBs_In, idxFs_PerB)):
+        if len(rdBs_In) > 1:
+            if iB in idxs_AtTenths:
+                s = "Processing at {:d}% of {} breps".format(
+                    int(100.0 * (iB+1) / len(rdBs_In)), len(rdBs_In))
+        
+            if bDebug:
+                print(s)
+            else:
+                Rhino.RhinoApp.SetCommandPrompt(s)
+
+
+        rc = processBrepObject(
+            rdB_In,
+            idxFs,
+            fDevTol=fDevTol,
+            bExtract=bExtract,
+            bSrfOnFail=bSrfOnFail,
+            bDebug=bDebug)
+        if rc[0] is None: return
+
+        gBs_Res, fDevs, fDevs_Needed, sLogs = rc
+
+        gBs_Res_perBs_In.extend(gBs_Res)
+        fDevs_All.extend(fDevs)
+        fDevs_Needed_All.extend(fDevs_Needed)
+        sLogs_All.extend(sLogs)
 
 
     sc.doc.Views.RedrawEnabled = True
 
-    return
 
-    gBs_1F_Added = []
-    nAddedBreps = nAddedBrepsForUntrimmedSrfs = 0
-    
-    nBreps0 = len(gBreps0)
+    if fDevs_All:
+        if len(fDevs_All) == 1:
+            print("Converted surfaces with deviation {}.".format(
+                formatDistance(fDevs_All[0])))
+        else:
+            print("Converted surfaces with deviations {} through {}.".format(
+                formatDistance(min(fDevs_All)),
+                formatDistance(max(fDevs_All))))
 
-
-    def knotMultiplicityList(knots):
-        """Returns a list."""
-        i = 0
-        iMulties = []
-        fKnotTs_Unique = []
-        while True:
-            knot = knots[i]
-            fKnotTs_Unique.append(knot)
-            iMulti = knots.KnotMultiplicity(index=i)
-            iMulties.append(iMulti)
-            #print("{} at {:.4f}".format(iMulti, knot),
-            i += iMulti
-            if i >= knots.Count:
-                break
-        return iMulties
-
-
-    #rgMeshParams = rg.MeshingParameters.Minimal 
-    #rgMeshParams = rg.MeshingParameters.FastRenderMesh
-    rgMeshParams = rg.MeshingParameters.QualityRenderMesh
-    
-    stopwatch = Stopwatch()
-    stopwatch.Start()
-    
-    for ib, gBrep0 in enumerate(gBreps0):
-        sc.escape_test()
-        
-        Rhino.RhinoApp.SetCommandPrompt (
-            "Processing brep {} of {}...".format(ib+1, nBreps0))
-        
-        rdBrep0 = sc.doc.Objects.FindId(gBrep0)
-        rgBrep0 = rdBrep0.Geometry
-        
-        attr = rdBrep0.Attributes
-        
-        idx_rgFacesWithModifiedSrfs = []
-        
-        timeFace = timeFacePrev = stopwatch.Elapsed.TotalSeconds
-        
-        sRhCmdPrompt_Brep = Rhino.RhinoApp.CommandPrompt
-        
-        for iF in range(rgBrep0.Faces.Count):
-            sc.escape_test()
-            
-            timeFace = stopwatch.Elapsed.TotalSeconds
-            if timeFace - timeFacePrev > 1.0:
-                Rhino.RhinoApp.SetCommandPrompt(
-                    sRhCmdPrompt_Brep + "    Face {} of {}...".format(
-                        iF, rgBrep0.Faces.Count))
-                timeFacePrev = timeFace
-            
-            rgFace0 = rgBrep0.Faces[iF]
-            rgSrf0 = rgFace0.UnderlyingSurface()
-            
-            # Only process NurbsSurfaces.  Do not convert to NurbsSurfaces.
-            if isinstance(rgSrf0, rg.NurbsSurface):
-                pass
-            elif isinstance(rgSrf0, rg.SumSurface):
-                def isSumSrfReducible(ss):
-                    for iDir in 0, 1:
-                        c = ss.IsoCurve(iDir, ss.Domain(iDir % 2).Min)
-                        if isinstance(c, rg.NurbsCurve):
-                            if c.Points.Count > c.Degree + 1:
-                                return True
-                    return False
-
-                if not isSumSrfReducible(rgSrf0):
-                    continue
-
-                rgSrf0 = rgSrf0.ToNurbsSurface()
-            else:
-                continue
-
-
-            # Remove/reduce knots.
-            rc = processSrf(rgSrf0,
-                    fDevTol, nKnotMulti_Min, nKnotMulti_Max, rgMeshParams,
-                    bEcho=bEcho, bDebug=bDebug)
-            if rc is None: continue
-
-
-            if bEcho and not rc and nBreps0==1 and rgBrep0.Faces.Count==1: # For when rc is False, not None.
-                s  = "Input surface Deg:{}, PtCt:{},{}, IsUniform:, IsClosed:".format(
-                        rgSrf0.Degree,
-                        rgSrf0.Points.CountU, rgSrf0.Points.CountV)
-                s += "\nA surface could not be found for entered parameters:"
-                s += " SrfSrfDev_Tol={}  MinMultiplicityToRemove={}" \
-                        "  MaxMultiplicityToRemove={}".format(
-                        fDevTol, nKnotMulti_Min, nKnotMulti_Max)
-                print(s)
-                continue
-            
-            rgSrf1, iCt_KnotsRemoved, fSrfDev = rc
-            if bEcho and not rgSrf1.IsValid and nBreps0==1:
-                print("New surface for {} is not valid.".format(gBrep0))
-            
-            # Duplicate rgFace0 to the brep that will be modified.
-            rgBrep1 = rgFace0.DuplicateFace(False)
-            rgFace1 = rgBrep1.Faces[0]
-            rgBrep1.AddSurface(rgSrf1)
-            rgFace1.ChangeSurface(1)
-            rgBrep1.Compact()
-            rgFace1.RebuildEdges(1e-5, True, True)
-            
-            if not rgBrep1.IsValid:
-                s = "New brep for {} is not valid".format(gBrep0)
-                gBrep_Added = sc.doc.Objects.AddBrep(rgBrep1, attr)
-                if gBrep_Added == Guid.Empty:
-                    s += " and could not be added to the document."
-                else:
-                    gBs_1F_Added.append(gBrep_Added)
-                    s += "."
-                
-                if bSrfOnFail and sc.doc.Objects.AddSurface(rgSrf1) != Guid.Empty:
-                    s += "\nUntrimmed surface added instead."
-                    print(s)
-                    nAddedBrepsForUntrimmedSrfs += 1
-                else:
-                    s += "\nUntrimmed surface also could not be added."
-                    print(s)
-                    continue
-            
-            else:
-                gBrep_Added = sc.doc.Objects.AddBrep(rgBrep1, attr)
-                if gBrep_Added != Guid.Empty:
-                    bDocModified = True
-                    gBs_1F_Added.append(gBrep_Added)
-                    idx_rgFacesWithModifiedSrfs.append(iF)
-                    nAddedBreps += 1
-                else:
-                    print("Brep for {} could not be added to"
-                          " the document.".format(gBrep0))
-            
-            rgBrep1.Dispose()
-            
-            if bEcho and nBreps0 == 1 and rgBrep0.Faces.Count==1:
-                s = ""
-                s += "Knots removed: {}".format(iCt_KnotsRemoved)
-                s += "    Surface deviation: {}".format(
-                    formatDistance(fSrfDev))
-                for iDir, sDir in zip((0,1), ('U','V')):
-                    s += "    {} Dir:".format(sDir)
-                    s += "{}:{}".format("Degree", rgSrf0.Degree(iDir))
-                    knots0 = rgSrf0.KnotsV if iDir else rgSrf0.KnotsU
-                    knots1 = rgSrf1.KnotsV if iDir else rgSrf1.KnotsU
-                    s += "    {}KnotMultiplicities:{}->{}".format(
-                        sDir,
-                        ",".join(str(i) for i in knotMultiplicityList(knots0)),
-                        ",".join(str(i) for i in knotMultiplicityList(knots1)))
-                    s += "    {}:{}->{}".format("PtCt",
-                            (rgSrf0.Points.CountU, rgSrf0.Points.CountV)[iDir],
-                            (rgSrf1.Points.CountU, rgSrf1.Points.CountV)[iDir])
-            #        s += "  {}:{}-{}".format("IsRational",
-            #                str(rgSrf0.IsRational)[0],
-            #                str(rgSrf1.IsRational)[0])
-            #        s += "  {}:{}-{}".format("IsClosed",
-            #                str(rgSrf0.IsClosed)[0],
-            #                str(rgSrf1.IsClosed)[0])
-            #        if rgSrf0.IsClosed or rgSrf1.IsClosed:
-            #            s += "  {}:{}-{}".format("IsPeriodic",
-            #                    str(rgSrf0.IsPeriodic)[0],
-            #                    str(rgSrf1.IsPeriodic)[0])
-                print(s)
-        
-        nFacesAffected = len(idx_rgFacesWithModifiedSrfs)
-        
-        # No faces had their surfaces modified.
-        if nFacesAffected == 0: continue
-        
-        # If bReplace, remove affected faces from brep.
-        if bReplace and nFacesAffected == rgBrep0.Faces.Count:
-            sc.doc.Objects.Delete(gBrep0, not bEcho)
-        elif bReplace and nFacesAffected != rgBrep0.Faces.Count:
-            
-            idx_rgFacesWithModifiedSrfs = sorted(idx_rgFacesWithModifiedSrfs,
-                    reverse=True)
-            
-            for iF in idx_rgFacesWithModifiedSrfs:
-                rgBrep0.Faces.RemoveAt(iF)
-            
-            sc.doc.Objects.Replace(gBrep0, rgBrep0)
-        
-        # Select new faces.
-        gBs_1F_Added_NETList = List[Guid](gBs_1F_Added)
-        nSelected = sc.doc.Objects.Select(gBs_1F_Added_NETList)
-        
-        if nSelected > 0:
-            print("{} monoface breps of simplified surfaces are"
-                  " selected.".format(nSelected))
-        
-    
-    stopwatch.Stop()
-    if bDebug:
-        print("Runtime for main loop in main: {} seconds".format(
-                stopwatch.Elapsed.TotalSeconds))
-    
-    if bEcho:
-        s  = "{} out of {} brep faces had knots removed.".format(
-                nAddedBreps, nBreps0)
-        if nAddedBrepsForUntrimmedSrfs:
-            s += "  {} untrimmed surfaces added instead.".format(
-                    nAddedBrepsForUntrimmedSrfs)
+    if fDevs_Needed_All:
+        if len(fDevs_Needed_All) == 1:
+            s += "Need tolerance of {}.".format(
+                formatDistance(fDevs_Needed_All[0]))
+            s += " to convert surface."
+        else:
+            s = "Need tolerances of {} through {}".format(
+                formatDistance(min(fDevs_Needed_All)),
+                formatDistance(max(fDevs_Needed_All)))
+            s += " to convert remaining convertible surfaces."
         print(s)
-    
-    if bDocModified:
-        sc.doc.Views.Redraw()
+
+
+    for sLog in set(sLogs_All):
+        print("{} of {}".format(sLogs_All.count(sLog), sLog))
+
+
+    ## Select new faces.
+    #gBs_1F_Added_NETList = List[Guid](gBs_1F_Added)
+    #nSelected = sc.doc.Objects.Select(gBs_1F_Added_NETList)
+        
+    #if nSelected > 0:
+    #    print("{} monoface breps of simplified surfaces are"
+    #            " selected.".format(nSelected))
 
 
 if __name__ == '__main__': main()

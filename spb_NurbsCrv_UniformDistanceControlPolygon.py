@@ -12,6 +12,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 """
 230101-02: Created.
+230707: Relabeled some options.
 
 TODO: Produce more uniform spacing when points are blended to S-curves.
 """
@@ -41,25 +42,24 @@ class Opts:
 
     key = 'bEqualEndClamps'; keys.append(key)
     values[key] = True
-    names[key] = 'EqualEndClampCurvatureOrder'
     riOpts[key] = ri.Custom.OptionToggle(initialValue=values[key], offValue='No', onValue='Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iClampDerivativeOrder'; keys.append(key)
+    key = 'iClampsDerivOrder'; keys.append(key)
     values[key] = 1
-    names[key] = 'Order'
+    names[key] = 'EndsCContinuity'
     riOpts[key] = ri.Custom.OptionInteger(initialValue=values[key], setLowerLimit=True, limit=0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iClampStartDerivativeOrder'; keys.append(key)
+    key = 'iClampStartDerivOrder'; keys.append(key)
     values[key] = 1
-    names[key] = 'StartOrder'
+    names[key] = 'StartCContinuity'
     riOpts[key] = ri.Custom.OptionInteger(initialValue=values[key], setLowerLimit=True, limit=0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iClampEndDerivativeOrder'; keys.append(key)
+    key = 'iClampEndDerivOrder'; keys.append(key)
     values[key] = 1
-    names[key] = 'EndOrder'
+    names[key] = 'EndC'
     riOpts[key] = ri.Custom.OptionInteger(initialValue=values[key], setLowerLimit=True, limit=0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -134,7 +134,7 @@ class Opts:
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
             return
 
-        if key == 'iClampDerivativeOrder':
+        if key == 'iClampsDerivOrder':
             if cls.riOpts[key].CurrentValue < 0:
                 cls.riOpts[key].CurrentValue = 0
 
@@ -197,10 +197,10 @@ def getInput():
         addOption('bCurvedNotLinear')
         addOption('bEqualEndClamps')
         if Opts.values['bEqualEndClamps']:
-            addOption('iClampDerivativeOrder')
+            addOption('iClampsDerivOrder')
         else:
-            addOption('iClampStartDerivativeOrder')
-            addOption('iClampEndDerivativeOrder')
+            addOption('iClampStartDerivOrder')
+            addOption('iClampEndDerivOrder')
         addOption('bModify_NotAdd')
         addOption('bEcho')
         addOption('bDebug')
@@ -226,9 +226,9 @@ def getInput():
 
         if res == ri.GetResult.Number:
             if Opts.values['bEqualEndClamps']:
-                key = 'iClampDerivativeOrder'
+                key = 'iClampsDerivOrder'
             else:
-                key = 'iClampStartDerivativeOrder'
+                key = 'iClampStartDerivOrder'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
@@ -261,27 +261,27 @@ def _getPreselectedCurves():
             return tuple(gCrvs_Preselected)
 
 
-def _createBlendCurve(nc, iClampStartDerivativeOrder, iClampEndDerivativeOrder):
-    if iClampStartDerivativeOrder == 0:
+def _createBlendCurve(nc, iClampStartDerivOrder, iClampEndDerivOrder):
+    if iClampStartDerivOrder == 0:
         lcA = rg.LineCurve(
             rg.Point3d.Origin,
-            nc.Points[iClampStartDerivativeOrder].Location)
+            nc.Points[iClampStartDerivOrder].Location)
         continuity0 = rg.BlendContinuity.Position
     else:
         lcA = rg.LineCurve(
-            nc.Points[iClampStartDerivativeOrder-1].Location,
-            nc.Points[iClampStartDerivativeOrder].Location)
+            nc.Points[iClampStartDerivOrder-1].Location,
+            nc.Points[iClampStartDerivOrder].Location)
         continuity0 = rg.BlendContinuity.Tangency
 
-    if iClampEndDerivativeOrder == 0:
+    if iClampEndDerivOrder == 0:
         lcB = rg.LineCurve(
-            nc.Points[nc.Points.Count-1-iClampEndDerivativeOrder].Location,
+            nc.Points[nc.Points.Count-1-iClampEndDerivOrder].Location,
             rg.Point3d.Origin)
         continuity1 = rg.BlendContinuity.Position
     else:
         lcB = rg.LineCurve(
-            nc.Points[nc.Points.Count-1-iClampEndDerivativeOrder].Location,
-            nc.Points[nc.Points.Count-1-iClampEndDerivativeOrder+1].Location)
+            nc.Points[nc.Points.Count-1-iClampEndDerivOrder].Location,
+            nc.Points[nc.Points.Count-1-iClampEndDerivOrder+1].Location)
         continuity1 = rg.BlendContinuity.Tangency
 
     return rg.Curve.CreateBlendCurve(
@@ -393,27 +393,27 @@ def _divideCurveEquidistantPerCount(rgCurve, point_ct, epsilon=1e-6, recurse=Fal
         iW += 1
 
 
-def modifyControlPolygon_Curved(nc, iClampStartDerivativeOrder, iClampEndDerivativeOrder, bDebug=False):
+def modifyControlPolygon_Curved(nc, iClampStartDerivOrder, iClampEndDerivOrder, bDebug=False):
     """
     """
 
     if bDebug:
         sEval = "nc.Points.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "nc.Degree"; print("{}: {}".format(sEval, eval(sEval)))
-        sEval = "iClampStartDerivativeOrder"; print("{}: {}".format(sEval, eval(sEval)))
-        sEval = "iClampEndDerivativeOrder"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "iClampStartDerivOrder"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "iClampEndDerivOrder"; print("{}: {}".format(sEval, eval(sEval)))
 
 
-    if nc.Points.Count <= (iClampStartDerivativeOrder + iClampEndDerivativeOrder + 2):
+    if nc.Points.Count <= (iClampStartDerivOrder + iClampEndDerivOrder + 2):
         return False, "Clamping continuity is too high for curve's point count."
 
 
-    nc_Blend = _createBlendCurve(nc, iClampStartDerivativeOrder, iClampEndDerivativeOrder)
+    nc_Blend = _createBlendCurve(nc, iClampStartDerivOrder, iClampEndDerivOrder)
 
     if bDebug:
         sc.doc.Objects.AddCurve(nc_Blend)
 
-    point_ct = nc.Points.Count - iClampEndDerivativeOrder - iClampStartDerivativeOrder
+    point_ct = nc.Points.Count - iClampEndDerivOrder - iClampStartDerivOrder
 
     pts_OnBlend = _divideCurveEquidistantPerCount(nc_Blend, point_ct)
 
@@ -429,7 +429,7 @@ def modifyControlPolygon_Curved(nc, iClampStartDerivativeOrder, iClampEndDerivat
         if bDebug:
             sc.doc.Objects.AddPoint(pt)
 
-        idxCp = iClampStartDerivativeOrder + 1 + iPt
+        idxCp = iClampStartDerivOrder + 1 + iPt
 
         pt_Old = nc.Points[idxCp].Location
         dist = pt.DistanceTo(pt_Old)
@@ -451,24 +451,24 @@ def modifyControlPolygon_Curved(nc, iClampStartDerivativeOrder, iClampEndDerivat
     return True, None
 
 
-def modifyControlPolygon_Linear(nc, iClampStartDerivativeOrder, iClampEndDerivativeOrder, bDebug=False):
+def modifyControlPolygon_Linear(nc, iClampStartDerivOrder, iClampEndDerivOrder, bDebug=False):
     """
     """
 
     if bDebug:
         sEval = "nc.Points.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "nc.Degree"; print("{}: {}".format(sEval, eval(sEval)))
-        sEval = "iClampStartDerivativeOrder"; print("{}: {}".format(sEval, eval(sEval)))
-        sEval = "iClampEndDerivativeOrder"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "iClampStartDerivOrder"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "iClampEndDerivOrder"; print("{}: {}".format(sEval, eval(sEval)))
 
 
-    if nc.Points.Count <= (iClampStartDerivativeOrder + iClampEndDerivativeOrder + 2):
+    if nc.Points.Count <= (iClampStartDerivOrder + iClampEndDerivOrder + 2):
         return False, "Clamping continuity is too high for curve's point count."
 
-    pt_Start = nc.Points[iClampStartDerivativeOrder].Location
-    pt_End = nc.Points[nc.Points.Count - iClampEndDerivativeOrder - 1].Location
+    pt_Start = nc.Points[iClampStartDerivOrder].Location
+    pt_End = nc.Points[nc.Points.Count - iClampEndDerivOrder - 1].Location
 
-    point_ct = nc.Points.Count - iClampEndDerivativeOrder - iClampStartDerivativeOrder
+    point_ct = nc.Points.Count - iClampEndDerivOrder - iClampStartDerivOrder
 
     pts_Uniform = [pt_Start]
     for iPt in range(1, point_ct-1):
@@ -486,7 +486,7 @@ def modifyControlPolygon_Linear(nc, iClampStartDerivativeOrder, iClampEndDerivat
         if bDebug:
             sc.doc.Objects.AddPoint(pt)
 
-        idxCp = iClampStartDerivativeOrder + 1 + iPt
+        idxCp = iClampStartDerivOrder + 1 + iPt
 
         pt_Old = nc.Points[idxCp].Location
         dist = pt.DistanceTo(pt_Old)
@@ -517,11 +517,11 @@ def main():
 
     bCurvedNotLinear = Opts.values['bCurvedNotLinear']
     if Opts.values['bEqualEndClamps']:
-        iClampStartDerivativeOrder = Opts.values['iClampDerivativeOrder']
-        iClampEndDerivativeOrder = Opts.values['iClampDerivativeOrder']
+        iClampStartDerivOrder = Opts.values['iClampsDerivOrder']
+        iClampEndDerivOrder = Opts.values['iClampsDerivOrder']
     else:
-        iClampStartDerivativeOrder = Opts.values['iClampStartDerivativeOrder']
-        iClampEndDerivativeOrder = Opts.values['iClampEndDerivativeOrder']
+        iClampStartDerivOrder = Opts.values['iClampStartDerivOrder']
+        iClampEndDerivOrder = Opts.values['iClampEndDerivOrder']
     bModify_NotAdd = Opts.values['bModify_NotAdd']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -534,8 +534,8 @@ def main():
 
     bUseCurvedFunction = (
         bCurvedNotLinear and
-        iClampStartDerivativeOrder != 0 and
-        iClampEndDerivativeOrder !=0)
+        iClampStartDerivOrder != 0 and
+        iClampEndDerivOrder !=0)
 
     for objref in objrefs:
         rdC_In = objref.Object()
@@ -552,14 +552,14 @@ def main():
             if bUseCurvedFunction:
                 bModifiedPts, sLog = modifyControlPolygon_Curved(
                     nc=nc,
-                    iClampStartDerivativeOrder=iClampStartDerivativeOrder,
-                    iClampEndDerivativeOrder=iClampEndDerivativeOrder,
+                    iClampStartDerivOrder=iClampStartDerivOrder,
+                    iClampEndDerivOrder=iClampEndDerivOrder,
                     bDebug=bDebug)
             else:
                 bModifiedPts, sLog = modifyControlPolygon_Linear(
                     nc=nc,
-                    iClampStartDerivativeOrder=iClampStartDerivativeOrder,
-                    iClampEndDerivativeOrder=iClampEndDerivativeOrder,
+                    iClampStartDerivOrder=iClampStartDerivOrder,
+                    iClampEndDerivOrder=iClampEndDerivOrder,
                     bDebug=bDebug)
 
             if sLog is not None:
@@ -577,14 +577,14 @@ def main():
             if bUseCurvedFunction:
                 bModifiedPts, sLog = modifyControlPolygon_Curved(
                     nc=nc,
-                    iClampStartDerivativeOrder=iClampStartDerivativeOrder,
-                    iClampEndDerivativeOrder=iClampEndDerivativeOrder,
+                    iClampStartDerivOrder=iClampStartDerivOrder,
+                    iClampEndDerivOrder=iClampEndDerivOrder,
                     bDebug=bDebug)
             else:
                 bModifiedPts, sLog = modifyControlPolygon_Linear(
                     nc=nc,
-                    iClampStartDerivativeOrder=iClampStartDerivativeOrder,
-                    iClampEndDerivativeOrder=iClampEndDerivativeOrder,
+                    iClampStartDerivOrder=iClampStartDerivOrder,
+                    iClampEndDerivOrder=iClampEndDerivOrder,
                     bDebug=bDebug)
 
             if sLog is not None:

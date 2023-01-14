@@ -44,6 +44,7 @@ from __future__ import print_function
 211208: Bug fix for when PolyCurves are present during reference selection.
         Bug fix for numeric input.
 220826: Bug fix for when ArcCurve is selected as a reference.
+230112: Replaced NurbsCurvePointList.SetWeight with SetPoint.  The former modifies CP locations.
 """
 
 import Rhino
@@ -503,7 +504,7 @@ def makeNonRational(nurbsGeom, tol=1e-9):
             weights.append(nc.Points.GetWeight(i))
         if abs(1.0 - max(weights)) <= tol:
             for i in range(nc.Points.Count):
-                if not nc.Points.SetWeight(i, 1.0):
+                if not nc.Points.SetPoint(i, point=nc.Points[i].Location, weight=1.0):
                     return False
             return True
         return False

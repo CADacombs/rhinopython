@@ -1,4 +1,9 @@
 """
+"""
+
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
 190629: Created.
 190825: Fixed bug in getEllipticalNurbsCurve.
 190912: Added some default parameter values.
@@ -7,6 +12,7 @@
         Modified some default parameter values.
 200223: Bug fix in creating circular Arc in getArcCurve.
 200619, 220317: Added functions.
+230108: Bug fix in filterCurvesOnSurface for ignoring curves with only endpoints on face.
 """
 
 import Rhino
@@ -105,7 +111,8 @@ def duplicateSegments(rgCrvs, bExplodePolyCrvs=True):
                 # Domains are the same.
                 crv_In = edge.EdgeCurve
             else:
-                print "Domains are different." # TODO: Remove this print after some time to study when this occurs.
+                print("Domains are different.",
+                    "TODO: Remove this print after some time to study when this occurs.")
                 crv_In = edge.EdgeCurve.Trim(domain=crv_In.Domain)
 
         if isinstance(crv_In, rg.PolyCurve):
@@ -333,11 +340,8 @@ def filterCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolerance
         fTolerance: float of distance from curve to surface.
         bDebug
     Returns:
-        (
-            list(Closed curves of rgCrvs_In completely on rgSrf),
-            list(Open curves of rgCrvs_In completely on rgSrf),
-            list(Curves of rgCrvs_In only partially on rgSrf)
-        )
+        list(Curves of rgCrvs_In completely on rgSrf),
+        list(Curves of rgCrvs_In only partially on rgSrf and intersects at least one (sur)face border)
     """
 
 
@@ -356,25 +360,68 @@ def filterCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolerance
         rgB_Temp = rgSrf.ToBrep()
         rgFace = rgB_Temp.Faces[0]
 
-    edges = [rgFace.Brep.Edges[iE] for iE in rgFace.AdjacentEdges()]
 
-    def isCrvPartiallyOnFace(crv):
-        for edge in edges:
-            intrscts = rg.Intersect.Intersection.CurveCurve(
-                curveA=crv,
-                curveB=edge,
-                tolerance=fTolerance,
-                overlapTolerance=0.1*fTolerance)
+    def overlapCurvesOnFace(curve, face, tolerance):
+        """
+        Unfortunately, at least up through 7.25, Intersection.CurveBrepFace
+        sometimes doesn't produce overlapCurves as expected, resulting in false negatives.
+        """
+        rc = rg.Intersect.Intersection.CurveBrepFace(
+            curve, face, tolerance)
 
-            if bDebug: print "Intersection count: {}".format(intrscts.Count)
+        bSuccess, overlapCurves, intersectionPoints = rc
+        if not bSuccess: return []
 
-            if intrscts.Count > 0:
-                return True
-
-        return False
+        return overlapCurves
 
 
-    def isCrvCompletelyOnFace(crv):
+    def getCrvDivisionPts(crv):
+
+        strongBox_points = StrongBox[Array[rg.Point3d]]()
+
+        rc = crv.DivideByLength(
+            fSamplingResolution,
+            includeEnds=True,
+            points=strongBox_points)
+
+        if rc:
+            return list(strongBox_points.Value)
+
+        crv_GetLength = crv.GetLength()
+
+        if crv_GetLength <= sc.doc.ModelAbsoluteTolerance:
+            if bDebug:
+                print("No points for curve that is {} long.".format(
+                    crv.GetLength()))
+                #sc.doc.Objects.AddCurve(crv)
+            return []
+        else:
+            rc = crv.DivideByCount(
+                segmentCount=2,
+                includeEnds=True,
+                points=strongBox_points)
+            pts = list(strongBox_points.Value)
+            #for pt in pts: sc.doc.Objects.AddPoint(pt)
+            #sc.doc.Views.Redraw(); 1/0
+
+        return pts
+
+
+    def count_crvPtsOnFace(pts_Crv, face, fTolerance):
+
+        iCt_CrvPts_On_Face = 0
+
+        for pt in pts_Crv:
+            rc = xBrepFace.is3dPointOnFace(
+                face, pt, fTolerance)
+            
+            if rc:
+                iCt_CrvPts_On_Face += 1
+
+        return iCt_CrvPts_On_Face
+
+
+    def isCrvCompletelyOnFace(crv, pts_Crv):
 
         # Quick check for False.
         rc = xBrepFace.is3dPointOnFace(
@@ -385,38 +432,10 @@ def filterCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolerance
             return False
 
 
-        # More thorough check.
+        pts = getCrvDivisionPts(crv)
+        if len(pts) == 0: return False
 
-        strongBox_points = StrongBox[Array[rg.Point3d]]()
-
-        rc = crv.DivideByLength(
-            fSamplingResolution,
-            includeEnds=True,
-            points=strongBox_points)
-
-        if rc:
-            pts = list(strongBox_points.Value)
-            #for pt in pts: sc.doc.Objects.AddPoint(pt)
-            #sc.doc.Views.Redraw(); 1/0
-        else:
-            crv_GetLength = crv.GetLength()
-            
-            if crv_GetLength <= sc.doc.ModelAbsoluteTolerance:
-                if bDebug:
-                    print "No points for curve that is {} long.".format(
-                        crv.GetLength())
-                    #sc.doc.Objects.AddCurve(crv)
-                return
-            else:
-                rc = crv.DivideByCount(
-                    segmentCount=2,
-                    includeEnds=True,
-                    points=strongBox_points)
-                pts = list(strongBox_points.Value)
-                #for pt in pts: sc.doc.Objects.AddPoint(pt)
-                #sc.doc.Views.Redraw(); 1/0
-
-        for pt in pts:
+        for pt in pts_Crv:
             rc = xBrepFace.is3dPointOnFace(
                 rgFace, pt, fTolerance)
 
@@ -451,8 +470,8 @@ def filterCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolerance
             
             if crv_GetLength <= sc.doc.ModelAbsoluteTolerance:
                 if bDebug:
-                    print "No points for curve that is {} long.".format(
-                        crv.GetLength())
+                    print("No points for curve that is {} long.".format(
+                        crv.GetLength()))
                     #sc.doc.Objects.AddCurve(crv)
                 return
             else:
@@ -475,23 +494,53 @@ def filterCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolerance
         return True
 
 
+    def doesCrvIntersectFaceBorder(crv, rgFace):
+        for edge in [rgFace.Brep.Edges[iE] for iE in rgFace.AdjacentEdges()]:
+            intrscts = rg.Intersect.Intersection.CurveCurve(
+                curveA=crv,
+                curveB=edge,
+                tolerance=fTolerance,
+                overlapTolerance=0.1*fTolerance)
+
+            if bDebug: print("Intersection count: {}".format(intrscts.Count))
+
+            if intrscts.Count > 0:
+                return True
+
+        return False
+
+
     #sc.doc.Objects.AddBrep(rgFace.Brep); sc.doc.Views.Redraw(); 1/0
 
     cs_CompletelyOn = []
-    cs_PartiallyOn = []
+    cs_PartiallyOn_BorderIntersect = []
 
     for c in rgCrvs_In:
-        if isCrvCompletelyOnFace(c):
-            if not isCurveCompletelyOnFaceBorder(c):
-                cs_CompletelyOn.append(c.DuplicateCurve())
-        elif isCrvPartiallyOnFace(c):
-            cs_PartiallyOn.append(c.DuplicateCurve())
+        pts_Crv = getCrvDivisionPts(c)
+        if len(pts_Crv) == 0:
+            continue
+        ct_ptsOnFace = count_crvPtsOnFace(pts_Crv, rgFace, fTolerance)
+        #if len(overlapCurvesOnFace(c, rgFace, fTolerance)) == 0:
+        #    continue
+        if ct_ptsOnFace == 0:
+            continue
+        if ct_ptsOnFace == len(pts_Crv):
+            if isCurveCompletelyOnFaceBorder(c):
+                continue
+            cs_CompletelyOn.append(c.DuplicateCurve())
+            continue
+
+        # Partially on face
+        if doesCrvIntersectFaceBorder(c, rgFace):
+            cs_PartiallyOn_BorderIntersect.append(c.DuplicateCurve())
+        else:
+            print("Curve is partially on face but does not intersect any border.")
     #map(sc.doc.Objects.AddCurve, cs_CompletelyOn); 1/0; return
 
 
     if rgB_Temp: rgB_Temp.Dispose()
 
-    return cs_CompletelyOn, cs_PartiallyOn
+    return cs_CompletelyOn, cs_PartiallyOn_BorderIntersect
 
 
 def splitCurvesWithSurfaceEdges(rgCrvs_In, rgSrf_In, fTolerance=None, bDebug=False):
@@ -562,15 +611,15 @@ def splitCurvesWithSurfaceEdges(rgCrvs_In, rgSrf_In, fTolerance=None, bDebug=Fal
                 tolerance=fTolerance,
                 overlapTolerance=0.1*fTolerance)
 
-            if bDebug: print "Intersection count: {}".format(intrscts.Count)
+            if bDebug: print("Intersection count: {}".format(intrscts.Count))
 
             for intsct in intrscts:
                 if intsct.IsPoint:
-                    #print intsct.ParameterA
+                    #print(intsct.ParameterA)
                     t_Pts.append(intsct.ParameterA)
                 if intsct.IsOverlap:
                     doms_Overlaps.append(intsct.OverlapA)
-                    #print intsct.OverlapA.T0, intsct.OverlapA.T1
+                    #print(intsct.OverlapA.T0, intsct.OverlapA.T1)
                     t_Pts.append(intsct.OverlapA.T0)
                     t_Pts.append(intsct.OverlapA.T1)
 
@@ -584,7 +633,7 @@ def splitCurvesWithSurfaceEdges(rgCrvs_In, rgSrf_In, fTolerance=None, bDebug=Fal
         # For debugging.
         if len(rgCs_fromSplit) == 1:
             pass
-            #print "1 curve resulted from split."
+            #print("1 curve resulted from split.")
             #c = rgCs_fromSplit[0]
             #sc.doc.Objects.AddCurve(c)
             #continue
@@ -595,14 +644,15 @@ def splitCurvesWithSurfaceEdges(rgCrvs_In, rgSrf_In, fTolerance=None, bDebug=Fal
             fLength = c.GetLength()
 
             if fLength == 0.0:
-                if bDebug: print "Zero length curve ignored."
+                if bDebug: print("Zero length curve ignored.")
                 c.Dispose()
                 continue
             elif fLength < fTolerance:
-                if bDebug: print "Short ({}) curve ignored.  Domain: [{},{}]".format(
-                    formatDistance(fLength),
-                    c.Domain.T0,
-                    c.Domain.T1)
+                if bDebug:
+                    print("Short ({}) curve ignored.  Domain: [{},{}]".format(
+                        formatDistance(fLength),
+                        c.Domain.T0,
+                        c.Domain.T1))
                 c.Dispose()
                 continue
 

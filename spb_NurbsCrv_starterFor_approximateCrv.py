@@ -1,10 +1,11 @@
 """
 """
 
-from __future__ import absolute_import, print_function, unicode_literals
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 220905-06, 08-09: Created.
+230119: Added support for PolyCurve input.
 """
 
 import Rhino
@@ -181,81 +182,6 @@ def getInput():
                 break
 
 
-def approximateCurveWithPolyline(crv, target_pt_ct=6):
-
-    min = 0.1 * sc.doc.ModelAbsoluteTolerance
-    plc_WIP = crv.ToPolyline(
-        tolerance=min,
-        angleTolerance=0.0,
-        minimumLength=0.0,
-        maximumLength=0.0)
-    ct_Min = plc_WIP.PointCount
-    if ct_Min == target_pt_ct:
-        return plc_WIP.ToPolyline()
-
-    plc_WIP.Dispose()
-
-    max = 10.0 * min
-    while True:
-        sc.escape_test()
-        plc_WIP = crv.ToPolyline(
-            tolerance=max,
-            angleTolerance=0.0,
-            minimumLength=0.0,
-            maximumLength=0.0)
-        ct_Max = plc_WIP.PointCount
-        if ct_Max == target_pt_ct:
-            return plc_WIP.ToPolyline()
-        elif ct_Max < target_pt_ct:
-            break
-        max *= 10.0
-
-    plc_WIP.Dispose()
-
-    while True:
-        sc.escape_test()
-        
-        mid = 0.5 * (min + max)
-        
-        #if abs(mid-min) <= Rhino.RhinoMath.ZeroTolerance:
-        #    return
-        
-        plc_WIP = crv.ToPolyline(
-            tolerance=mid,
-            angleTolerance=0.0,
-            minimumLength=0.0,
-            maximumLength=0.0)
-        
-        ct_Mid = plc_WIP.PointCount
-        if ct_Mid == target_pt_ct:
-            return plc_WIP.ToPolyline()
-        if ct_Mid > target_pt_ct:
-            min = mid
-            ct_Min = ct_Mid
-        elif ct_Mid < target_pt_ct:
-            max = mid
-            ct_Max = ct_Mid
-        else:
-            raise Exception("What?")
-        
-        plc_WIP.Dispose()
-        
-        if abs(max-min) <= Rhino.RhinoMath.ZeroTolerance:
-            plc_Max = crv.ToPolyline(
-                tolerance=max,
-                angleTolerance=0.0,
-                minimumLength=0.0,
-                maximumLength=0.0)
-            return plc_Max.ToPolyline()
-
-
-def samplePointsOnArcCurve(ac, pt_ct):
-    ts = rg.ArcCurve.DivideByCount(
-        ac, segmentCount=pt_ct-1, includeEnds=True)
-    return Rhino.Collections.Point3dList(
-        [rg.ArcCurve.PointAt(ac, t) for t in ts])
-
-
 def simplifyPolyline(pl, target_pt_ct=6):
     ct_In = pl.Count
     if ct_In <= target_pt_ct:
@@ -302,6 +228,86 @@ def simplifyPolyline(pl, target_pt_ct=6):
             return
 
 
+def approximateCurveWithPolyline(crv, target_pt_ct=6):
+
+    tol_L = 0.1 * sc.doc.ModelAbsoluteTolerance
+    plc_WIP = crv.ToPolyline(
+        tolerance=tol_L,
+        angleTolerance=0.0,
+        minimumLength=0.0,
+        maximumLength=0.0)
+    ct_tL = plc_WIP.PointCount
+    if ct_tL == target_pt_ct:
+        return plc_WIP.ToPolyline()
+
+    plc_WIP.Dispose()
+
+    tol_H = 10.0 * tol_L
+    while tol_H < 0.1:
+        sc.escape_test()
+        plc_WIP = crv.ToPolyline(
+            tolerance=tol_H,
+            angleTolerance=0.0,
+            minimumLength=0.0,
+            maximumLength=0.0)
+        ct_tH = plc_WIP.PointCount
+        if ct_tH == target_pt_ct:
+            return plc_WIP.ToPolyline()
+        elif ct_tH < target_pt_ct:
+            break
+        tol_H *= 10.0
+
+    if ct_tH > target_pt_ct:
+        ret = simplifyPolyline(plc_WIP.ToPolyline(), target_pt_ct)
+        plc_WIP.Dispose()
+        return ret
+
+    plc_WIP.Dispose()
+
+    while True:
+        sc.escape_test()
+        
+        tol_M = 0.5 * (tol_L + tol_H)
+        
+        #if abs(tol_M-tol_L) <= Rhino.RhinoMath.ZeroTolerance:
+        #    return
+        
+        plc_WIP = crv.ToPolyline(
+            tolerance=tol_M,
+            angleTolerance=0.0,
+            minimumLength=0.0,
+            maximumLength=0.0)
+        
+        ct_tM = plc_WIP.PointCount
+        if ct_tM == target_pt_ct:
+            return plc_WIP.ToPolyline()
+        if ct_tM > target_pt_ct:
+            tol_L = tol_M
+            ct_tL = ct_tM
+        elif ct_tM < target_pt_ct:
+            tol_H = tol_M
+            ct_tH = ct_tM
+        else:
+            raise Exception("What?")
+        
+        plc_WIP.Dispose()
+        
+        if abs(tol_H-tol_L) <= Rhino.RhinoMath.ZeroTolerance:
+            plc_Max = crv.ToPolyline(
+                tolerance=tol_H,
+                angleTolerance=0.0,
+                minimumLength=0.0,
+                maximumLength=0.0)
+            return plc_Max.ToPolyline()
+
+
+def samplePointsOnArcCurve(ac, pt_ct):
+    ts = rg.ArcCurve.DivideByCount(
+        ac, segmentCount=pt_ct-1, includeEnds=True)
+    return Rhino.Collections.Point3dList(
+        [rg.ArcCurve.PointAt(ac, t) for t in ts])
+
+
 def getStartingCpLocations(rgCrv_In, pt_ct):
 
     if pt_ct == 2:
@@ -310,7 +316,12 @@ def getStartingCpLocations(rgCrv_In, pt_ct):
     if isinstance(rgCrv_In, rg.PolylineCurve):
         pl = rgCrv_In.ToPolyline()
         return simplifyPolyline(pl, target_pt_ct=pt_ct)
-    elif isinstance(rgCrv_In, rg.NurbsCurve):
+    elif isinstance(rgCrv_In, rg.PolyCurve):
+        nc = rgCrv_In.ToNurbsCurve()
+        ret = approximateCurveWithPolyline(nc, target_pt_ct=pt_ct)
+        nc.Dispose()
+        return ret
+    elif isinstance(rgCrv_In, (rg.NurbsCurve, rg.PolyCurve)):
         return approximateCurveWithPolyline(rgCrv_In, target_pt_ct=pt_ct)
     elif isinstance(rgCrv_In, rg.ArcCurve):
         return samplePointsOnArcCurve(rgCrv_In, pt_ct)

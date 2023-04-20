@@ -17,7 +17,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 190625-27: Created, starting with another script.
 ...
 220316: Bug fixes in option settings and Brep creation.  Refactored.
-230419: Added use of OffsetNormalToSurface.  Refactored.
+230419-20: Added use of OffsetNormalToSurface.  Refactored.
 """
 
 import Rhino
@@ -87,7 +87,7 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bUseSectionLines'; keys.append(key)
-    values[key] = True
+    values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -311,7 +311,10 @@ def getInput_Curve():
             return objref_CrvOnFace
 
         if res == ri.GetResult.Number:
-            key = 'fAngle_Start_Deg'
+            if Opts.values['bNormalDir']:
+                key = 'fDistance'
+            else:
+                key = 'fAngle_Start_Deg'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
@@ -381,7 +384,10 @@ def getInput_Face():
             return objref_Face
 
         if res == ri.GetResult.Number:
-            key = 'fAngle_Start_Deg'
+            if Opts.values['bNormalDir']:
+                key = 'fDistance'
+            else:
+                key = 'fAngle_Start_Deg'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
@@ -481,7 +487,10 @@ def getInput_Click():
         return False
 
     if res == ri.GetResult.Number:
-        key = 'fAngle_Start_Deg'
+        if Opts.values['bNormalDir']:
+            key = 'fDistance'
+        else:
+            key = 'fAngle_Start_Deg'
         Opts.riOpts[key].CurrentValue = go.Number()
         Opts.setValue(key)
         go.Dispose()

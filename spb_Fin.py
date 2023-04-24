@@ -1,11 +1,12 @@
 """
 This script is an alternative to _Fin.
 
-Method OffsetNormalToSurface
-    Uses RhinoCommon method and is more similar to _Fin.
-Method SPB
+Routine SPB
     Calculates translated Greville points.
     Has options to specify an angle from normal, constant or variable.
+
+Routine RC
+    Uses RhinoCommon's OffsetNormalToSurface method and is more similar to _Fin.
 
 Both methods creates a loft between the curve on surface and the offset curve.
 """
@@ -17,7 +18,9 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 ...
 220316: Bug fixes in option settings and Brep creation.  Refactored.
 230419-20: Added use of OffsetNormalToSurface.  Refactored.
-230423: Various major changes.
+230423-24: Various major changes.  Added AlignEndDirs option.
+
+TODO: Check accuracy of offset curve and add knots until within tolerance.
 """
 
 import Rhino
@@ -44,6 +47,17 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
+    key = 'bRC_NotSPB'; keys.append(key)
+    values[key] = False
+    names[key] = 'Routine'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'SPB', 'RC')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bAlignEndDirs'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
     key = 'bExplodePolyCrv'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
@@ -57,12 +71,6 @@ class Opts():
     key = 'bSimplifyCrv'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'bOffsetNormalToSurface_NotSPB'; keys.append(key)
-    values[key] = False
-    names[key] = 'Method'
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'SPB', 'OffsetNormalToSurface')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fAngle_Start_Deg'; keys.append(key)
@@ -102,7 +110,7 @@ class Opts():
     riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'bAddBrep'; keys.append(key)
+    key = 'bAddSrf'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
@@ -221,19 +229,21 @@ def _addCommonOptions(go):
 
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
+    addOption('bRC_NotSPB')
+    addOption('bAlignEndDirs')
     addOption('bExplodePolyCrv')
     addOption('bSplitAtPolyKnots')
     addOption('bSimplifyCrv')
-    addOption('bOffsetNormalToSurface_NotSPB')
-    if not Opts.values['bOffsetNormalToSurface_NotSPB']:
+    if not Opts.values['bRC_NotSPB']:
         addOption('fAngle_Start_Deg')
         addOption('bVariableAngle')
         if Opts.values['bVariableAngle']:
             addOption('fAngle_End_Deg')
             addOption('bTaperChangePerCrvParam')
     addOption('fDistance')
-    addOption('fTol')
-    addOption('bAddBrep')
+    if not Opts.values['bAlignEndDirs']:
+        addOption('fTol')
+    addOption('bAddSrf')
     addOption('bAddFinEndCrv')
     addOption('bAddLines')
     if Opts.values['bAddLines']:
@@ -290,8 +300,19 @@ def getInput_Curve():
 
             return objref_CrvOnFace
 
+        bDefaultsForDir_NotAngle = (
+            Opts.values['bRC_NotSPB']
+            or
+            (not Opts.values['bVariableAngle'] and
+                Opts.values['fAngle_Start_Deg'] in (0.0, 180.0))
+            or
+            (not Opts.values['bVariableAngle'] and
+                Opts.values['fAngle_Start_Deg'] in (0.0, 180.0) and
+                Opts.values['fAngle_End_Deg'] == Opts.values['fAngle_Start_Deg'])
+            )
+
         if res == ri.GetResult.Number:
-            if Opts.values['bNormalDir']:
+            if bDefaultsForDir_NotAngle:
                 key = 'fDistance'
             else:
                 key = 'fAngle_Start_Deg'
@@ -357,8 +378,21 @@ def getInput_Face():
     
             return objref_Face
 
+
+        bDefaultsForDir_NotAngle = (
+            Opts.values['bRC_NotSPB']
+            or
+            (not Opts.values['bVariableAngle'] and
+                Opts.values['fAngle_Start_Deg'] in (0.0, 180.0))
+            or
+            (not Opts.values['bVariableAngle'] and
+                Opts.values['fAngle_Start_Deg'] in (0.0, 180.0) and
+                Opts.values['fAngle_End_Deg'] == Opts.values['fAngle_Start_Deg'])
+            )
+
+
         if res == ri.GetResult.Number:
-            if Opts.values['bNormalDir']:
+            if bDefaultsForDir_NotAngle:
                 key = 'fDistance'
             else:
                 key = 'fAngle_Start_Deg'
@@ -368,7 +402,7 @@ def getInput_Face():
 
         # An option was selected.
 
-        if Opts.values['bAddBrep'] and not Opts.values['bLoose'] and Opts.values['bUseSectionLines']:
+        if Opts.values['bAddSrf'] and not Opts.values['bLoose'] and Opts.values['bUseSectionLines']:
             if (
                 Opts.values['bLoft_NotSweep'] and
                 go.OptionIndex() == idxs_Opt['iLoftType']
@@ -393,8 +427,8 @@ def getInput_Click():
 
     go = ri.Custom.GetPoint()
 
-    bFlippingDirInsteadOfAngle = (
-        Opts.values['bOffsetNormalToSurface_NotSPB']
+    bDefaultsForDir_NotAngle = (
+        Opts.values['bRC_NotSPB']
         or
         (not Opts.values['bVariableAngle'] and
             Opts.values['fAngle_Start_Deg'] in (0.0, 180.0))
@@ -404,7 +438,7 @@ def getInput_Click():
             Opts.values['fAngle_End_Deg'] == Opts.values['fAngle_Start_Deg'])
         )
 
-    if bFlippingDirInsteadOfAngle:
+    if bDefaultsForDir_NotAngle:
         go.SetCommandPrompt("Left click to flip direction")
     else:
         go.SetCommandPrompt("Left click to flip angle")
@@ -417,7 +451,7 @@ def getInput_Click():
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
     key = 'FlipDir'; idxs_Opt[key] = go.AddOption(key)
-    if not bFlippingDirInsteadOfAngle and Opts.values['bVariableAngle']:
+    if not bDefaultsForDir_NotAngle and Opts.values['bVariableAngle']:
         key = 'FlipAngle'; idxs_Opt[key] = go.AddOption(key)
         key = 'SwapAngles'; idxs_Opt[key] = go.AddOption(key)
 
@@ -434,7 +468,7 @@ def getInput_Click():
         return True
 
     if res == ri.GetResult.Point:
-        if bFlippingDirInsteadOfAngle:
+        if bDefaultsForDir_NotAngle:
             Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
             Opts.setValue('fDistance')
             #if Opts.riOpts['fAngle_Start_Deg'].CurrentValue == 0.0:
@@ -463,7 +497,7 @@ def getInput_Click():
         return False
 
     if res == ri.GetResult.Number:
-        if Opts.values['bNormalDir']:
+        if bDefaultsForDir_NotAngle:
             key = 'fDistance'
         else:
             key = 'fAngle_Start_Deg'
@@ -482,7 +516,7 @@ def getInput_Click():
         go.Dispose()
         return False
 
-    if not bFlippingDirInsteadOfAngle and 'FlipAngle' in idxs_Opt and go.OptionIndex() == idxs_Opt['FlipAngle']:
+    if not bDefaultsForDir_NotAngle and 'FlipAngle' in idxs_Opt and go.OptionIndex() == idxs_Opt['FlipAngle']:
         #Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
         #Opts.setValue('fDistance')
         Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
@@ -603,7 +637,7 @@ def _createArrayedLines(rgCurve0, rgSurface0, fDistance, fAngle_Start_Deg, bVari
     return rgLines_Arrayed
 
 
-def _curveWithSpansCompletelyOnTheFace(rgCrv, rgFace, t_Crv_Pick, bDebug=False):
+def _curveWithSpansCompletelyOnTheFace(rgCrv, rgFace, t_Crv_Pick, fTol, bDebug=False):
     """
     Only process spans of the curve whose spans start and ends are on the Face.
     """
@@ -615,7 +649,7 @@ def _curveWithSpansCompletelyOnTheFace(rgCrv, rgFace, t_Crv_Pick, bDebug=False):
         if not bSuccess: continue
         pt_OnFace = rgFace.PointAt(u,v)
         dist = pt_OnFace.DistanceTo(pt_OnCrv)
-        if dist > sc.doc.ModelAbsoluteTolerance:
+        if dist > fTol:
             if bDebug:
                 sEval='dist'; print(sEval+': ',eval(sEval))
                 print("PointAtStart not on underlying surface.")
@@ -627,7 +661,7 @@ def _curveWithSpansCompletelyOnTheFace(rgCrv, rgFace, t_Crv_Pick, bDebug=False):
         if not bSuccess: continue
         pt_OnFace = rgFace.PointAt(u,v)
         dist = pt_OnFace.DistanceTo(pt_OnCrv)
-        if dist > sc.doc.ModelAbsoluteTolerance:
+        if dist > fTol:
             if bDebug:
                 #sc.doc.Objects.AddPoint(pt_OnFace)
                 sEval='dist'; print(sEval+': ',eval(sEval))
@@ -725,7 +759,7 @@ def _matchCrvEndDirs(nc_ToMod, nc_Ref):
 
 def _rebuildCrv(rgCrv_In, tol):
 
-    for exponent in xrange(8):
+    for exponent in xrange(9):
         sc.escape_test()
 
         spanCount = 2**exponent
@@ -749,7 +783,7 @@ def _rebuildCrv(rgCrv_In, tol):
         return nc_WIP
 
 
-def _simplifyCrvForLoft(rgCrv_In, bDebug=False):
+def _simplifyCrvForLoft(rgCrv_In, fTol, bDebug=False):
     """
     Output a degree-3 curve with only simple internal knots.
     Only output degree-3 for similar limation of _Loft and RC's Loft.
@@ -791,13 +825,15 @@ def _simplifyCrvForLoft(rgCrv_In, bDebug=False):
             rg.KnotStyle.Uniform)
         ):
             return nc_WIP
-        ms = knotMultiplicityList(nc_WIP.Knots)
-        if not(nc_WIP.IsClosed and nc_WIP.IsPeriodic):
-            ms = ms[1:-1]
-        if all([m == 1 for m in ms]):
-            return nc_WIP
 
-    tol = 0.5 * sc.doc.ModelAbsoluteTolerance
+        # Non-uniform but only simple internal knots is disabled for now.
+        #ms = knotMultiplicityList(nc_WIP.Knots)
+        #if not(nc_WIP.IsClosed and nc_WIP.IsPeriodic):
+        #    ms = ms[1:-1]
+        #if all([m == 1 for m in ms]):
+        #    return nc_WIP
+
+    fTol_Rail = 0.1 * fTol # Smaller tolerance in case starting curve is not exactly on surface.
 
     if nc_WIP.Degree == 3:
 
@@ -807,13 +843,13 @@ def _simplifyCrvForLoft(rgCrv_In, bDebug=False):
             nc_WIP.Knots.CreateUniformKnots(knotSpacing=1.0) # Modifies existing Knots.
 
         dev = _getDistancesBetweenCurves(rgCrv_In, nc_WIP)
-        if dev <= tol:
+        if dev <= fTol_Rail:
             return nc_WIP
-        if bDebug: print("'MakeUniform' routine result is not within {}.".format(tol))
+        if bDebug: print("'MakeUniform' routine result is not within {}.".format(fTol_Rail))
 
     nc_WIP.Dispose()
 
-    return _rebuildCrv(rgCrv_In, tol)
+    return _rebuildCrv(rgCrv_In, fTol_Rail)
 
 
 def _splitNurbsCrvsAtPolyKnots(ncs):
@@ -841,7 +877,7 @@ def _splitNurbsCrvsAtPolyKnots(ncs):
     return ncs_Out
 
 
-def _prepareCrvToFin(rgCrv_In, bSimplifyCrv, bExplodePolyCrv, bSplitAtPolyKnots, bDebug=False):
+def _prepareCrvToFin(rgCrv_In, bSimplifyCrv, bExplodePolyCrv, bSplitAtPolyKnots, fTol, bDebug=False):
     if bExplodePolyCrv and isinstance(rgCrv_In, rg.PolyCurve):
         rgCrvs_Out = rgCrv_In.Explode()
     else:
@@ -849,7 +885,7 @@ def _prepareCrvToFin(rgCrv_In, bSimplifyCrv, bExplodePolyCrv, bSplitAtPolyKnots,
 
     if bSimplifyCrv:
         for i in range(len(rgCrvs_Out)):
-            rc = _simplifyCrvForLoft(rgCrvs_Out[i], bDebug)
+            rc = _simplifyCrvForLoft(rgCrvs_Out[i], fTol, bDebug)
             if rc:
                 rgCrvs_Out[i] = rc
 
@@ -865,18 +901,19 @@ def main():
     if objref_CrvToFin is None: return
 
 
+    bAlignEndDirs = Opts.values['bAlignEndDirs']
     bUseFaceOfSelNakedEdge = Opts.values['bUseFaceOfSelNakedEdge']
     bExplodePolyCrv = Opts.values['bExplodePolyCrv']
     bSplitAtPolyKnots = Opts.values['bSplitAtPolyKnots']
     bSimplifyCrv = Opts.values['bSimplifyCrv']
-    bOffsetNormalToSurface_NotSPB = Opts.values['bOffsetNormalToSurface_NotSPB']
+    bRC_NotSPB = Opts.values['bRC_NotSPB']
     fAngle_Start_Deg = Opts.values['fAngle_Start_Deg']
     bVariableAngle = Opts.values['bVariableAngle']
     fAngle_End_Deg = Opts.values['fAngle_End_Deg']
     bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
     fDistance = Opts.values['fDistance']
-    fTol = Opts.values['fTol']
-    bAddBrep = Opts.values['bAddBrep']
+    fTol = sc.doc.ModelAbsoluteTolerance if Opts.values['bAlignEndDirs'] else Opts.values['fTol']
+    bAddSrf = Opts.values['bAddSrf']
     iLoftType = Opts.values['iLoftType']
     bAddFinEndCrv = Opts.values['bAddFinEndCrv']
     bAddLines = Opts.values['bAddLines']
@@ -900,17 +937,18 @@ def main():
         if objref_Face is None: return
 
 
+        bAlignEndDirs = Opts.values['bAlignEndDirs']
         bExplodePolyCrv = Opts.values['bExplodePolyCrv']
         bSplitAtPolyKnots = Opts.values['bSplitAtPolyKnots']
         bSimplifyCrv = Opts.values['bSimplifyCrv']
-        bOffsetNormalToSurface_NotSPB = Opts.values['bOffsetNormalToSurface_NotSPB']
+        bRC_NotSPB = Opts.values['bRC_NotSPB']
         fAngle_Start_Deg = Opts.values['fAngle_Start_Deg']
         bVariableAngle = Opts.values['bVariableAngle']
         fAngle_End_Deg = Opts.values['fAngle_End_Deg']
         bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
         fDistance = Opts.values['fDistance']
-        fTol = Opts.values['fTol']
-        bAddBrep = Opts.values['bAddBrep']
+        fTol = sc.doc.ModelAbsoluteTolerance if Opts.values['bAlignEndDirs'] else Opts.values['fTol']
+        bAddSrf = Opts.values['bAddSrf']
         iLoftType = Opts.values['iLoftType']
         bAddFinEndCrv = Opts.values['bAddFinEndCrv']
         bAddLines = Opts.values['bAddLines']
@@ -933,7 +971,7 @@ def main():
 
 
     rgCrv0_ToFin_Full_TrimmedToFace = _curveWithSpansCompletelyOnTheFace(
-        rgC_In, rgF_In, t_Crv0_Pick, bDebug)
+        rgC_In, rgF_In, t_Crv0_Pick, fTol, bDebug)
     if rgCrv0_ToFin_Full_TrimmedToFace is None: return
 
 
@@ -948,62 +986,23 @@ def main():
             bSimplifyCrv,
             bExplodePolyCrv,
             bSplitAtPolyKnots,
+            fTol,
             bDebug)
 
 
-        gLines_Arrayed = []
-        gCrvs_FinEnd = []
-        rgBreps1 = []
+        rgCs_FinEnd = []
+        rgBs_FromLoft = []
+        rgLs_ForOut = []
 
 
         for rgCrv_ToFin in rgCrvs_ToFin:
             nc_OnFace = rgCrv_ToFin.ToNurbsCurve()
 
 
-            if bAddLines and (bAtGrevilles or bAtKnots or bAtEqualDivisions):
-                rc = _createArrayedLines(
-                    rgCurve0 = rgCrv_ToFin,
-                    rgSurface0=rgF_In,
-                    fDistance=fDistance,
-                    fAngle_Start_Deg=fAngle_Start_Deg,
-                    bVariableAngle=bVariableAngle,
-                    fAngle_End_Deg=fAngle_End_Deg,
-                    rgCrv0_FullForVariableTaperCalc=rgCrv0_ToFin_Full_TrimmedToFace,
-                    bTaperChangePerCrvParam=bTaperChangePerCrvParam,
-                    bAtGrevilles=bAtGrevilles,
-                    bAtKnots=bAtKnots,
-                    bAtEqualDivisions=bAtEqualDivisions,
-                    iDivisionCt=iDivisionCt)
-                if rc:
-                    for line in rc:
-                        gLine_Arrayed = sc.doc.Objects.AddLine(line)
-                        if gLine_Arrayed != Guid.Empty:
-                            gLines_Arrayed.append(gLine_Arrayed)
-
-
-            if bOffsetNormalToSurface_NotSPB:
+            if bRC_NotSPB:
                 # Most similar to _Fin _Direction=Normal.
                 rgNC_FinEnd = rgCrv_ToFin.OffsetNormalToSurface(
                     surface=rgF_In, height=fDistance)
-
-                if not _matchCrvEndDirs(rgNC_FinEnd, rgCrv_ToFin):
-                    nc_WIP.Dispose()
-                    continue
-
-                if bAddFinEndCrv:
-                    gCrv_FinEnd = sc.doc.Objects.AddCurve(rgNC_FinEnd)
-                    if gCrv_FinEnd != Guid.Empty:
-                        gCrvs_FinEnd.append(gCrv_FinEnd)
-
-                if bAddBrep:
-                    rc = rg.Brep.CreateFromLoft(
-                        curves=[nc_OnFace, rgNC_FinEnd],
-                        start=rg.Point3d.Unset,
-                        end=rg.Point3d.Unset,
-                        loftType=rg.LoftType.Straight,
-                        closed=False)
-                    rgBreps1.extend(rc)
-                rgNC_FinEnd.Dispose()
             else:
                 rc = _createArrayedLines(
                     rgCurve0=nc_OnFace,
@@ -1019,77 +1018,129 @@ def main():
                     bAtEqualDivisions=False,
                     iDivisionCt=iDivisionCt)
                 if not rc: continue
-                rgLines_Arrayed_GrevillesOnly = rc
+                rgLs_GrevillesOnly = rc
 
-                pts_Arrayed = [line.To for line in rgLines_Arrayed_GrevillesOnly]
+                pts_Arrayed = [line.To for line in rgLs_GrevillesOnly]
 
                 # Create curve at other end of fin.
                 rgNC_FinEnd = nc_OnFace.Duplicate()
                 rgNC_FinEnd.SetGrevillePoints(pts_Arrayed)
 
-                if bAddFinEndCrv:
-                    gCrv_FinEnd = sc.doc.Objects.AddCurve(rgNC_FinEnd)
-                    if gCrv_FinEnd != Guid.Empty:
-                        gCrvs_FinEnd.append(gCrv_FinEnd)
+            if bAlignEndDirs and not _matchCrvEndDirs(rgNC_FinEnd, rgCrv_ToFin):
+                if bEcho: print("Alignment of end tangent failed.")
+                nc_WIP.Dispose()
+                continue
 
-                if bAddBrep:
-                    rc = rg.Brep.CreateFromLoft(
-                        curves=[nc_OnFace, rgNC_FinEnd],
-                        start=rg.Point3d.Unset,
-                        end=rg.Point3d.Unset,
-                        loftType=rg.LoftType.Straight,
-                        closed=False)
-                    rgBreps1.extend(rc)
-                rgNC_FinEnd.Dispose()
+            if bAddFinEndCrv:
+                rgCs_FinEnd.append(rgNC_FinEnd)
+
+            if bAddSrf:
+                rc = rg.Brep.CreateFromLoft(
+                    curves=[nc_OnFace, rgNC_FinEnd],
+                    start=rg.Point3d.Unset,
+                    end=rg.Point3d.Unset,
+                    loftType=rg.LoftType.Straight,
+                    closed=False)
+                rgBs_FromLoft.extend(rc)
+            rgNC_FinEnd.Dispose()
 
 
             nc_OnFace.Dispose()
 
-        if rgBreps1:
-            rgBreps1_Joined = rg.Brep.JoinBreps(
-                    rgBreps1,
-                    tolerance=8.0*sc.doc.ModelAbsoluteTolerance)
-            for _ in rgBreps1: _.Dispose()
+
+            # Lines out are independent of offset method.
+            if bAddLines and (bAtGrevilles or bAtKnots or bAtEqualDivisions):
+                if bAtGrevilles and not(bAtKnots or bAtEqualDivisions):
+                    rc = rgLs_GrevillesOnly
+                else:
+                    rc = _createArrayedLines(
+                        rgCurve0 = rgCrv_ToFin,
+                        rgSurface0=rgF_In,
+                        fDistance=fDistance,
+                        fAngle_Start_Deg=fAngle_Start_Deg,
+                        bVariableAngle=bVariableAngle,
+                        fAngle_End_Deg=fAngle_End_Deg,
+                        rgCrv0_FullForVariableTaperCalc=rgCrv0_ToFin_Full_TrimmedToFace,
+                        bTaperChangePerCrvParam=bTaperChangePerCrvParam,
+                        bAtGrevilles=bAtGrevilles,
+                        bAtKnots=bAtKnots,
+                        bAtEqualDivisions=bAtEqualDivisions,
+                        iDivisionCt=iDivisionCt)
+                if rc:
+                    rgLs_ForOut.extend(rc)
+
+
+        sOut = []
+
+
+        gBs_Out = []
+        if rgBs_FromLoft:
+            rgBs_JoinedLofts = rg.Brep.JoinBreps(
+                rgBs_FromLoft,
+                tolerance=4.0*fTol)
+            for _ in rgBs_FromLoft: _.Dispose()
             
-            if rgBreps1_Joined:
-                gBreps1 = []
-                for rgBrep1_Joined in rgBreps1_Joined:
-                    gBrep1 = sc.doc.Objects.AddBrep(rgBrep1_Joined)
+            if rgBs_JoinedLofts:
+                gBs_Out = []
+                for rgBrep1_Joined in rgBs_JoinedLofts:
+                    gB = sc.doc.Objects.AddBrep(rgBrep1_Joined)
                     rgBrep1_Joined.Dispose()
-                    if gBrep1 != Guid.Empty:
-                        gBreps1.append(gBrep1)
+                    if gB != Guid.Empty:
+                        gBs_Out.append(gB)
                 if bEcho:
-                    print("{} brep(s) with {} face(s) created.".format(
-                    len(gBreps1), len(rgBreps1)))
-        else:
-            gBreps1 = []
-        
+                    sOut.append(("{} brep(s) with {} face(s)".format(
+                        len(gBs_Out), len(rgBs_FromLoft))))
+
+        gCs_FinEnd = []
+        if bAddFinEndCrv:
+            rgCs_FinEnd.append(rgNC_FinEnd)
+            for rgC in rgCs_FinEnd:
+                gCrv_FinEnd = sc.doc.Objects.AddCurve(rgNC_FinEnd)
+                if gCrv_FinEnd != Guid.Empty:
+                    gCs_FinEnd.append(gCrv_FinEnd)
+            if bEcho:
+                sOut.append("{} fin end curves".format(len(gCs_FinEnd)))
+
+        gLs_Out = []
+        if rgLs_ForOut:
+            for line in rgLs_ForOut:
+                gL = sc.doc.Objects.AddLine(line)
+                if gL != Guid.Empty:
+                    gLs_Out.append(gL)
+            if bEcho:
+                sOut.append("{} lines".format(len(gLs_Out)))
+
+
         sc.doc.Views.Redraw()
-        
+
+        if sOut:
+            print("Output: {}".format(", ".join(sOut)))
+
 
         rc = getInput_Click()
         if rc is None:
-            for gLine_Arrayed in gLines_Arrayed:
-                sc.doc.Objects.Delete(gLine_Arrayed, True)
-            for gCrv_FinEnd in gCrvs_FinEnd:
+            for gL in gLs_Out:
+                sc.doc.Objects.Delete(gL, True)
+            for gCrv_FinEnd in gCs_FinEnd:
                 sc.doc.Objects.Delete(gCrv_FinEnd, True)
-            for gBrep1 in gBreps1:
-                sc.doc.Objects.Delete(gBrep1, True)
+            for gB in gBs_Out:
+                sc.doc.Objects.Delete(gB, True)
             break
 
         if rc: break
 
+        bAlignEndDirs = Opts.values['bAlignEndDirs']
         bExplodePolyCrv = Opts.values['bExplodePolyCrv']
         bSplitAtPolyKnots = Opts.values['bSplitAtPolyKnots']
         bSimplifyCrv = Opts.values['bSimplifyCrv']
-        bOffsetNormalToSurface_NotSPB = Opts.values['bOffsetNormalToSurface_NotSPB']
+        bRC_NotSPB = Opts.values['bRC_NotSPB']
         fAngle_Start_Deg = Opts.values['fAngle_Start_Deg']
         bVariableAngle = Opts.values['bVariableAngle']
         fAngle_End_Deg = Opts.values['fAngle_End_Deg']
         bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
         fDistance = Opts.values['fDistance']
-        fTol = Opts.values['fTol']
-        bAddBrep = Opts.values['bAddBrep']
+        fTol = sc.doc.ModelAbsoluteTolerance if Opts.values['bAlignEndDirs'] else Opts.values['fTol']
+        bAddSrf = Opts.values['bAddSrf']
         iLoftType = Opts.values['iLoftType']
         bAddFinEndCrv = Opts.values['bAddFinEndCrv']
         bAddLines = Opts.values['bAddLines']
@@ -1102,12 +1153,12 @@ def main():
 
 
 
-        for gLine_Arrayed in gLines_Arrayed:
-            sc.doc.Objects.Delete(gLine_Arrayed, True)
-        for gCrv_FinEnd in gCrvs_FinEnd:
+        for gL in gLs_Out:
+            sc.doc.Objects.Delete(gL, True)
+        for gCrv_FinEnd in gCs_FinEnd:
             sc.doc.Objects.Delete(gCrv_FinEnd, True)
-        for gBrep1 in gBreps1:
-            sc.doc.Objects.Delete(gBrep1, True)
+        for gB in gBs_Out:
+            sc.doc.Objects.Delete(gB, True)
 
 
     rgF_In.Brep.Dispose()

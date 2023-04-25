@@ -17,7 +17,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 190625-27: Created, starting with another script.
 ...
 230419-20: Added use of OffsetNormalToSurface.  Refactored.
-230423-24: Various major changes.  Added AlignEndDirs option.  Now uses DrawConduit for preview.
+230423-25: Various major changes.  Added AlignEndDirs option.  Now uses DrawConduit for preview.
 
 TODO:
     ? Replace _curveWithSpansCompletelyOnTheFace with a routine that instead trims curve to the face.
@@ -90,9 +90,9 @@ class Opts():
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'bTaperChangePerCrvParam'; keys.append(key)
+    key = 'bAngleChangePerCrvParam_NotLength'; keys.append(key)
     values[key] = False
-    names[key] = 'TaperChangePerCrv'
+    names[key] = 'AngleChangePerCrv'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Length', 'Param')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -239,7 +239,7 @@ def _addCommonOptions(go):
         addOption('bVariableAngle')
         if Opts.values['bVariableAngle']:
             addOption('fAngle_End_Deg')
-            addOption('bTaperChangePerCrvParam')
+            addOption('bAngleChangePerCrvParam_NotLength')
     addOption('fDistance')
     addOption('fTargetTol')
     addOption('bAddSrf')
@@ -565,9 +565,10 @@ def _getInput_Click():
     return True
 
 
-def _createArrayedLines(rgCrv, rgSrf, fDistance, fAngle_Start_Deg, fAngle_End_Deg, rgCrv0_FullForVariableTaperCalc, bTaperChangePerCrvParam, bAtGrevilles, bAtKnots, bAtEqualDivisions, iDivisionCt):
+def _createArrayedLines(rgCrv, rgSrf, fDistance, fAngle_Start_Deg, fAngle_End_Deg, rgCrv_Full, bAngleChangePerCrvParam_NotLength, bAtGrevilles, bAtKnots, bAtEqualDivisions, iDivisionCt):
     """
     rgSurface0: rg.Surface, including rg.BrepFace
+    rgCrv_Full: For variable angle calculation
     """
 
     rgCrv_In = rgCrv
@@ -599,8 +600,8 @@ def _createArrayedLines(rgCrv, rgSrf, fDistance, fAngle_Start_Deg, fAngle_End_De
     angle_Const_Rad = angle_Var_Rad = None
     if fAngle_End_Deg is None or fAngle_End_Deg == fAngle_Start_Deg:
         angle_Const_Rad = Rhino.RhinoMath.ToRadians(fAngle_Start_Deg)
-    elif not bTaperChangePerCrvParam:
-        length_Full = rgCrv0_FullForVariableTaperCalc.GetLength()
+    elif not bAngleChangePerCrvParam_NotLength:
+        length_Full = rgCrv_Full.GetLength()
 
     for t in ts:
         pt_Start = rgNurbsCrv_rgCrv0.PointAt(t)
@@ -615,17 +616,17 @@ def _createArrayedLines(rgCrv, rgSrf, fDistance, fAngle_Start_Deg, fAngle_End_De
         pt_End = rg.Point3d(pt_NoAngle)
 
         if angle_Const_Rad is None:
-            if bTaperChangePerCrvParam:
-                t_Normalized = rgCrv0_FullForVariableTaperCalc.Domain.NormalizedParameterAt(t)
+            if bAngleChangePerCrvParam_NotLength:
+                t_Normalized = rgCrv_Full.Domain.NormalizedParameterAt(t)
                 angle_Var_Rad = Rhino.RhinoMath.ToRadians(
-                        fAngle_Start_Deg * (1.0 - t_Normalized) +
-                        fAngle_End_Deg * t_Normalized)
+                    fAngle_Start_Deg * (1.0 - t_Normalized) +
+                    fAngle_End_Deg * t_Normalized)
             else:
-                length_to_t = rgCrv0_FullForVariableTaperCalc.GetLength(
-                        subdomain=rg.Interval(rgCrv0_FullForVariableTaperCalc.Domain.T0, t))
+                length_to_t = rgCrv_Full.GetLength(
+                    subdomain=rg.Interval(rgCrv_Full.Domain.T0, t))
                 angle_Var_Rad = Rhino.RhinoMath.ToRadians(
-                        fAngle_Start_Deg * (1.0 - length_to_t/length_Full) +
-                        fAngle_End_Deg * length_to_t/length_Full)
+                    fAngle_Start_Deg * (1.0 - length_to_t/length_Full) +
+                    fAngle_End_Deg * length_to_t/length_Full)
 
         xform_Rotation = rg.Transform.Rotation(
                 angleRadians=angle_Const_Rad if angle_Var_Rad is None else angle_Var_Rad,
@@ -642,7 +643,7 @@ def _createArrayedLines(rgCrv, rgSrf, fDistance, fAngle_Start_Deg, fAngle_End_De
     return rgLines_Arrayed
 
 
-def _curveWithSpansCompletelyOnTheFace(rgCrv, rgFace, t_Crv_Pick, fTargetTol, bDebug=False):
+def _crvWithSpansCompletelyOnFace(rgCrv, rgFace, t_Crv_Pick, fTargetTol, bDebug=False):
     """
     Only process spans of the curve whose spans start and ends are on the Face.
     """
@@ -706,14 +707,14 @@ def _curveWithSpansCompletelyOnTheFace(rgCrv, rgFace, t_Crv_Pick, fTargetTol, bD
             iSpans_Contiguous_nests.pop()
     
     if len(iSpans_Contiguous_nests) == 1:
-        rgCrv0_ToFin_Full_TrimmedToFace = rgCrv.Trim(
+        rgC_Out = rgCrv.Trim(
                 rgCrv.SpanDomain(iSpans_Contiguous_nests[0][0]).T0,
                 rgCrv.SpanDomain(iSpans_Contiguous_nests[0][-1]).T1)
     elif len(iSpans_Contiguous_nests) > 1:
         for iSpan_NestIndex, iSpans_Contiguous in enumerate(iSpans_Contiguous_nests):
             for iSpan in iSpans_Contiguous:
                 if rgCrv.SpanDomain(iSpan).T0 <= t_Crv_Pick <= rgCrv.SpanDomain(iSpan).T1:
-                    rgCrv0_ToFin_Full_TrimmedToFace = rgCrv.Trim(
+                    rgC_Out = rgCrv.Trim(
                             rgCrv.SpanDomain(iSpans_Contiguous_nests[iSpan_NestIndex][0]).T0,
                             rgCrv.SpanDomain(iSpans_Contiguous_nests[iSpan_NestIndex][-1]).T1)
                 else:
@@ -722,9 +723,9 @@ def _curveWithSpansCompletelyOnTheFace(rgCrv, rgFace, t_Crv_Pick, fTargetTol, bD
                     return
         
     if bDebug:
-        sc.doc.Objects.AddCurve(rgCrv0_ToFin_Full_TrimmedToFace)
+        sc.doc.Objects.AddCurve(rgC_Out)
 
-    return rgCrv0_ToFin_Full_TrimmedToFace
+    return rgC_Out
 
 
 def _getDistancesBetweenCurves(crvA, crvB):
@@ -777,10 +778,6 @@ def _rebuildCrv(rgCrv_In, tol):
             preserveTangents=True)
 
         nc_WIP.Domain = rgCrv_In.Domain
-
-        #if not _matchCrvEndDirs(nc_WIP, rgCrv_In):
-        #    nc_WIP.Dispose()
-        #    continue
 
         dev = _getDistancesBetweenCurves(rgCrv_In, nc_WIP)
         if dev > tol:
@@ -993,6 +990,8 @@ def _createGeometryInteractively():
         objref_Face = _getInput_Face()
         if objref_Face is None: return
 
+        sc.doc.Objects.UnselectAll()
+
 
         rgF_In = objref_Face.Face()
 
@@ -1004,7 +1003,7 @@ def _createGeometryInteractively():
     bSimplifyCrv = Opts.values['bSimplifyCrv']
     fAngle_Start_Deg = Opts.values['fAngle_Start_Deg']
     fAngle_End_Deg = Opts.values['fAngle_End_Deg'] if Opts.values['bVariableAngle'] else None
-    bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
+    bAngleChangePerCrvParam_NotLength = Opts.values['bAngleChangePerCrvParam_NotLength']
     fDistance = Opts.values['fDistance']
     fTargetTol = Opts.values['fTargetTol']
     bAddSrf = Opts.values['bAddSrf']
@@ -1024,24 +1023,16 @@ def _createGeometryInteractively():
 
     if isinstance(rgC_In, rg.PolyCurve):
         rgC_In.RemoveNesting()
-        # TODO: Determine how to handle results from variable angles and closed curves.
-        #        if (
-        #            rgC_In.IsClosed and
-        #            not bExplodePolyCrv and
-        #            not bSplitAtPolyKnots and
-        #            bSimplifyCrv and
-        #            (fAngle_End_Deg is not None and fAngle_End_Deg != fAngle_Start_Deg)
-        #        ):
-        #            print("Closed
 
 
-    rgCrv0_ToFin_Full_TrimmedToFace = _curveWithSpansCompletelyOnTheFace(
+    rgC_In_TrimmedToFace = _crvWithSpansCompletelyOnFace(
         rgC_In, rgF_In, t_Crv0_Pick, fTargetTol, bDebug)
-    if rgCrv0_ToFin_Full_TrimmedToFace is None: return
+    if rgC_In_TrimmedToFace is None: return
 
 
-    rgC_In.Dispose()
-
+    if rgC_In_TrimmedToFace.IsClosed and fAngle_End_Deg:
+        fAngle_End_Deg = Opts.values['fAngle_End_Deg'] = sc.sticky[Opts.stickyKeys['fAngle_End_Deg']] = None
+        bVariableAngle = Opts.values['bVariableAngle'] = sc.sticky[Opts.stickyKeys['bVariableAngle']] = False
 
 
     sk_conduit = 'conduit({})'.format(__file__) # StickyKey
@@ -1061,7 +1052,7 @@ def _createGeometryInteractively():
 
 
         ncs_ToFin = _prepareCrvToFin(
-            rgCrv0_ToFin_Full_TrimmedToFace,
+            rgC_In_TrimmedToFace,
             bSimplifyCrv,
             bExplodePolyCrv,
             bSplitAtPolyKnots,
@@ -1075,21 +1066,21 @@ def _createGeometryInteractively():
         rgLs_ForOut = []
 
 
-        for nc_ToFin in ncs_ToFin:
+        for nc_FinStart in ncs_ToFin:
 
             if bRC_NotSPB:
                 # Most similar to _Fin _Direction=Normal.
-                nc_FinEnd = nc_ToFin.OffsetNormalToSurface(
+                nc_FinEnd = nc_FinStart.OffsetNormalToSurface(
                     surface=rgF_In, height=fDistance)
             else:
                 rc = _createArrayedLines(
-                    rgCrv=nc_ToFin,
+                    rgCrv=nc_FinStart,
                     rgSrf=rgF_In,
                     fDistance=fDistance,
                     fAngle_Start_Deg=fAngle_Start_Deg,
                     fAngle_End_Deg=fAngle_End_Deg,
-                    rgCrv0_FullForVariableTaperCalc=rgCrv0_ToFin_Full_TrimmedToFace,
-                    bTaperChangePerCrvParam=bTaperChangePerCrvParam,
+                    rgCrv_Full=rgC_In_TrimmedToFace,
+                    bAngleChangePerCrvParam_NotLength=bAngleChangePerCrvParam_NotLength,
                     bAtGrevilles=True,
                     bAtKnots=False,
                     bAtEqualDivisions=False,
@@ -1102,10 +1093,16 @@ def _createGeometryInteractively():
                 #sc.doc.Views.Redraw()
 
                 # Create curve at other end of fin.
-                nc_FinEnd = nc_ToFin.Duplicate()
+                print(len(nc_FinStart.GrevillePoints(False)))
+                #1/0
+                nc_FinEnd = nc_FinStart.Duplicate()
                 nc_FinEnd.SetGrevillePoints(pts_Arrayed)
 
-            if bAlignEndDirs and not _matchCrvEndDirs(nc_FinEnd, nc_ToFin):
+            if (
+                not nc_FinEnd.IsPeriodic and
+                bAlignEndDirs and
+                not _matchCrvEndDirs(nc_FinEnd, nc_FinStart)
+            ):
                 if bEcho: print("Alignment of end tangent failed.")
                 nc_WIP.Dispose()
                 continue
@@ -1114,7 +1111,7 @@ def _createGeometryInteractively():
 
             if bAddSrf:
                 rc = rg.Brep.CreateFromLoft(
-                    curves=[nc_ToFin, nc_FinEnd],
+                    curves=[nc_FinStart, nc_FinEnd],
                     start=rg.Point3d.Unset,
                     end=rg.Point3d.Unset,
                     loftType=rg.LoftType.Straight,
@@ -1128,13 +1125,13 @@ def _createGeometryInteractively():
                     rc = rgLs_GrevillesOnly
                 else:
                     rc = _createArrayedLines(
-                        rgCrv=nc_ToFin,
+                        rgCrv=nc_FinStart,
                         rgSrf=rgF_In,
                         fDistance=fDistance,
                         fAngle_Start_Deg=fAngle_Start_Deg,
                         fAngle_End_Deg=fAngle_End_Deg,
-                        rgCrv0_FullForVariableTaperCalc=rgCrv0_ToFin_Full_TrimmedToFace,
-                        bTaperChangePerCrvParam=bTaperChangePerCrvParam,
+                        rgCrv_Full=rgC_In_TrimmedToFace,
+                        bAngleChangePerCrvParam_NotLength=bAngleChangePerCrvParam_NotLength,
                         bAtGrevilles=bAtGrevilles,
                         bAtKnots=bAtKnots,
                         bAtEqualDivisions=bAtEqualDivisions,
@@ -1143,7 +1140,7 @@ def _createGeometryInteractively():
                     rgLs_ForOut.extend(rc)
 
 
-            nc_ToFin.Dispose()
+            nc_FinStart.Dispose()
 
 
 
@@ -1204,7 +1201,7 @@ def _createGeometryInteractively():
         bSimplifyCrv = Opts.values['bSimplifyCrv']
         fAngle_Start_Deg = Opts.values['fAngle_Start_Deg']
         fAngle_End_Deg = Opts.values['fAngle_End_Deg'] if Opts.values['bVariableAngle'] else None
-        bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
+        bAngleChangePerCrvParam_NotLength = Opts.values['bAngleChangePerCrvParam_NotLength']
         fDistance = Opts.values['fDistance']
         fTargetTol = Opts.values['fTargetTol']
         bAddSrf = Opts.values['bAddSrf']

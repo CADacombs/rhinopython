@@ -25,6 +25,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 211119: Created.
 221027: Removed requiring trim selection during mated edge selection.
 221223-24: Added options to control G2 discontinuity search.
+230601: Now will process all breps when none are selected.  Bug fix in processing all edges of breps.
 
 TODO: Add absolute curvature difference tolerance at least for RC method?
 """
@@ -190,8 +191,6 @@ def getInput():
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select edges to split")
-
     go.AcceptNumber(True, acceptZero=True)
 
     go.AlreadySelectedObjectSelect = True
@@ -210,9 +209,11 @@ def getInput():
             go.SetCommandPrompt("Select breps and/or edges")
             go.SetCommandPromptDefault("All normal breps when none are selected")
             go.GeometryFilter = rd.ObjectType.Brep | rd.ObjectType.Curve
+            go.AcceptNothing(True)
         else:
             go.SetCommandPrompt("Select edges")
             go.GeometryFilter = rd.ObjectType.Curve
+            go.AcceptNothing(False)
 
         go.GeometryAttributeFilter = (
             ri.Custom.GeometryAttributeFilter.EdgeCurve |
@@ -260,6 +261,22 @@ def getInput():
             go.Dispose()
             return objrefs
 
+        if res == ri.GetResult.Nothing:
+            oes = rd.ObjectEnumeratorSettings()
+            oes.NormalObjects = True
+            oes.LockedObjects = False
+            oes.IncludeLights = False
+            oes.IncludeGrips = False
+            oes.ObjectTypeFilter = rd.ObjectType.Brep
+
+            rdBs = list(sc.doc.Objects.GetObjectList(oes))
+
+            go.Dispose()
+
+            if len(rdBs) == 0: return
+
+            return rdBs
+
         if res == ri.GetResult.Number:
             key = 'fAngleTol_Deg'
             Opts.riOpts[key].CurrentValue = go.Number()
@@ -288,7 +305,7 @@ def groupObjrefsPerBrep_OLD(objrefs):
     return objrefs_PerB
 
 
-def createSortedBrepsAndEdges_FromObjRefs(objrefs, bIncludeMated):
+def createSortedBrepsAndEdges_FromDocObjs(rdObjs, bIncludeMated):
     """
     Parameters:
         ObjRefs of Breps or Edges
@@ -301,11 +318,27 @@ def createSortedBrepsAndEdges_FromObjRefs(objrefs, bIncludeMated):
     idxEs = []
 
    # Organize input into synchronized lists of brep ids and edge indices.
-    for objref in objrefs:
-        rdB = objref.Object()
-        gB = objref.ObjectId
-        rgE = objref.Edge()
-        idxE = rgE.EdgeIndex if rgE else None
+    for rdObj in rdObjs:
+        if isinstance(rdObj, rd.BrepObject):
+            rdB = rdObj
+            gB = rdObj.Id
+            rgE = None
+            idxE = None
+        elif isinstance(rdObj, rd.ObjRef):
+            objref = rdObj
+            rdB = objref.Object()
+            gB = objref.ObjectId
+            if objref.GeometryComponentIndex.ComponentIndexType == rg.ComponentIndexType.InvalidType:
+                rgE = None
+                idxE = None
+            else:
+                rgE = objref.Edge()
+                idxE = rgE.EdgeIndex if rgE else None
+        else:
+            raise Exception("{} not valid input for createSortedBrepsAndEdges_FromDocObjs.".format(
+                rdObj.GetType().Name))
+
+
         rgB = rdB.BrepGeometry
 
 
@@ -644,8 +677,9 @@ def getGeometricDiscontinuities_UsingRhinoCommonMethod(rgCrv, bG2_NotG1=True, fA
     return ts
 
 
-def processObjRefs(objrefs, **kwargs):
+def processDocObjs(rdObjs, **kwargs):
     """
+    rdObjs: rd.BrepObjects or rd.ObjRefs
     """
 
 
@@ -662,15 +696,15 @@ def processObjRefs(objrefs, **kwargs):
 
 
 
-    objrefs_per_B = groupObjrefsPerBrep_OLD(objrefs)
-
-    rc = createSortedBrepsAndEdges_FromObjRefs(objrefs, Opts.values['bIncludeMated'])
+    rc = createSortedBrepsAndEdges_FromDocObjs(rdObjs, Opts.values['bIncludeMated'])
     if rc is None: return
 
     rdBs, idxEs_PerB = rc
 
     iCt_EdgeIncr = 0
     iCt_Breps_Mod = 0
+
+    #objrefs_per_B = groupObjrefsPerBrep_OLD(objrefs)
 
     #for objrefs_same_B in objrefs_per_B:
 
@@ -757,8 +791,8 @@ def processObjRefs(objrefs, **kwargs):
 
 def main():
 
-    objrefs = getInput()
-    if objrefs is None: return
+    rdObjs = getInput()
+    if rdObjs is None: return
 
     fAngleTol_Deg = Opts.values['fAngleTol_Deg']
     bG2_NotG1 = Opts.values['bG2_NotG1']
@@ -772,8 +806,8 @@ def main():
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
 
-    gBrep_Ret = processObjRefs(
-        objrefs,
+    gBrep_Ret = processDocObjs(
+        rdObjs,
         fAngleTol_Deg=fAngleTol_Deg,
         bG2_NotG1=bG2_NotG1,
         bUseSPB_NotRC=bUseSPB_NotRC,

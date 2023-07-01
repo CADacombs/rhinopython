@@ -22,7 +22,7 @@ Limitations:
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 200626: Started and 1st working version.
@@ -45,6 +45,8 @@ from __future__ import print_function
         Bug fix for numeric input.
 220826: Bug fix for when ArcCurve is selected as a reference.
 230112: Replaced NurbsCurvePointList.SetWeight with SetPoint.  The former modifies CP locations.
+230630: createTanSrfFromEdge now outputs surface when bDebug==True.
+230701: Modified some tolerance values for curve matching.
 """
 
 import Rhino
@@ -623,25 +625,70 @@ def areParamsAlignedPerPickPts(objref_A, objref_B):
     return bPickedAtSideStart_A == bPickedAtSideStart_R
 
 
-def createTanSrfFromEdge(rgTrim, bDebug=False):
+def findMatchingCurveByEndPoints(curvesA, curvesB, tolerance=None, bDebug=False):
+    """ Returns list(int(Indices of B per order of A)) """
+
+    idxBs_per_As = []
+    bSameDir = []
+
+    fTol = sc.doc.ModelAbsoluteTolerance if tolerance is None else tolerance
+
+    for iA, cA in enumerate(curvesA):
+
+        ptsA = [cA.PointAtStart, cA.PointAtEnd]
+
+        for iB, cB in enumerate(curvesB):
+            if iB in idxBs_per_As:
+                continue
+
+            ptsB = [cB.PointAtStart, cB.PointAtEnd]
+
+            if (
+                cA.PointAtStart.DistanceTo(cB.PointAtStart) <= fTol
+                and
+                cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= fTol
+            ):
+                idxBs_per_As.append(iB)
+                bSameDir.append(True)
+                break # to next curveA.
+
+            if (
+                cA.PointAtStart.DistanceTo(cB.PointAtEnd) <= fTol
+                and
+                cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= fTol
+            ):
+                idxBs_per_As.append(iB)
+                bSameDir.append(False)
+                break # to next curveA.
+        else:
+            if len(curvesA) == len(curvesB):
+                if bDebug:
+                    print("Matching curve not found.")
+            idxBs_per_As.append(None)
+            bSameDir.append(None)
+
+    return idxBs_per_As#, bSameDir
+
+
+def createTanSrfFromEdge(rgT, bDebug=False):
     """
     """
 
-    rgTrim.Brep.Faces.ShrinkFaces()
-    rgEdge = rgTrim.Edge
-    ns = rgTrim.Face.UnderlyingSurface()
+    rgT.Brep.Faces.ShrinkFaces()
+    rgE = rgT.Edge
+    ns = rgT.Face.UnderlyingSurface()
 
-    #ncA_Start = rgEdge.ToNurbsCurve()
-    ncA_Start = ns.Pushup(rgTrim, tolerance=0.5*sc.doc.ModelAbsoluteTolerance)
-
-    if bDebug: print(ncA_Start.Points.Count)
+    ncA_Start = ns.Pushup(rgT, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+    if findMatchingCurveByEndPoints([rgE], [ncA_Start])[0] is None:
+        ncA_Start.Dispose()
+        ncA_Start = rgE.ToNurbsCurve()
 
     def simplifyCrv(ncA_Start):
         # Try to make Bezier.
         for d in 1, 2, 3, 5:
             nc_WIP = ncA_Start.Rebuild(pointCount=d+1, degree=d, preserveTangents=True)
             rc = rg.Curve.GetDistancesBetweenCurves(
-                nc_WIP, ncA_Start, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+                nc_WIP, ncA_Start, tolerance=0.01*sc.doc.ModelAbsoluteTolerance)
             if not rc[0]: continue
             if rc[1] > 0.5*sc.doc.ModelAbsoluteTolerance: continue
             return nc_WIP
@@ -650,10 +697,9 @@ def createTanSrfFromEdge(rgTrim, bDebug=False):
         if ncA_Start.Knots.KnotStyle == rg.KnotStyle.QuasiUniform:
             return
 
-        # QuasiUniform ~ Open and uniform
-        # Try to at least make uniform.
+        # Try to at least make quasiuniform (open and uniform).
         for p in range(3, ncA_Start.Points.Count+1):
-            for d in 2, 3, 5:
+            for d in 3, 5:
                 if (p - d) < 1: continue
                 nc_WIP = ncA_Start.Rebuild(pointCount=p, degree=d, preserveTangents=True)
                 rc = rg.Curve.GetDistancesBetweenCurves(
@@ -663,7 +709,9 @@ def createTanSrfFromEdge(rgTrim, bDebug=False):
                 if dev > 0.5*sc.doc.ModelAbsoluteTolerance: continue
                 return nc_WIP
 
-    if ncA_Start.SpanCount > 1:
+    if ncA_Start.SpanCount == 1:
+        ncA_Start = ns.Pushup(rgT, tolerance=sc.doc.ModelAbsoluteTolerance)
+    elif ncA_Start.SpanCount > 1:
         rc = simplifyCrv(ncA_Start)
         if rc is not None:
             if bDebug:
@@ -671,11 +719,12 @@ def createTanSrfFromEdge(rgTrim, bDebug=False):
                     ncA_Start.Degree, ncA_Start.Points.Count,
                     rc.Degree, rc.Points.Count))
             ncA_Start = rc
-
+    else:
+        1/0
 
     ncA = ncA_Start.DuplicateCurve()
 
-    # Do this in order to have a Greville point other than only at the ends.
+    # Do this in order to have a Greville point in addition to at the ends.
     if ncA.Degree == 1:
         bDegreeWasIncrFrom1To2 = ncA.IncreaseDegree(2)
     else:
@@ -729,12 +778,12 @@ def createTanSrfFromEdge(rgTrim, bDebug=False):
     rc = ns.ClosestPoint(pt_Mid_Neg)
     if not rc[0]:
         raise Exception("ClosestPoint failed.")
-    pfrel_Neg = rgTrim.Face.IsPointOnFace(*rc[1:], tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+    pfrel_Neg = rgT.Face.IsPointOnFace(*rc[1:], tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
 
     rc = ns.ClosestPoint(pt_Mid_Pos)
     if not rc[0]:
         raise Exception("ClosestPoint failed.")
-    pfrel_Pos = rgTrim.Face.IsPointOnFace(*rc[1:], tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+    pfrel_Pos = rgT.Face.IsPointOnFace(*rc[1:], tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
 
     if pfrel_Neg == rg.PointFaceRelation.Interior and pfrel_Pos != rg.PointFaceRelation.Interior:
         pts_on_ncB = [createEndPt(i, -angle) for i in range(len(ts))]
@@ -742,7 +791,7 @@ def createTanSrfFromEdge(rgTrim, bDebug=False):
         pts_on_ncB = [createEndPt(i,  angle) for i in range(len(ts))]
     else:
         map(sc.doc.Objects.AddPoint, (pt_Mid_Neg, pt_Mid_Pos))
-        sc.doc.Objects.AddBrep(rgTrim.Face.DuplicateFace(duplicateMeshes=False))
+        sc.doc.Objects.AddBrep(rgT.Face.DuplicateFace(duplicateMeshes=False))
         raise Exception(
             "PointFaceRelations are {} and {}".format(pfrel_Neg, pfrel_Pos))
 
@@ -767,6 +816,8 @@ def createTanSrfFromEdge(rgTrim, bDebug=False):
 
     ns_Out = rgB_Loft[0].Surfaces[0]
 
+    if bDebug: sc.doc.Objects.AddSurface(ns_Out)
+
     return ns_Out
 
 
@@ -783,48 +834,6 @@ def getIsoCurveOfSide(isoStatus, srf):
     raise ValueError(
         "Isostatus {} not allowed.  Needs to be West, South, East, or North".format(
             isoStatus))
-
-
-def findMatchingCurveByEndPoints(curvesA, curvesB, bEcho=True):
-    """ Returns list(int(Indices of B per order of A)) """
-
-    idxBs_per_As = []
-
-    fTol = 2.0 * sc.doc.ModelAbsoluteTolerance
-
-    for iA, cA in enumerate(curvesA):
-
-        ptsA = [cA.PointAtStart, cA.PointAtEnd]
-
-        for iB, cB in enumerate(curvesB):
-            if iB in idxBs_per_As:
-                continue
-
-            ptsB = [cB.PointAtStart, cB.PointAtEnd]
-
-            if (
-                cA.PointAtStart.DistanceTo(cB.PointAtStart) <= fTol
-                and
-                cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= fTol
-            ):
-                idxBs_per_As.append(iB)
-                break # to next curveA.
-
-            if (
-                cA.PointAtStart.DistanceTo(cB.PointAtEnd) <= fTol
-                and
-                cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= fTol
-            ):
-                idxBs_per_As.append(iB)
-                break # to next curveA.
-        else:
-            if len(curvesA) == len(curvesB):
-                if bEcho:
-                    print("Matching curve not found.")
-                return
-            idxBs_per_As.append(None)
-
-    return idxBs_per_As
 
 
 def isFaceOnT1SideOfXYIsoCrv(rgTrim):
@@ -1015,7 +1024,7 @@ def getNurbsGeomFromGeom(In, iContinuity, bEcho=True, bDebug=False):
         if ns_Tan is None:
             return In.ToNurbsCurve(), None
         ncs_TanNS = [getIsoCurveOfSide(side, ns_Tan) for side in (W,S,E,N)]
-        idxB = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bEcho=bEcho)[0]
+        idxB = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bDebug=bEcho)[0]
         if bEcho:
             if not srf.IsPlanar(1e-9):
                 s = "Non-isocurve trim of a non-planar surface picked."

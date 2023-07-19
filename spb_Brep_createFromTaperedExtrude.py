@@ -1,6 +1,8 @@
 """
 """
 
+from __future__ import absolute_import, division, print_function, unicode_literals
+
 """
 181120: Created.
 190528: Added Opts and support for edge input.
@@ -8,6 +10,8 @@
 190712-14: Refactored.  Polished the UX.
 190724: Bug fixes in UI.
 190924-200121, 220328: Import-related updates.
+220809: Added CreateFromTaperedExtrudeWithRef.  Refactored.
+230426: Bug fix.
 """
 
 import Rhino
@@ -23,123 +27,144 @@ from System import Guid
 import spb_Crv_fitRebuild
 
 
-sOpts = (
-        'bRebuildPath',
-        'fDraft_Deg',
-        'bCPlane',
-        'fDistance',
-        'bExplodePolyCrvs',
-        'bSplitPathsAtKnots',
-        'iCornerType',
-        'fDistTol',
-        'fAngleTol_Deg',
-        'bFitResult',
-        'bEcho',
-        'bDebug',
-)
-
-
 class Opts():
     
     keys = []
     values = {}
     names = {}
     riOpts = {}
+    listValues = {}
     stickyKeys = {}
-    
-    for key in sOpts:
-        keys.append(key)
-        names[key] = key[1:] # Overwrite as wanted in the following.
-    
-    key = 'bRebuildPath'
+
+
+    key = 'bCoplanarExtentsWithRefPlane'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'fDraft_Deg'
+
+    key = 'bRebuildInput'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bEnterNum_TrueForDist_FalseForAngle'; keys.append(key)
+    values[key] = True
+    names[key] = 'NumberEntry'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'DraftAngle', 'Dist')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'fDraft_Deg'; keys.append(key)
     values[key] = 45.0
     names[key] = 'DraftAngle'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bCPlane'
+    key = 'bCPlane'; keys.append(key)
     values[key] = True
     names[key] = 'PosDirPerZAxisOf'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'World', 'CPlane')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'fDistance'
+    key = 'fDist'; keys.append(key)
     values[key] = 1.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
     
-    key = 'bExplodePolyCrvs'
+    key = 'bExplodePolyCrvs'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bSplitPathsAtKnots'
+    key = 'bSplitPathsAtKnots'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'iCornerType'
+    key = 'iCornerType'; keys.append(key)
     values[key] = 2
+    listValues[key] = Enum.GetNames(rg.ExtrudeCornerType)
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'fDistTol'
+    key = 'fDistTol'; keys.append(key)
     values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
     
-    key = 'fAngleTol_Deg'
+    key = 'fAngleTol_Deg'; keys.append(key)
     values[key] = sc.doc.ModelAngleToleranceDegrees
+    names[key] = 'AngleTol'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__, sc.doc.Name)
     
-    key = 'bFitResult'
+    key = 'bFitResult'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bEcho'
+    key = 'bEcho'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bDebug'
+    key = 'bDebug'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
+
+
+    for key in keys:
+        if key not in names:
+            names[key] = key[1:]
+
+
     # Load sticky.
     for key in stickyKeys:
         if stickyKeys[key] in sc.sticky:
             if key in riOpts:
-                values[key] = riOpts[key].CurrentValue = sc.sticky[stickyKeys[key]]
+                riOpts[key].CurrentValue = values[key] = sc.sticky[stickyKeys[key]]
             else:
                 # For OptionList.
                 values[key] = sc.sticky[stickyKeys[key]]
-    
-    
+
+
     @classmethod
-    def setValues(cls):
-        for key in sOpts:
-            if key in cls.riOpts:
-                cls.values[key] = cls.riOpts[key].CurrentValue
-            else:
-                # For OptionList.
-                pass
-    
-    
+    def addOption(cls, go, key):
+
+        idxOpt = None
+
+        if key in cls.riOpts:
+            if key[0] == 'b':
+                idxOpt = go.AddOptionToggle(
+                        cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'f':
+                idxOpt = go.AddOptionDouble(
+                    cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'i':
+                idxOpt = go.AddOptionInteger(
+                    englishName=cls.names[key], intValue=cls.riOpts[key])[0]
+        else:
+            idxOpt = go.AddOptionList(
+                englishOptionName=cls.names[key],
+                listValues=cls.listValues[key],
+                listCurrentIndex=cls.values[key])
+
+        if not idxOpt: print("Add option for {} failed.".format(key))
+
+        return idxOpt
+
+
     @classmethod
-    def saveSticky(cls):
-        for key in cls.stickyKeys:
-            if key in cls.riOpts:
-                sc.sticky[cls.stickyKeys[key]] = cls.riOpts[key].CurrentValue
-            else:
-                # For OptionList.
-                sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+    def setValue(cls, key, idxList=None):
+
+        if key in cls.riOpts:
+            cls.values[key] = cls.riOpts[key].CurrentValue
+        elif key in cls.listValues:
+            cls.values[key] = idxList
+        else:
+            print("key, {}, for setValue not valid.".format(key))
+            return
+
+        sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
 def getInput(bFirstGetObjects=False):
@@ -153,121 +178,156 @@ def getInput(bFirstGetObjects=False):
     """
     
     go = ri.Custom.GetObject()
+
     go.SetCommandPrompt("Select curve or edges")
     
     go.GeometryFilter = rd.ObjectType.Curve
     
     go.AcceptNumber(True, acceptZero=True)
 
-    idxs_Opts = {}
-
-    go.AddOptionToggle(Opts.names['bRebuildPath'], Opts.riOpts['bRebuildPath'])
-    go.AddOptionDouble(Opts.names['fDraft_Deg'], Opts.riOpts['fDraft_Deg'])
-    idxs_Opts['FlipAngle'] = go.AddOption('FlipAngle')
-    go.AddOptionToggle(Opts.names['bCPlane'], Opts.riOpts['bCPlane'])
-    go.AddOptionDouble(Opts.names['fDistance'], Opts.riOpts['fDistance'])
-    idxs_Opts['FlipDir'] = go.AddOption('FlipDir')
-    go.AddOptionToggle(Opts.names['bExplodePolyCrvs'], Opts.riOpts['bExplodePolyCrvs'])
-    go.AddOptionToggle(Opts.names['bSplitPathsAtKnots'], Opts.riOpts['bSplitPathsAtKnots'])
-    idxs_Opts['iCornerType'] = go.AddOptionList(
-            englishOptionName=Opts.names['iCornerType'],
-            listValues=Enum.GetNames(rg.ExtrudeCornerType),
-            listCurrentIndex=Opts.values['iCornerType'])
-    go.AddOptionDouble(Opts.names['fDistTol'], Opts.riOpts['fDistTol'])
-    go.AddOptionDouble(Opts.names['fAngleTol_Deg'], Opts.riOpts['fAngleTol_Deg'])
-    go.AddOptionToggle(Opts.names['bFitResult'], Opts.riOpts['bFitResult'])
-    go.AddOptionToggle(Opts.names['bEcho'], Opts.riOpts['bEcho'])
-    go.AddOptionToggle(Opts.names['bDebug'], Opts.riOpts['bDebug'])
-
     go.AlreadySelectedObjectSelect = True # So objects can be reselected after being unselected in same go.GetMultiple.
     go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
     go.EnableClearObjectsOnEntry(False) # Do not clear objects in go on repeats of While loop.
     go.EnableUnselectObjectsOnExit(False) # Do not unselect object when an option selected, a number is entered, etc.
 
-    res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
+    idxs_Opts = {}
 
-    if go.ObjectsWerePreselected:
-        if bFirstGetObjects:
+    def addOption(key): idxs_Opts[key] = Opts.addOption(go, key)
+
+    addOption('bCoplanarExtentsWithRefPlane')
+    addOption('bRebuildInput')
+    addOption('bEnterNum_TrueForDist_FalseForAngle')
+    addOption('fDraft_Deg')
+    idxs_Opts['FlipAngle'] = go.AddOption('FlipAngle')
+    addOption('bCPlane')
+    addOption('fDist')
+    idxs_Opts['FlipDir'] = go.AddOption('FlipDir')
+    addOption('bExplodePolyCrvs')
+    addOption('bSplitPathsAtKnots')
+    addOption('iCornerType')
+    addOption('fDistTol')
+    addOption('fAngleTol_Deg')
+    addOption('bFitResult')
+    addOption('bEcho')
+    addOption('bDebug')
+
+    # while only exists for bEnterNum_TrueForDist_FalseForAngle option.
+    while True:
+        res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
+
+        if go.ObjectsWerePreselected:
+            if bFirstGetObjects:
+                objrefs = go.Objects()
+                go.Dispose()
+                return objrefs
+
+            iCt_Crvs_PreSelctd = go.ObjectCount
+            objrefs = go.Objects()
+            gCrvs_PreSelctd = []
+            gBreps_PreSelctd = []
+            idxs_Edges_PerBrep = []
+            for objref in objrefs:
+                rgCrv = objref.Curve()
+                if isinstance(rgCrv, rg.BrepEdge):
+                    gBreps_PreSelctd.append(objref.ObjectId)
+                    idxs_Edges_PerBrep.append(rgCrv.EdgeIndex)
+                else:
+                    # Curves other than BrepEdges.
+                    gCrvs_PreSelctd.append(objref.ObjectId)
+                rgCrv.Dispose()
+
+            go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
+            res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
+        else:
+            objrefs = []
+            iCt_Crvs_PreSelctd = 0
+
+        if res == ri.GetResult.Cancel:
+            go.Dispose()
+            return
+
+        if res == ri.GetResult.Object:
+            if iCt_Crvs_PreSelctd == go.ObjectCount:
+                def wasThereChangeInObjectsSelected(gCrvs_PreSelctd, gBreps_PreSelctd, idxs_Edges_PerBrep):
+                    objrefs = go.Objects()
+                    for objref in objrefs:
+                        rgCrv = objref.Curve()
+                        if isinstance(rgCrv, rg.BrepEdge):
+                            rgCrv.Dispose()
+                            if not objref.ObjectId in gBreps_PreSelctd:
+                                return True
+                            zipped = zip(gBreps_PreSelctd, idxs_Edges_PerBrep)
+                            for gBrep_PreSelctd, idx_Edge_PerBrep in zipped:
+                                if gBrep_PreSelctd == objref.ObjectId:
+                                    if idx_Edge_PerBrep == idx_Edge_PerBrep:
+                                        break
+                            else:
+                                # Edge not found.
+                                return True
+                        else:
+                            # Curves other than BrepEdges.
+                            rgCrv.Dispose()
+                            if not objref.ObjectId in gCrvs_PreSelctd:
+                                return True
+                    return False
+                if not wasThereChangeInObjectsSelected(
+                        gCrvs_PreSelctd=gCrvs_PreSelctd,
+                        gBreps_PreSelctd=gBreps_PreSelctd,
+                        idxs_Edges_PerBrep=idxs_Edges_PerBrep
+                ):
+                    go.Dispose()
+                    return False
             objrefs = go.Objects()
             go.Dispose()
-            return tuple([objrefs] + [Opts.values[key] for key in sOpts])
+            return objrefs
 
-        iCt_Crvs_PreSelctd = go.ObjectCount
-        objrefs = go.Objects()
-        gCrvs_PreSelctd = []
-        gBreps_PreSelctd = []
-        idxs_Edges_PerBrep = []
-        for objref in objrefs:
-            rgCrv = objref.Curve()
-            if isinstance(rgCrv, rg.BrepEdge):
-                gBreps_PreSelctd.append(objref.ObjectId)
-                idxs_Edges_PerBrep.append(rgCrv.EdgeIndex)
-            else:
-                # Curves other than BrepEdges.
-                gCrvs_PreSelctd.append(objref.ObjectId)
-            rgCrv.Dispose()
+        if res == ri.GetResult.Number:
+            key = 'fDist' if Opts.values['bEnterNum_TrueForDist_FalseForAngle'] else 'fDraft_Deg'
+            Opts.riOpts[key].CurrentValue = go.Number()
+            Opts.setValue(key)
+            objrefs = go.Objects()
+            go.Dispose()
+            return objrefs
 
-        go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
-        res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
-    else:
-        objrefs = None
-        iCt_Crvs_PreSelctd = 0
-    
-    if res == ri.GetResult.Object:
-        if iCt_Crvs_PreSelctd == go.ObjectCount:
-            def wasThereChangeInObjectsSelected(gCrvs_PreSelctd, gBreps_PreSelctd, idxs_Edges_PerBrep):
-                objrefs = go.Objects()
-                for objref in objrefs:
-                    rgCrv = objref.Curve()
-                    if isinstance(rgCrv, rg.BrepEdge):
-                        rgCrv.Dispose()
-                        if not objref.ObjectId in gBreps_PreSelctd:
-                            return True
-                        zipped = zip(gBreps_PreSelctd, idxs_Edges_PerBrep)
-                        for gBrep_PreSelctd, idx_Edge_PerBrep in zipped:
-                            if gBrep_PreSelctd == objref.ObjectId:
-                                if idx_Edge_PerBrep == idx_Edge_PerBrep:
-                                    break
-                        else:
-                            # Edge not found.
-                            return True
-                    else:
-                        # Curves other than BrepEdges.
-                        rgCrv.Dispose()
-                        if not objref.ObjectId in gCrvs_PreSelctd:
-                            return True
-                return False
-            if not wasThereChangeInObjectsSelected(
-                    gCrvs_PreSelctd=gCrvs_PreSelctd,
-                    gBreps_PreSelctd=gBreps_PreSelctd,
-                    idxs_Edges_PerBrep=idxs_Edges_PerBrep
-            ):
-                go.Dispose()
-                return tuple([False] + [Opts.values[key] for key in sOpts])
-        objrefs = go.Objects()
-        go.Dispose()
-        return tuple([objrefs] + [Opts.values[key] for key in sOpts])
-    elif res == ri.GetResult.Cancel:
-        go.Dispose()
-        return
-    elif res == ri.GetResult.Number:
-        Opts.riOpts['fDraft_Deg'].CurrentValue = go.Number()
-    elif go.OptionIndex() == idxs_Opts['FlipAngle']:
-        Opts.riOpts['fDraft_Deg'].CurrentValue = -Opts.riOpts['fDraft_Deg'].CurrentValue
-    elif go.OptionIndex() == idxs_Opts['FlipDir']:
-        Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
-    elif go.OptionIndex() == idxs_Opts['iCornerType']:
-        Opts.values['iCornerType'] = go.Option().CurrentListOptionIndex
-    elif Opts.riOpts['fDistTol'].CurrentValue < 0.0:
-        Opts.riOpts['fDistTol'].CurrentValue = Opts.riOpts['fDistTol'].InitialValue
-    elif Opts.riOpts['fAngleTol_Deg'].CurrentValue < 0.0:
-        Opts.riOpts['fAngleTol_Deg'].CurrentValue = Opts.riOpts['fAngleTol_Deg'].InitialValue
+        if go.OptionIndex() == idxs_Opts['FlipAngle']:
+            key = 'fDraft_Deg'
+            Opts.riOpts[key].CurrentValue = -Opts.riOpts[key].CurrentValue
+            Opts.setValue(key)
+            return objrefs
 
-    Opts.setValues()
-    Opts.saveSticky()
-    go.ClearCommandOptions()
-    
-    return tuple([objrefs] + [Opts.values[key] for key in sOpts])
+        if go.OptionIndex() == idxs_Opts['FlipDir']:
+            key = 'fDist'
+            Opts.riOpts[key].CurrentValue = -Opts.riOpts[key].CurrentValue
+            Opts.setValue(key)
+            return objrefs
+
+        key = 'iCornerType'
+        if go.OptionIndex() == idxs_Opts[key]:
+            Opts.setValue(key, idxList=go.Option().CurrentListOptionIndex)
+            return objrefs
+
+        key = 'fDistTol'
+        if Opts.riOpts[key].CurrentValue < 0.0:
+            Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
+            Opts.setValue(key)
+            return objrefs
+
+        key = 'fAngleTol_Deg'
+        if Opts.riOpts[key].CurrentValue < 0.0:
+            Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
+            Opts.setValue(key)
+            return objrefs
+
+        # An option was selected.
+        for key in idxs_Opts:
+            if go.Option().Index == idxs_Opts[key]:
+                Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                break
+
+        if go.Option().Index == idxs_Opts['bEnterNum_TrueForDist_FalseForAngle']:
+            continue
+
+        return objrefs
 
 
 def prepareCurves_OLD(rgCrvs0, bExplodePolyCrvs=True, bSplitPathsAtKnots=False):
@@ -312,7 +372,7 @@ def prepareCurves_OLD(rgCrvs0, bExplodePolyCrvs=True, bSplitPathsAtKnots=False):
     return rgCrvs_Final
 
 
-def rebuildCurves(rgCrvs):
+def rebuildCurves(rgCrvs, fDevTol):
     """
     Returns bool for if any rebuilds occur.  If so, the input curves are updated.
     """
@@ -322,12 +382,10 @@ def rebuildCurves(rgCrvs):
     for c0 in rgCrvs:
         rc = spb_Crv_fitRebuild.rebuildCurve(
                 c0,
-                0.1*sc.doc.ModelAbsoluteTolerance,
+                fDevTol,
                 iDegree=3,
-                bPreserveEndTans=True,
-                bFurtherTranslateCps=False,
                 iMinCpCt=None,
-                iMaxCpCt=40,
+                iMaxCpCt=30,
                 bDebug=False,
         )
         if rc[0]:
@@ -403,7 +461,7 @@ def splitCurvesAtSpans(rgCrvs):
         ts_SpanBoundaries = []
         for iSpan in xrange(c0.SpanCount if c0.IsPeriodic else c0.SpanCount-1):
             ts_SpanBoundaries.append(c0.SpanDomain(iSpan).T1)
-        print len(ts_SpanBoundaries)
+        print(len(ts_SpanBoundaries))
         rc = c0.Split(ts_SpanBoundaries)
         if rc:
             cs1.extend(rc)
@@ -424,10 +482,11 @@ def createBreps(rgCrvs_ToExtrude, **opts):
     """
     """
 
-    bRebuildPath = opts['bRebuildPath'] if 'bRebuildPath' in opts else Opts.values['bRebuildPath']
+    bCoplanarExtentsWithRefPlane = opts['bCoplanarExtentsWithRefPlane'] if 'bCoplanarExtentsWithRefPlane' in opts else Opts.values['bCoplanarExtentsWithRefPlane']
+    bRebuildInput = opts['bRebuildInput'] if 'bRebuildInput' in opts else Opts.values['bRebuildInput']
     fDraft_Deg = opts['fDraft_Deg'] if 'fDraft_Deg' in opts else Opts.values['fDraft_Deg']
     bCPlane = opts['bCPlane'] if 'bCPlane' in opts else Opts.values['bCPlane']
-    fDistance = opts['fDistance'] if 'fDistance' in opts else Opts.values['fDistance']
+    fDist = opts['fDist'] if 'fDist' in opts else Opts.values['fDist']
     bExplodePolyCrvs = opts['bExplodePolyCrvs'] if 'bExplodePolyCrvs' in opts else Opts.values['bExplodePolyCrvs']
     bSplitPathsAtKnots = opts['bSplitPathsAtKnots'] if 'bSplitPathsAtKnots' in opts else Opts.values['bSplitPathsAtKnots']
     iCornerType = opts['iCornerType'] if 'iCornerType' in opts else Opts.values['iCornerType']
@@ -443,9 +502,19 @@ def createBreps(rgCrvs_ToExtrude, **opts):
         plane = view.ActiveViewport.ConstructionPlane()
         direction = plane.Normal
     else:
+        plane = rg.Plane.WorldXY
         direction = rg.Vector3d.ZAxis
 
     basePoint = rg.Point3d.Origin
+
+    if bRebuildInput and bFitResult:
+        fTol_RebuildInput = fTol_Extrude = fTol_FitOutput = fDistTol / 3.0
+    elif bRebuildInput:
+        fTol_RebuildInput = fTol_Extrude = fDistTol / 2.0
+    elif bFitResult:
+        fTol_Extrude = fTol_FitOutput = fDistTol / 2.0
+    else:
+        fTol_Extrude = fDistTol
 
 
     def prepareCurves_NestedFunc(rgCrvs0):
@@ -458,15 +527,15 @@ def createBreps(rgCrvs_ToExtrude, **opts):
         for c in cs0:
             if isinstance(c, rg.PolyCurve): c.RemoveNesting()
 
-        if bRebuildPath: rebuildCurves(cs0)
+        if bRebuildInput: rebuildCurves(cs0, fTol_RebuildInput)
 
-        if joinCurves(cs0) and bRebuildPath: rebuildCurves(cs0)
+        if joinCurves(cs0) and bRebuildInput: rebuildCurves(cs0, fTol_RebuildInput)
 
         if bExplodePolyCrvs:
-            if explodePolyCurves(cs0) and bRebuildPath: rebuildCurves(cs0)
+            if explodePolyCurves(cs0) and bRebuildInput: rebuildCurves(cs0, fTol_RebuildInput)
 
         if bSplitPathsAtKnots:
-            if splitCurvesAtSpans(cs0) and bRebuildPath: rebuildCurves(cs0)
+            if splitCurvesAtSpans(cs0) and bRebuildInput: rebuildCurves(cs0, fTol_RebuildInput)
 
         return cs0
     rc = prepareCurves_NestedFunc(rgCrvs_ToExtrude)
@@ -481,17 +550,29 @@ def createBreps(rgCrvs_ToExtrude, **opts):
 
     rgBreps2_Extrds_ToJoin = []
     for rgCrv_ToExtrude in rgCrvs_ToExtrude:
-        rgBreps1_Extrds_Raw = rg.Brep.CreateFromTaperedExtrude(
-                curveToExtrude=rgCrv_ToExtrude,
-                distance=fDistance,
+        if bCoplanarExtentsWithRefPlane:
+            rgCrv_ToExtrude.Reverse()
+            plane_Temp = rg.Plane(plane)
+            plane_Temp.Translate(rgCrv_ToExtrude.PointAtStart - plane.Origin)
+            rgBreps1_Extrds_Raw = rg.Brep.CreateFromTaperedExtrudeWithRef(
+                curve=rgCrv_ToExtrude,
                 direction=direction,
-                basePoint=basePoint,
-                draftAngleRadians=Rhino.RhinoMath.ToRadians(fDraft_Deg),
-                cornerType=Enum.ToObject(rg.ExtrudeCornerType, iCornerType),
-                tolerance=fDistTol,
-                angleToleranceRadians=Rhino.RhinoMath.ToRadians(fAngleTol_Deg))
+                distance=fDist,
+                draftAngle=Rhino.RhinoMath.ToRadians(fDraft_Deg),
+                plane=plane_Temp,
+                tolerance=fTol_Extrude)
+        else:
+            rgBreps1_Extrds_Raw = rg.Brep.CreateFromTaperedExtrude(
+                    curveToExtrude=rgCrv_ToExtrude,
+                    distance=fDist,
+                    direction=direction,
+                    basePoint=basePoint,
+                    draftAngleRadians=Rhino.RhinoMath.ToRadians(fDraft_Deg),
+                    cornerType=Enum.ToObject(rg.ExtrudeCornerType, iCornerType),
+                    tolerance=fTol_Extrude,
+                    angleToleranceRadians=Rhino.RhinoMath.ToRadians(fAngleTol_Deg))
         if not rgBreps1_Extrds_Raw:
-            print "An Extrude could not be created."
+            print("An Extrude could not be created.")
             continue
 
         if not bFitResult:
@@ -503,14 +584,14 @@ def createBreps(rgCrvs_ToExtrude, **opts):
                     rgNurbsSrf3 = rgSrf1.Fit(
                             uDegree=rgNurbsSrf2.Degree(0),
                             vDegree=rgNurbsSrf2.Degree(1),
-                            fitTolerance=fDistTol)
+                            fitTolerance=fTol_FitOutput)
                     if rgNurbsSrf3 is None:
-                        print "A surface could not be Fit within {}.".format(fDistTol)
+                        print("A surface could not be Fit within {}.".format(fTol_FitOutput))
                         rgBreps2_Extrds_ToJoin.append(rgSrf1.ToBrep())
                     elif rgNurbsSrf3.EpsilonEquals(rgNurbsSrf2, epsilon=1e-9):
                         rgBreps2_Extrds_ToJoin.append(rgSrf1.ToBrep())
                         rgNurbsSrf3.Dispose()
-                        print "A surface Fit didn't produce a new surface."
+                        print("A surface Fit didn't produce a new surface.")
                     else:
                         rgBreps2_Extrds_ToJoin.append(rgNurbsSrf3.ToBrep())
                         rgNurbsSrf3.Dispose()
@@ -533,7 +614,7 @@ def createBrepObjects(rhObjects_CurveOrEdge, **opts):
     for key in Opts.keys:
         if not key in opts:
             opts[key] = Opts.values[key]
-        if Opts.values['bDebug']: print key, opts[key]
+        if Opts.values['bDebug']: print(key, opts[key])
 
 
     rgCrvs_ToExtrude = []
@@ -551,16 +632,17 @@ def createBrepObjects(rhObjects_CurveOrEdge, **opts):
             if rgCrv_ToExtrude.IsValid:
                 rgCrvs_ToExtrude.append(rgCrv_ToExtrude)
             else:
-                print "Geometry of {} not valid!".format(o)
+                print("Geometry of {} not valid!".format(o))
                 continue
         else:
-            print "Geometry of {} not found!".format(o)
+            print("Geometry of {} not found!".format(o))
             continue
     
     rc = createBreps(
             rgCrvs_ToExtrude=rgCrvs_ToExtrude,
-            bRebuildPath=opts['bRebuildPath'],
-            fDistance=opts['fDistance'],
+            bCoplanarExtentsWithRefPlane=opts['bCoplanarExtentsWithRefPlane'],
+            bRebuildInput=opts['bRebuildInput'],
+            fDist=opts['fDist'],
             bCPlane=opts['bCPlane'],
             fDraft_Deg=opts['fDraft_Deg'],
             iCornerType=opts['iCornerType'],
@@ -569,7 +651,7 @@ def createBrepObjects(rhObjects_CurveOrEdge, **opts):
             bEcho=opts['bEcho'],
             bDebug=opts['bDebug'])
     if rc is None:
-        print "Breps not created!"
+        print("Breps not created!")
         for c in rgCrvs_ToExtrude: c.Dispose()
         sc.doc.Views.Redraw()
         return []
@@ -581,14 +663,26 @@ def main():
     """
     """
 
-    rc = getInput(bFirstGetObjects=True)
-    if rc is None: return
-    rhObjects_CurveOrEdge = rc[0]
-    for key, value in zip(sOpts, rc[1:]):
-        exec("{} = {}".format(key, value))
+    rhObjects_CurveOrEdge = getInput(bFirstGetObjects=True)
+    if rhObjects_CurveOrEdge is None: return
+
+    bCoplanarExtentsWithRefPlane = Opts.values['bCoplanarExtentsWithRefPlane']
+    bRebuildInput = Opts.values['bRebuildInput']
+    fDraft_Deg = Opts.values['fDraft_Deg']
+    bCPlane = Opts.values['bCPlane']
+    fDist = Opts.values['fDist']
+    bExplodePolyCrvs = Opts.values['bExplodePolyCrvs']
+    bSplitPathsAtKnots = Opts.values['bSplitPathsAtKnots']
+    iCornerType = Opts.values['iCornerType']
+    fDistTol = Opts.values['fDistTol']
+    fAngleTol_Deg = Opts.values['fAngleTol_Deg']
+    bFitResult = Opts.values['bFitResult']
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
+
 
     gBreps1 = []
-    
+
     while True:
         if rhObjects_CurveOrEdge is not None:
             rc = createBrepObjects(rhObjects_CurveOrEdge=rhObjects_CurveOrEdge)
@@ -606,22 +700,34 @@ def main():
                     rgBrep1.Dispose()
                 sc.doc.Views.Redraw()
             
-                print "{} brep(s) with {} total face(s) were created.".format(
-                        len(gBreps1), iCt_Faces_All)
+                print("{} brep(s) with {} total face(s) were created.".format(
+                        len(gBreps1), iCt_Faces_All))
 
         rc = getInput(bFirstGetObjects=False)
         if rc is None:
             for gBrep1 in gBreps1:
                 sc.doc.Objects.Delete(gBrep1, True)
             return
-        elif rc[0] is False:
+        elif rc is False:
             # Means there was no change in curve(s) selected.
             break
         else:
-            rhObjects_CurveOrEdge = rc[0]
-        
-        for key, value in zip(sOpts, rc[1:]):
-            exec("{} = {}".format(key, value))
+            rhObjects_CurveOrEdge = rc
+
+        bCoplanarExtentsWithRefPlane = Opts.values['bCoplanarExtentsWithRefPlane']
+        bRebuildInput = Opts.values['bRebuildInput']
+        fDraft_Deg = Opts.values['fDraft_Deg']
+        bCPlane = Opts.values['bCPlane']
+        fDist = Opts.values['fDist']
+        bExplodePolyCrvs = Opts.values['bExplodePolyCrvs']
+        bSplitPathsAtKnots = Opts.values['bSplitPathsAtKnots']
+        iCornerType = Opts.values['iCornerType']
+        fDistTol = Opts.values['fDistTol']
+        fAngleTol_Deg = Opts.values['fAngleTol_Deg']
+        bFitResult = Opts.values['bFitResult']
+        bEcho = Opts.values['bEcho']
+        bDebug = Opts.values['bDebug']
+
 
         for gBrep1 in gBreps1:
             sc.doc.Objects.Delete(gBrep1, True)

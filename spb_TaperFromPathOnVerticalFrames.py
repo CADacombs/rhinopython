@@ -11,6 +11,8 @@
 190903-04: Added bRebuildPath.  Modified for improved debugging.
 210302: Modified an option default value.
 220328: Import-related update.
+220824: Added an option.
+220828: Added an option.  Refactored.
 
 TODO: Correctly create curve opposite path and brep when path curve is closed.
 """
@@ -31,152 +33,170 @@ import spb_arrayObjsAtVerticalFrames
 sBrepMethods = 'Loft2Crvs', 'LoftSectionLines', 'Sweep2A', 'Sweep2B', 'Network'
 
 sOpts = (
-        'bRebuildPath',
-        'fTaper_Start_Deg',
-        'bVariableTaper',
-        'fTaper_End_Deg',
-        'bTaperChangePerCrvParam',
-        'fDistance',
-        'bCPlane',
-        'bAtGrevilles',
-        'bAtKnots',
-        'bAtEqualDivisions',
-        'iDivisionCt',
-        'bSplitPolyCrvToSegs',
-        'bSplitPathsAtKnots',
-        'bAddArrayedLines',
-        'bAddLoftEndCrvs',
-        'bAddBrep',
-        'iBrepMethod',
-        'iLoftType',
-        'fBrepTol',
-        'bEcho',
-        'bDebug',
-)
+    'bRebuildPath',
+    'bEnterNum_TrueForDist_FalseForAngle',
+    'fDistance',
+    'bProjDist',
+    'fTaper_Start_Deg',
+    'bVariableTaper',
+    'fTaper_End_Deg',
+    'bTaperChangePerCrvParam',
+    'bCPlane',
+    'bAtGrevilles',
+    'bAtKnots',
+    'bAtEqualDivisions',
+    'iDivisionCt',
+    'bSplitPolyCrvToSegs',
+    'bSplitPathsAtKnots',
+    'bAddArrayedLines',
+    'bAddLoftEndCrvs',
+    'bAddBrep',
+    'iBrepMethod',
+    'iLoftType',
+    'fBrepTol',
+    'bEcho',
+    'bDebug',
+    )
 
 
 class Opts():
-    
+
     keys = []
     values = {}
     names = {}
     riOpts = {}
+    listValues = {}
     stickyKeys = {}
-    
-    for key in sOpts:
-        keys.append(key)
-        names[key] = key[1:] # Overwrite as wanted in the following.
-    
-    key = 'bRebuildPath'
+
+
+    key = 'bRebuildPath'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'fTaper_Start_Deg'
+
+    key = 'bEnterNum_TrueForDist_FalseForAngle'; keys.append(key)
+    values[key] = True
+    names[key] = 'NumberEntry'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'DraftAngle', 'Dist')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'fDistance'; keys.append(key)
+    values[key] = 1.0
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'bProjDist'; keys.append(key)
+    values[key] = True
+    names[key] = 'DistType'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'True', 'Projected')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'fTaper_Start_Deg'; keys.append(key)
     values[key] = 45.0
     names[key] = 'TaperAngle'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bVariableTaper'
+
+    key = 'bVariableTaper'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'fTaper_End_Deg'
+
+    key = 'fTaper_End_Deg'; keys.append(key)
     values[key] = 45.0
     names[key] = 'EndTaperAngle'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bTaperChangePerCrvParam'
+
+    key = 'bTaperChangePerCrvParam'; keys.append(key)
     values[key] = False
     names[key] = 'TaperChangePerCrv'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Length', 'Param')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'fDistance'
-    values[key] = 1.0
-    riOpts[key] = ri.Custom.OptionDouble(values[key])
-    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
-    
-    key = 'bCPlane'
+
+    key = 'bCPlane'; keys.append(key)
     values[key] = True
     names[key] = 'PlanView'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'World', 'CPlane')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bAtGrevilles'
+
+    key = 'bAtGrevilles'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bAtKnots'
+
+    key = 'bAtKnots'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bAtEqualDivisions'
+
+    key = 'bAtEqualDivisions'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'iDivisionCt'
+
+    key = 'iDivisionCt'; keys.append(key)
     values[key] = 2
     riOpts[key] = ri.Custom.OptionInteger(
             initialValue=values[key],
             setLowerLimit=True,
             limit=2)
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bSplitPolyCrvToSegs'
+
+    key = 'bSplitPolyCrvToSegs'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bSplitPathsAtKnots'
+
+    key = 'bSplitPathsAtKnots'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bAddArrayedLines'
+
+    key = 'bAddArrayedLines'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bAddLoftEndCrvs'
+
+    key = 'bAddLoftEndCrvs'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bAddBrep'
+
+    key = 'bAddBrep'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'iBrepMethod'
+
+    key = 'iBrepMethod'; keys.append(key)
     values[key] = 0
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'iLoftType'
+
+    key = 'iLoftType'; keys.append(key)
     values[key] = 0
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'fBrepTol'
+
+    key = 'fBrepTol'; keys.append(key)
     values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
-    
-    key = 'bEcho'
+
+    key = 'bEcho'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bDebug'
+
+    key = 'bDebug'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
+
+
+    for key in keys:
+        if key not in names:
+            names[key] = key[1:]
+
+
     # Load sticky.
     for key in stickyKeys:
         if stickyKeys[key] in sc.sticky:
@@ -185,8 +205,8 @@ class Opts():
             else:
                 # For OptionList.
                 values[key] = sc.sticky[stickyKeys[key]]
-    
-    
+
+
     @classmethod
     def setValues(cls):
         for key in sOpts:
@@ -210,20 +230,49 @@ def getInput(bFirstGetObjects=False):
     
     Returns
         None to cancel.
-        False to end create/GetObject cycle.
-        tuple of ObjRefs and options to continue create/GetObject cycle.
+        tuple of (list(ObjRefs), bool(Generate new geometry), bool(Accept results):
     """
-    
+
+
+    def wasThereChangeInObjectsSelected(gCrvs_PreSelctd, gBreps_PreSelctd, idxs_Edges_PerBrep):
+        objrefs = go.Objects()
+        for objref in objrefs:
+            rgCrv = objref.Curve()
+            if isinstance(rgCrv, rg.BrepEdge):
+                rgCrv.Dispose()
+                if not objref.ObjectId in gBreps_PreSelctd:
+                    return True
+                zipped = zip(gBreps_PreSelctd, idxs_Edges_PerBrep)
+                for gBrep_PreSelctd, idx_Edge_PerBrep in zipped:
+                    if gBrep_PreSelctd == objref.ObjectId:
+                        if idx_Edge_PerBrep == idx_Edge_PerBrep:
+                            break
+                else:
+                    # Edge not found.
+                    return True
+            else:
+                # Curves other than BrepEdges.
+                rgCrv.Dispose()
+                if not objref.ObjectId in gCrvs_PreSelctd:
+                    return True
+        return False
+
+
     go = ri.Custom.GetObject()
     go.SetCommandPrompt("Select path curves")
 
     go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve
 
+    # Due to the object collection below, do not use AcceptNothing.
     go.AcceptNumber(True, acceptZero=False)
-    
+
     idxs_Opts = {}
 
     go.AddOptionToggle(Opts.names['bRebuildPath'], Opts.riOpts['bRebuildPath'])
+    go.AddOptionToggle(Opts.names['bEnterNum_TrueForDist_FalseForAngle'], Opts.riOpts['bEnterNum_TrueForDist_FalseForAngle'])
+    go.AddOptionDouble(Opts.names['fDistance'], Opts.riOpts['fDistance'])
+    if not Opts.values['bVariableTaper']:
+        go.AddOptionToggle(Opts.names['bProjDist'], Opts.riOpts['bProjDist'])
     go.AddOptionDouble(Opts.names['fTaper_Start_Deg'], Opts.riOpts['fTaper_Start_Deg'])
     go.AddOptionToggle(Opts.names['bVariableTaper'], Opts.riOpts['bVariableTaper'])
     if Opts.values['bVariableTaper']:
@@ -232,7 +281,6 @@ def getInput(bFirstGetObjects=False):
         go.AddOptionToggle(Opts.names['bTaperChangePerCrvParam'], Opts.riOpts['bTaperChangePerCrvParam'])
     idxs_Opts['FlipAngle'] = go.AddOption('FlipAngle')
     idxs_Opts['FlipDir'] = go.AddOption('FlipDir')
-    go.AddOptionDouble(Opts.names['fDistance'], Opts.riOpts['fDistance'])
     go.AddOptionToggle(Opts.names['bCPlane'], Opts.riOpts['bCPlane'])
     go.AddOptionToggle(Opts.names['bAtGrevilles'], Opts.riOpts['bAtGrevilles'])
     go.AddOptionToggle(Opts.names['bAtKnots'], Opts.riOpts['bAtKnots'])
@@ -267,7 +315,7 @@ def getInput(bFirstGetObjects=False):
     go.EnableUnselectObjectsOnExit(False) # Do not unselect object when an option selected, a number is entered, etc.
 
     res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
-        
+
     if not go.ObjectsWerePreselected:
         objrefs = None
         iCt_Crvs_PreSelctd = 0
@@ -275,7 +323,7 @@ def getInput(bFirstGetObjects=False):
         if bFirstGetObjects:
             objrefs = go.Objects()
             go.Dispose()
-            return tuple([objrefs] + [Opts.values[key] for key in sOpts])
+            return objrefs, True, False
 
         iCt_Crvs_PreSelctd = go.ObjectCount
         objrefs = go.Objects()
@@ -295,45 +343,27 @@ def getInput(bFirstGetObjects=False):
         go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
         res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
 
+    if res == ri.GetResult.Cancel:
+        go.Dispose()
+        return
+
     if res == ri.GetResult.Object:
+        objrefs = go.Objects()
         if iCt_Crvs_PreSelctd == go.ObjectCount:
-            def wasThereChangeInObjectsSelected(gCrvs_PreSelctd, gBreps_PreSelctd, idxs_Edges_PerBrep):
-                objrefs = go.Objects()
-                for objref in objrefs:
-                    rgCrv = objref.Curve()
-                    if isinstance(rgCrv, rg.BrepEdge):
-                        rgCrv.Dispose()
-                        if not objref.ObjectId in gBreps_PreSelctd:
-                            return True
-                        zipped = zip(gBreps_PreSelctd, idxs_Edges_PerBrep)
-                        for gBrep_PreSelctd, idx_Edge_PerBrep in zipped:
-                            if gBrep_PreSelctd == objref.ObjectId:
-                                if idx_Edge_PerBrep == idx_Edge_PerBrep:
-                                    break
-                        else:
-                            # Edge not found.
-                            return True
-                    else:
-                        # Curves other than BrepEdges.
-                        rgCrv.Dispose()
-                        if not objref.ObjectId in gCrvs_PreSelctd:
-                            return True
-                return False
             if not wasThereChangeInObjectsSelected(
                     gCrvs_PreSelctd=gCrvs_PreSelctd,
                     gBreps_PreSelctd=gBreps_PreSelctd,
                     idxs_Edges_PerBrep=idxs_Edges_PerBrep
             ):
                 go.Dispose()
-                return False
-        objrefs = go.Objects()
+                return objrefs, False, True
         go.Dispose()
-        return tuple([objrefs] + [Opts.values[key] for key in sOpts])
-    elif res == ri.GetResult.Cancel:
-        go.Dispose()
-        return
+        return objrefs, True, False
     elif res == ri.GetResult.Number:
-        Opts.riOpts['fTaper_Start_Deg'].CurrentValue = go.Number()
+        if Opts.values['bEnterNum_TrueForDist_FalseForAngle']:
+            Opts.riOpts['fDistance'].CurrentValue = go.Number()
+        else:
+            Opts.riOpts['fTaper_Start_Deg'].CurrentValue = go.Number()
     elif Opts.values['bVariableTaper'] and go.OptionIndex() == idxs_Opts['SwapAngles']:
         Opts.riOpts['fTaper_Start_Deg'].CurrentValue, Opts.riOpts['fTaper_End_Deg'].CurrentValue = (
                 Opts.riOpts['fTaper_End_Deg'].CurrentValue, Opts.riOpts['fTaper_Start_Deg'].CurrentValue)
@@ -353,8 +383,8 @@ def getInput(bFirstGetObjects=False):
 
     Opts.setValues()
     Opts.saveSticky()
-    
-    return tuple([objrefs] + [Opts.values[key] for key in sOpts])
+
+    return objrefs, True, False
 
 
 def createBrep(iBrepMethod, iLoftType, fBrepTol, rgCrv_Path, rgNurbsCrv_TaperEnd_1Seg, rgLineCrvs_Arrayed):
@@ -419,35 +449,38 @@ def createBrep(iBrepMethod, iLoftType, fBrepTol, rgCrv_Path, rgNurbsCrv_TaperEnd
 
 
 def main():
-    
+
     while True:
+        sc.escape_test()
+
         rc = getInput(bFirstGetObjects=True)
         if rc is None: return
-        if rc[0] is None: continue
-        (
-                objrefs_Paths,
-                bRebuildPath,
-                fTaper_Start_Deg,
-                bVariableTaper,
-                fTaper_End_Deg,
-                bTaperChangePerCrvParam,
-                fDistance,
-                bCPlane,
-                bAtGrevilles,
-                bAtKnots,
-                bAtEqualDivisions,
-                iDivisionCt,
-                bSplitPolyCrvToSegs,
-                bSplitPathsAtKnots,
-                bAddArrayedLines,
-                bAddLoftEndCrvs,
-                bAddBrep,
-                iBrepMethod,
-                iLoftType,
-                fBrepTol,
-                bEcho,
-                bDebug,
-        ) = rc
+
+        objrefs_Paths, bGenerateNew, bAcceptResults = rc
+        if not objrefs_Paths: continue
+
+        bRebuildPath = Opts.values['bRebuildPath']
+        fDistance = Opts.values['fDistance']
+        bProjDist = Opts.values['bProjDist']
+        fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+        bVariableTaper = Opts.values['bVariableTaper']
+        fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+        bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
+        bCPlane = Opts.values['bCPlane']
+        bAtGrevilles = Opts.values['bAtGrevilles']
+        bAtKnots = Opts.values['bAtKnots']
+        bAtEqualDivisions = Opts.values['bAtEqualDivisions']
+        iDivisionCt = Opts.values['iDivisionCt']
+        bSplitPolyCrvToSegs = Opts.values['bSplitPolyCrvToSegs']
+        bSplitPathsAtKnots = Opts.values['bSplitPathsAtKnots']
+        bAddArrayedLines = Opts.values['bAddArrayedLines']
+        bAddLoftEndCrvs = Opts.values['bAddLoftEndCrvs']
+        bAddBrep = Opts.values['bAddBrep']
+        iBrepMethod = Opts.values['iBrepMethod']
+        iLoftType = Opts.values['iLoftType']
+        fBrepTol = Opts.values['fBrepTol']
+        bEcho = Opts.values['bEcho']
+        bDebug = Opts.values['bDebug']
 
         break
     
@@ -467,14 +500,43 @@ def main():
             print "No path point sampling is enabled."
             sc.doc.Views.Redraw()
             rc = getInput(bFirstGetObjects=False)
-            if rc is None or rc is False:
+            if rc is None:
                 if rgLine_ToArray: rgLine_ToArray.Dispose()
                 for c in rgCrvs0_Path: c.Dispose()
                 for c in rgCrvs1_Path: c.Dispose()
                 return
-            objrefs_Paths = rc[0]
-            for key, value in zip(sOpts, rc[1:]):
-                exec("{} = {}".format(key, value))
+
+            objrefs_Paths, bGenerateNew, bAcceptResults = rc
+
+            if bAcceptResults:
+                if rgLine_ToArray: rgLine_ToArray.Dispose()
+                for c in rgCrvs0_Path: c.Dispose()
+                for c in rgCrvs1_Path: c.Dispose()
+                return
+
+            bRebuildPath = Opts.values['bRebuildPath']
+            fDistance = Opts.values['fDistance']
+            bProjDist = Opts.values['bProjDist']
+            fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+            bVariableTaper = Opts.values['bVariableTaper']
+            fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+            bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
+            bCPlane = Opts.values['bCPlane']
+            bAtGrevilles = Opts.values['bAtGrevilles']
+            bAtKnots = Opts.values['bAtKnots']
+            bAtEqualDivisions = Opts.values['bAtEqualDivisions']
+            iDivisionCt = Opts.values['iDivisionCt']
+            bSplitPolyCrvToSegs = Opts.values['bSplitPolyCrvToSegs']
+            bSplitPathsAtKnots = Opts.values['bSplitPathsAtKnots']
+            bAddArrayedLines = Opts.values['bAddArrayedLines']
+            bAddLoftEndCrvs = Opts.values['bAddLoftEndCrvs']
+            bAddBrep = Opts.values['bAddBrep']
+            iBrepMethod = Opts.values['iBrepMethod']
+            iLoftType = Opts.values['iLoftType']
+            fBrepTol = Opts.values['fBrepTol']
+            bEcho = Opts.values['bEcho']
+            bDebug = Opts.values['bDebug']
+
 
         rgCrvs0_Path = []
         for objref_Path in objrefs_Paths:
@@ -490,7 +552,15 @@ def main():
         if not rc: return
         rgCrvs1_Path = rc
 
-        rgLine_ToArray = rg.Line(
+        if bProjDist and not bVariableTaper:
+            rgLine_ToArray = rg.Line(
+                rg.Point3d(0.0, 0.0, 0.0),
+                rg.Point3d(
+                    0.0,
+                    fDistance/math.cos(math.radians(fTaper_Start_Deg)),
+                    0.0))
+        else:
+            rgLine_ToArray = rg.Line(
                 rg.Point3d(0.0, 0.0, 0.0),
                 rg.Point3d(0.0, fDistance, 0.0))
     
@@ -634,11 +704,38 @@ def main():
             for g_ in gBreps1:
                 sc.doc.Objects.Delete(g_, True)
             break
-        elif rc is False:
+
+        objrefs_Paths, bGenerateNew, bAcceptResults = rc
+
+        if bAcceptResults:
             break
-        objrefs_Paths = rc[0]
-        for key, value in zip(sOpts, rc[1:]):
-            exec("{} = {}".format(key, value))
+
+        if not bGenerateNew:
+            continue
+
+        bRebuildPath = Opts.values['bRebuildPath']
+        fDistance = Opts.values['fDistance']
+        bProjDist = Opts.values['bProjDist']
+        fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+        bVariableTaper = Opts.values['bVariableTaper']
+        fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+        bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
+        bCPlane = Opts.values['bCPlane']
+        bAtGrevilles = Opts.values['bAtGrevilles']
+        bAtKnots = Opts.values['bAtKnots']
+        bAtEqualDivisions = Opts.values['bAtEqualDivisions']
+        iDivisionCt = Opts.values['iDivisionCt']
+        bSplitPolyCrvToSegs = Opts.values['bSplitPolyCrvToSegs']
+        bSplitPathsAtKnots = Opts.values['bSplitPathsAtKnots']
+        bAddArrayedLines = Opts.values['bAddArrayedLines']
+        bAddLoftEndCrvs = Opts.values['bAddLoftEndCrvs']
+        bAddBrep = Opts.values['bAddBrep']
+        iBrepMethod = Opts.values['iBrepMethod']
+        iLoftType = Opts.values['iLoftType']
+        fBrepTol = Opts.values['fBrepTol']
+        bEcho = Opts.values['bEcho']
+        bDebug = Opts.values['bDebug']
+
 
         for g_ in gLineCrvs1_Arrayed:
             sc.doc.Objects.Delete(g_, True)

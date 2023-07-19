@@ -14,6 +14,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 220809: Added CreateFromTaperedExtrudeWithRef.  Refactored.
 230425-27: Branched from spb_Brep_createFromTaperedExtrude.py
     Recreated from with different input scenario and now previews via DrawConduit instead of actual DocObjects.
+230719: Minor efficency improvements.
 
 TODO: Add my variable taper routine from spb_TaperFromPathOnVerticalFrames.
 """
@@ -627,11 +628,16 @@ def createBreps(rgCrvs_ToExtrude, **kwargs):
                     else:
                         rgBreps2_Extrds_ToJoin.append(srf_ToFit.ToBrep())
                 rgBrep1_Extrd_Raw.Dispose()
-    
+
+    if len(rgBreps2_Extrds_ToJoin) == 1:
+        return rgBreps2_Extrds_ToJoin
+
     rgBreps_Extrds_Joined = rg.Brep.JoinBreps(
         rgBreps2_Extrds_ToJoin,
         tolerance=0.1*sc.doc.ModelAbsoluteTolerance) # A tighter tolerance can help identify problem areas.
 
+    if rgBreps_Extrds_Joined:
+        iCt_F = sum([rgB.Faces.Count for rgB in rgBreps_Extrds_Joined])
 
     return rgBreps_Extrds_Joined
 
@@ -765,15 +771,14 @@ def _createGeometryInteractively():
             if rc and len(rc) < len(ncs_ToExtrude):
                 ncs_ToExtrude = rc
 
-        rgBs_FromLoft = []
-        rgBs_JoinedLofts = []
+        rgBs_Joined = []
 
 
         #for nc in ncs_ToExtrude: sc.doc.Objects.AddCurve(nc)
         #sc.doc.Views.Redraw()
         #return
 
-        rgBs_JoinedLofts = createBreps(
+        rgBs_Joined = createBreps(
             rgCrvs_ToExtrude=ncs_ToExtrude,
             bExtrudeToPlane_Loose=bExtrudeToPlane_Loose,
             fDistance=fDistance,
@@ -785,8 +790,8 @@ def _createGeometryInteractively():
             bEcho=bEcho,
             bDebug=bDebug)
 
-        if rgBs_JoinedLofts:
-            conduit.breps = rgBs_JoinedLofts
+        if rgBs_Joined:
+            conduit.breps = rgBs_Joined
             conduit.Enabled = True
             sc.doc.Views.Redraw()
 
@@ -795,15 +800,15 @@ def _createGeometryInteractively():
         conduit.Enabled = False
 
         if rc is None:
-            for _ in rgBs_JoinedLofts: _.Dispose()
+            for _ in rgBs_Joined: _.Dispose()
             return
 
         if not rc:
             return (
-                rgBs_JoinedLofts,
+                rgBs_Joined,
                 bEcho)
 
-        for _ in rgBs_JoinedLofts: _.Dispose()
+        for _ in rgBs_Joined: _.Dispose()
 
 
 

@@ -18,7 +18,10 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Now, G2 is allowed for None IsoStatus from planar surfaces only.
 211105: Bug fix when adding missing multiplicity of knots at existing locations.
         Bug fix in reducing continuity target from G2 when a tangency surface is used.
-230701: Modified some debugging code.  Import-related updates.
+230701, 1030: Modified some debugging code.  Import-related updates.
+231031: Improved G1 point placement when either
+            1. Only 1 of the 2 reference surfaces at corner is planar.
+            2. Ends of both reference surfaces at corner are linear and intersect into created surface.
 
 TODO:
     Convert (some) rational input to non-rational degree 5?
@@ -1148,7 +1151,7 @@ def createSurface(rhCrvs_In, **kwargs):
     for geom, iContinuity in zip(geoms_In, iContinuity_PerCrv):
         geom_Nurbs = spb.getShrunkNurbsSrfFromGeom(geom, bUseUnderlyingIsoCrvs=False)
         if geom_Nurbs is None:
-            geom_Nurbs = spb.getNurbsGeomFromGeom(geom, iContinuity, bEcho, bDebug)
+            geom_Nurbs = spb.getNurbsGeomFromGeom(geom, iContinuity, bEcho, bDebug=False)
             if geom_Nurbs is None:
                 if bEcho:
                     print("NURBS geometry could not be obtained from input.")
@@ -1272,7 +1275,7 @@ def createSurface(rhCrvs_In, **kwargs):
 
         if rgB_Res.Surfaces.Count != 1:
             sc.doc.Objects.AddBrep(rgB_Res)
-            return None, "Polyface brep with no continuity matching added to document."
+            return None, "Polyface brep with no continuity matching attempted added to document."
 
         ns_M_Start = rgB_Res.Surfaces[0]
 
@@ -1322,7 +1325,7 @@ def createSurface(rhCrvs_In, **kwargs):
         if isinstance(geoms_Nurbs_AR[side], rg.NurbsCurve):
             if iConts_Per_Side[side] > 0:
                 if bEcho:
-                    print("Reduced continuity on {} from {} to {}.".format(
+                    print("Reduced continuity on {} from {} to {} since input is a curve, not surface.".format(
                         side, iConts_Per_Side[side], 0))
                 iConts_Per_Side[side] = 0
             continue
@@ -1381,8 +1384,8 @@ def createSurface(rhCrvs_In, **kwargs):
     for side in W,S,E,N:
         bResult = spb.transferHigherDegree(
             ns_M_Start, geoms_Nurbs_AR[side], side, side)
-    bResults.append(bResult)
-    if bDebug: print(bResults)
+        bResults.append(bResult)
+    if bDebug: print("transferHigherDegree: {}".format(bResults))
 
     #for ns in geoms_ARs:
     #    sc.doc.Objects.AddSurface(ns)
@@ -1394,8 +1397,8 @@ def createSurface(rhCrvs_In, **kwargs):
     for side in W,S,E,N:
         bResult = spb.transferDomain(
             ns_M_Start, geoms_Nurbs_AR[side], side, side)
-    bResults.append(bResult)
-    if bDebug: print(bResults)
+        bResults.append(bResult)
+    if bDebug: print("transferDomain: {}".format(bResults))
 
     #for ns in geoms_ARs:
     #    sc.doc.Objects.AddSurface(ns)
@@ -1417,7 +1420,7 @@ def createSurface(rhCrvs_In, **kwargs):
 
     if bDebug:
         print(geoms_Nurbs_AR.values())
-        spb.addGeoms(geoms_Nurbs_AR.values())
+        #spb.addGeoms(geoms_Nurbs_AR.values())
 
     if all(iContinuity not in (1,2) for iContinuity in iConts_WSEN):
         return ns_M_Start
@@ -1451,7 +1454,9 @@ def createSurface(rhCrvs_In, **kwargs):
 
     ptsM_PreG1 = [cp.Location for cp in ns_M_Start.Points]
 
-    pts_G1_corners = {}
+    pts_G1_corners = {} # Collecting points for averaging.
+    planes_G1_corners = {} # For determining special cases that should not use simple averaging.
+    vectors_01_M = {} # For determining special case where 2 reference surfaces tangents flow linearly into each other.
     pts_G2_corners = {}
 
     ns_WIP = ns_M_Start.Duplicate()
@@ -1517,7 +1522,7 @@ def createSurface(rhCrvs_In, **kwargs):
             continue
 
         #if side == S:
-        #    sc.doc.Objects.AddSurface(ns_M_G1); sc.doc.Views.Redraw(); return
+        #sc.doc.Objects.AddSurface(ns_M_G1)#; sc.doc.Views.Redraw(); return
 
         # Update.
         ns_WIP.Dispose()
@@ -1528,10 +1533,20 @@ def createSurface(rhCrvs_In, **kwargs):
         if iRowLn >= 4:
             for i in (1, iRowLn-2):
                 iM1 = idxPts['M',1][i]
+                bPlanarRefSrf, plane_R = ns_R.TryGetPlane(tolerance=1e-9)
+
+                if not bPlanarRefSrf:
+                    plane_R = None
+                    vector_01_M = spb.get_all_parallel_G01_vector(ns_WIP, side)
+
                 if iM1 in pts_G1_corners.keys():
                     pts_G1_corners[iM1].append(pts_WIP[iM1])
+                    planes_G1_corners[iM1].append(plane_R)
+                    vectors_01_M[iM1].append(vector_01_M)
                 else:
                     pts_G1_corners[iM1] = [pts_WIP[iM1]]
+                    planes_G1_corners[iM1] = [plane_R]
+                    vectors_01_M[iM1] = [vector_01_M]
         #sc.doc.Objects.AddPoint(pts_WIP[idxPts['M',1][1]])
         #sc.doc.Objects.AddPoint(pts_WIP[idxPts['M',1][len(idxPts['M',1])-2]])
 
@@ -1591,7 +1606,33 @@ def createSurface(rhCrvs_In, **kwargs):
                 iUT_A, iVT_A, pts_G1_corners[iM1][0],
                 weight=ns_M_Start.Points.GetWeight(iUT_A, iVT_A))
         elif len(pts_G1_corners[iM1]) == 2:
-            pt_Avg = (pts_G1_corners[iM1][0] + pts_G1_corners[iM1][1]) / 2.0
+            if planes_G1_corners[iM1][0] is None and planes_G1_corners[iM1][1] is not None:
+                # Project index 0 point to index 1 plane and average with that instead of index 1 point.
+                pt_NewForIdx1 = rg.Point3d(pts_G1_corners[iM1][0])
+                xform = rg.Transform.PlanarProjection(planes_G1_corners[iM1][1])
+                pt_NewForIdx1.Transform(xform)
+                pt_Avg = (pts_G1_corners[iM1][0] + pt_NewForIdx1) / 2.0
+            elif planes_G1_corners[iM1][0] is not None and planes_G1_corners[iM1][1] is None:
+                # Project index 1 point to index 0 plane and average with that instead of index 0 point.
+                pt_NewForIdx0 = rg.Point3d(pts_G1_corners[iM1][1])
+                xform = rg.Transform.PlanarProjection(planes_G1_corners[iM1][0])
+                pt_NewForIdx0.Transform(xform)
+                pt_Avg = (pt_NewForIdx0 + pts_G1_corners[iM1][1]) / 2.0
+            elif vectors_01_M[iM1][0] is not None and vectors_01_M[iM1][1] is not None:
+                # Find intersection or closest points.
+                line0 = rg.Line(start=pts_G1_corners[iM1][0], span=vectors_01_M[iM1][0])
+                line1 = rg.Line(start=pts_G1_corners[iM1][1], span=vectors_01_M[iM1][1])
+                #sc.doc.Objects.AddLine(line0)
+                #sc.doc.Objects.AddLine(line1)
+                bIntersect, tA, tB = rg.Intersect.Intersection.LineLine(lineA=line0, lineB=line1, tolerance=1e-6, finiteSegments=False)
+                if not bIntersect:
+                    print("Do not intersect.")
+                    pt_Avg = (pts_G1_corners[iM1][0] + pts_G1_corners[iM1][1]) / 2.0
+                else:
+                    pt_Avg = line0.PointAt(tA)
+            else:
+                # Either both references are or are not planes.
+                pt_Avg = (pts_G1_corners[iM1][0] + pts_G1_corners[iM1][1]) / 2.0
             ns_WIP.Points.SetPoint(
                 iUT_A, iVT_A, pt_Avg,
                 weight=ns_M_Start.Points.GetWeight(iUT_A, iVT_A))

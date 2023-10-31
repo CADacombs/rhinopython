@@ -47,6 +47,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 230112: Replaced NurbsCurvePointList.SetWeight with SetPoint.  The former modifies CP locations.
 230630: createTanSrfFromEdge now outputs surface when bDebug==True.
 230701: Modified some tolerance values for curve matching.
+231031: G1 points are now projected to plane of planar surface input.
+        G1 from G0 are no longer adjusted for surface input that is linear in matching direction (against the picked edge).
 """
 
 import Rhino
@@ -1229,6 +1231,20 @@ def project_C_Colinear_with_AB(ptA, ptB, ptC):
     return rg.Line(ptA, ptB).ClosestPoint(ptC, limitToFiniteSegment=False)
 
 
+def get_all_parallel_G01_vector(ns, side):
+    pts = [cp.Location for cp in ns.Points]
+    idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
+    idxs_G0 = getPtRowIndicesPerG(ns, side, iG=0)
+    idxs_G1 = getPtRowIndicesPerG(ns, side, iG=1)
+    vTan0 = pts[idxs_G1[0]] - pts[idxs_G0[0]]
+    for i in range(1, len(idxs_G0)):
+        vTanX = pts[idxs_G1[i]] - pts[idxs_G0[i]]
+        angle = rg.Vector3d.VectorAngle(vTan0, vTanX)
+        if not Rhino.RhinoMath.EpsilonEquals(angle, 0.0, epsilon=1e-6):
+            return
+    return vTan0
+
+
 def setContinuity_G0(**kwargs):
     """
     Parameters:
@@ -1289,7 +1305,7 @@ def setContinuity_G1(**kwargs):
         ns_M_BeforeAnyMatching: NurbsSurface
         ns_M_In: NurbsSurface
         side_M: IsoStatus
-        nurbs_R: NurbsSurface or NurbsCurve (for planar surface)
+        nurbs_R: NurbsSurface or NurbsCurve
         side_R: IsoStatus
         bModifyRowEnd_T0: bool
         bModifyRowEnd_T1: bool
@@ -1333,12 +1349,27 @@ def setContinuity_G1(**kwargs):
 
     iRowLn = len(idxPts['M',0])
 
+    range_start = 0 if bModifyRowEnd_T0 else 1
+    range_stop = iRowLn if bModifyRowEnd_T1 else iRowLn-1
+    Range = range(range_start, range_stop)
+
+
+    bSuccess, plane_R = ns_R.TryGetPlane(tolerance=1e-9)
+    if bSuccess:
+        # Special case.
+        xform = rg.Transform.PlanarProjection(plane_R)
+        for i in Range:
+            iM1= idxPts['M',1][i]
+            iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, iM1)
+            pt_To = rg.Point3d(ptsM_Out[iM1])
+            pt_To.Transform(xform)
+            ns_M_Out.Points.SetPoint(
+                iUT_A, iVT_A, pt_To,
+                weight=ns_M_BeforeAnyMatching.Points.GetWeight(iUT_A, iVT_A))
+        return ns_M_Out
+
 
     # Set G1 row colinear with reference.
-
-    range_start = 0 if bModifyRowEnd_T0 else 1
-    range_stop = iRowLn-1+1 if bModifyRowEnd_T1 else iRowLn-2+1
-    Range = range(range_start, range_stop)
 
     for i in Range:
         iM0 = idxPts['M',0][i]
@@ -1351,8 +1382,29 @@ def setContinuity_G1(**kwargs):
             weight=ns_M_BeforeAnyMatching.Points.GetWeight(iUT_A, iVT_A))
 
 
+    if get_all_parallel_G01_vector(ns_M_Out, side_M):
+        # Since all G01 vectors are coparallel, no need to adjust distances
+        # of each G1 CP from its G0 CP.
+        return ns_M_Out
+
+
     # Update.
     ptsM_Out = [cp.Location for cp in ns_M_Out.Points]
+
+
+    # Test whether all row 0 to row 1 control point vectors are parallel.
+    vTan0_M = ptsM_Out[idxPts['M',1][0]] - ptsM_Out[idxPts['M',0][0]]
+
+    for i in range(1, iRowLn):
+        #sc.doc.Objects.AddPoint(ptsM_Out[idxPts['R',0][i]])
+        #sc.doc.Objects.AddPoint(ptsM_Out[idxPts['R',1][i]])
+        vTanX_M = ptsM_Out[idxPts['M',1][i]] - ptsM_Out[idxPts['M',0][i]]
+        angle = rg.Vector3d.VectorAngle(vTan0_M, vTanX_M)
+        if not Rhino.RhinoMath.EpsilonEquals(angle, 0.0, epsilon=1e-6):
+            break
+    else:
+        # All No need to adjust distances of G1 CPs from their G0 CP.
+        return ns_M_Out
 
 
     # To obtain G1 continuity along edge, set the tangential row at a scale

@@ -19,7 +19,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 211105: Bug fix when adding missing multiplicity of knots at existing locations.
         Bug fix in reducing continuity target from G2 when a tangency surface is used.
 230701, 1030: Modified some debugging code.  Import-related updates.
-231031: Improved G1 point placement when either
+231031-1101: Improved G1 point placement when either
             1. Only 1 of the 2 reference surfaces at corner is planar.
             2. Ends of both reference surfaces at corner are linear and intersect into created surface.
 
@@ -1534,6 +1534,8 @@ def createSurface(rhCrvs_In, **kwargs):
             for i in (1, iRowLn-2):
                 iM1 = idxPts['M',1][i]
                 bPlanarRefSrf, plane_R = ns_R.TryGetPlane(tolerance=1e-9)
+
+                vector_01_M = None
 
                 if not bPlanarRefSrf:
                     plane_R = None

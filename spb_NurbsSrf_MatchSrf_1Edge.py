@@ -1918,7 +1918,6 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
                 eps_prev = epsilon
                 epsilon /= 10.0
                 if not Out.EpsilonEquals(In, epsilon):
-                    sc.doc.Objects.AddSurface(Out); sc.doc.Views.Redraw(); 1/0
                     sc.escape_test()
                     break
             if bEcho:

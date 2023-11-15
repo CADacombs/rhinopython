@@ -49,6 +49,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 230701: Modified some tolerance values for curve matching.
 231031: G1 points are now projected to plane of planar surface input.
         G1 from G0 are no longer adjusted for surface input that is linear in matching direction (against the picked edge).
+231115: Bug fix.  Surfaces starting as G1 were always tested positive for also being G2.
+        Lifted restriction of using rational curves and surfaces as the reference.
 """
 
 import Rhino
@@ -402,8 +404,8 @@ def getInput_Ref(objref_SrfToMod):
                 return False
             if srf.IsClosed(0) or srf.IsClosed(1):
                 return False
-            if isinstance(srf, rg.NurbsSurface) and srf.IsRational:
-                return False
+            #if isinstance(srf, rg.NurbsSurface) and srf.IsRational:
+            #    return False
             if containsShortOrCollapsedBorders(srf):
                 return False
             return True
@@ -413,12 +415,12 @@ def getInput_Ref(objref_SrfToMod):
                 return False
             if isinstance(crv, rg.PolyCurve):
                 return True
-            if isinstance(crv, rg.NurbsCurve) and crv.IsRational:
-                for i in range(crv.Points.Count):
-                    if abs(crv.Points.GetWeight(i)-1.0) > 1e-12:
-                        print("Rational NURBS curve not accepted.")
-                        return False
-                return True
+            #if isinstance(crv, rg.NurbsCurve) and crv.IsRational:
+            #    for i in range(crv.Points.Count):
+            #        if abs(crv.Points.GetWeight(i)-1.0) > 1e-12:
+            #            print("Rational NURBS curve not accepted.")
+            #            return False
+            #    return True
             if isinstance(crv, rg.ArcCurve):
                 print("Arc curve not accepted.")
                 return False
@@ -1580,6 +1582,7 @@ def setContinuity_G2(**kwargs):
         M = m * (mA_Knots / mR_Knots) * (mR_Deg / mA_Deg)
 
         a2 = 2.0*a1 + -a0 + M*(-2.0*r1 + r2 + r0)
+        #addGeoms(a2, False)
 
         a2s[i] = a2
 
@@ -1603,6 +1606,7 @@ def setContinuity_G2(**kwargs):
 
 
     if not b_trans_a2_thru_a1:
+        #addGeoms(ns_M_Out, True); 1/0
         return ns_M_Out
 
 
@@ -1914,6 +1918,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
                 eps_prev = epsilon
                 epsilon /= 10.0
                 if not Out.EpsilonEquals(In, epsilon):
+                    sc.doc.Objects.AddSurface(Out); sc.doc.Views.Redraw(); 1/0
                     sc.escape_test()
                     break
             if bEcho:
@@ -1974,7 +1979,7 @@ def createSurface(ns_M_In, side_M, geom_R_In, bMatchWithParamsAligned=True, **kw
         if areInOutEpsilonEqual(ns_M_BeforeAnyMatching, ns_M_G1): return
         return ns_M_G1, 1
 
-    if areInOutEpsilonEqual(ns_M_BeforeAnyMatching, ns_M_G1): return
+    if areInOutEpsilonEqual(ns_M_BeforeAnyMatching, ns_M_G2): return
     return ns_M_G2, 2
 
 

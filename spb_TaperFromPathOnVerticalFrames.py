@@ -19,10 +19,15 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 190624: Now, command waits for Enter or options when curves are preselected.
 ...
 220828: Added an option.  Refactored.
-231117-18: Added bAlignEndDirs.  Removed bRebuildPath.  Added bAddTaperStartCrvs.
+231117-19: Added bAlignEndDirs.  Removed bRebuildPath.  Added bAddTaperStartCrvs.
         Replaced an import with some of its code, then simplified it.
+        Input of curves can no longer be modified during script execution after their first selection.
+        Instead, left clicks will cycle through distance and angle signs.
+        Replaced adding DocObjects for pending geometry with DrawConduit until results are accepted.
 
-TODO: Correctly create curve opposite path and brep when path curve is closed.
+TODO: 
+    Fix taper angle along multiple segment profiles.
+    Correctly create curve opposite path and brep when path curve is closed.
 """
 
 import Rhino
@@ -243,49 +248,7 @@ class Opts():
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-def getInput(bFirstGetObjects=False):
-    """
-    Get objects with optional input.
-    
-    Returns
-        None to cancel.
-        tuple of (list(ObjRefs), bool(Generate new geometry), bool(Accept results):
-    """
-
-
-    def wasThereChangeInObjectsSelected(gCrvs_PreSelctd, gBreps_PreSelctd, idxs_Edges_PerBrep):
-        objrefs = go.Objects()
-        for objref in objrefs:
-            rgCrv = objref.Curve()
-            if isinstance(rgCrv, rg.BrepEdge):
-                rgCrv.Dispose()
-                if not objref.ObjectId in gBreps_PreSelctd:
-                    return True
-                zipped = zip(gBreps_PreSelctd, idxs_Edges_PerBrep)
-                for gBrep_PreSelctd, idx_Edge_PerBrep in zipped:
-                    if gBrep_PreSelctd == objref.ObjectId:
-                        if idx_Edge_PerBrep == idx_Edge_PerBrep:
-                            break
-                else:
-                    # Edge not found.
-                    return True
-            else:
-                # Curves other than BrepEdges.
-                rgCrv.Dispose()
-                if not objref.ObjectId in gCrvs_PreSelctd:
-                    return True
-        return False
-
-
-    go = ri.Custom.GetObject()
-    go.SetCommandPrompt("Select path curves")
-
-    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve
-
-    # Due to the object collection below, do not use AcceptNothing.
-    go.AcceptNumber(True, acceptZero=False)
-
-
+def _addCommonOptions(go):
     idxs_Opt = {}
 
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
@@ -322,57 +285,161 @@ def getInput(bFirstGetObjects=False):
     addOption('bEcho')
     addOption('bDebug')
 
+    return idxs_Opt
 
-    go.AlreadySelectedObjectSelect = True # So objects can be reselected after being unselected in same go.GetMultiple.
-    go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
-    go.EnableClearObjectsOnEntry(False) # Do not clear objects in go on repeats of While loop.
-    go.EnableUnselectObjectsOnExit(False) # Do not unselect object when an option selected, a number is entered, etc.
 
-    res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
+def _getInput_Crvs():
+    """
+    Get objects with optional input.
+    
+    Returns
+        None to cancel.
+        ObjRefs[]
+    """
 
-    if not go.ObjectsWerePreselected:
-        objrefs = None
-        iCt_Crvs_PreSelctd = 0
-    else:
-        if bFirstGetObjects:
+
+    go = ri.Custom.GetObject()
+    go.SetCommandPrompt("Select curves to extrude")
+    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve
+
+    go.AcceptNumber(True, acceptZero=False)
+
+    idxs_Opt = _addCommonOptions(go)
+
+    while True:
+        go.ClearCommandOptions()
+        idxs_Opt.clear()
+
+        res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
+
+        if res == ri.GetResult.Cancel:
+            go.Dispose()
+            return 
+
+        if res == ri.GetResult.Object:
             objrefs = go.Objects()
             go.Dispose()
-            return objrefs, True, False
+            return objrefs
 
-        iCt_Crvs_PreSelctd = go.ObjectCount
-        objrefs = go.Objects()
-        gCrvs_PreSelctd = []
-        gBreps_PreSelctd = []
-        idxs_Edges_PerBrep = []
-        for objref in objrefs:
-            rgCrv = objref.Curve()
-            if isinstance(rgCrv, rg.BrepEdge):
-                gBreps_PreSelctd.append(objref.ObjectId)
-                idxs_Edges_PerBrep.append(rgCrv.EdgeIndex)
-            else:
-                # Curves other than BrepEdges.
-                gCrvs_PreSelctd.append(objref.ObjectId)
-            rgCrv.Dispose()
+        if res == ri.GetResult.Number:
+            key = 'fDistance' if Opts.values['bNumResForDist_NotAngle'] else 'fTaper_Start_Deg'
+            Opts.riOpts[key].CurrentValue = go.Number()
+            Opts.setValue(key)
+        elif Opts.values['bVariableTaper'] and go.OptionIndex() == idxs_Opt['SwapAngles']:
+            Opts.riOpts['fTaper_Start_Deg'].CurrentValue, Opts.riOpts['fTaper_End_Deg'].CurrentValue = (
+                    Opts.riOpts['fTaper_End_Deg'].CurrentValue, Opts.riOpts['fTaper_Start_Deg'].CurrentValue)
+            Opts.setValue('fTaper_Start_Deg')
+            Opts.setValue('fTaper_End_Deg')
+        elif go.OptionIndex() == idxs_Opt['FlipAngle']:
+            for key in 'fTaper_Start_Deg', 'fTaper_End_Deg':
+                Opts.riOpts[key].CurrentValue = -Opts.riOpts[key].CurrentValue
+                Opts.setValue(key)
+        elif go.OptionIndex() == idxs_Opt['FlipDir']:
+            for key in 'fDistance', 'fTaper_Start_Deg', 'fTaper_End_Deg':
+                Opts.riOpts[key].CurrentValue = -Opts.riOpts[key].CurrentValue
+                Opts.setValue(key)
+        elif Opts.values['bAddBrep'] and go.OptionIndex() == idxs_Opt['iBrepMethod']:
+            Opts.setValue('iBrepMethod', go.Option().CurrentListOptionIndex)
+            #Opts.values['iBrepMethod'] = go.Option().CurrentListOptionIndex
+        elif Opts.values['bAddBrep'] and Opts.values['iBrepMethod'] == 1 and go.OptionIndex() == idxs_Opt['iLoftType']:
+            #Opts.values['iLoftType'] = go.Option().CurrentListOptionIndex
+            Opts.setValue('iLoftType', go.Option().CurrentListOptionIndex)
+        else:
+            for key in idxs_Opt:
+                if go.Option().Index == idxs_Opt[key]:
+                    Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                    break
 
-        go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
-        res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
+
+def _getInput_Opts():
+    """
+    Get objects with optional input.
+    
+    Returns
+        None to cancel.
+        bool(Generate new geometry), bool(Accept results):
+    """
+
+
+    go = ri.Custom.GetPoint()
+
+    bDefaultsForClickDirFlipOnly = (
+        (not Opts.values['bVariableTaper'] and
+            Opts.values['fTaper_Start_Deg'] in (0.0, 90.0, 180.0, 270.0))
+        or
+        (Opts.values['bVariableTaper'] and
+            Opts.values['fTaper_Start_Deg'] in (0.0, 90.0, 180.0, 270.0) and
+            Opts.values['fTaper_End_Deg'] == Opts.values['fTaper_Start_Deg'])
+        )
+
+    if bDefaultsForClickDirFlipOnly:
+        go.SetCommandPrompt("Left click to flip direction")
+    else:
+        go.SetCommandPrompt("Left click to cycle 4 angle and direction combos")
+
+
+    go.SetCommandPromptDefault("Accept results")
+    go.AcceptNothing(True)
+    go.AcceptNumber(True, acceptZero=False)
+
+    idxs_Opt = _addCommonOptions(go)
+
+
+    res = go.Get()
 
     if res == ri.GetResult.Cancel:
         go.Dispose()
-        return
+        return 
 
-    if res == ri.GetResult.Object:
-        objrefs = go.Objects()
-        if iCt_Crvs_PreSelctd == go.ObjectCount:
-            if not wasThereChangeInObjectsSelected(
-                    gCrvs_PreSelctd=gCrvs_PreSelctd,
-                    gBreps_PreSelctd=gBreps_PreSelctd,
-                    idxs_Edges_PerBrep=idxs_Edges_PerBrep
-            ):
-                go.Dispose()
-                return objrefs, False, True
+    if res == ri.GetResult.Nothing:
         go.Dispose()
-        return objrefs, True, False
+        return False, True
+
+    if res == ri.GetResult.Point:
+        if bDefaultsForClickDirFlipOnly:
+            Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
+            Opts.setValue('fDistance')
+        else:
+            if (
+                Opts.riOpts['fDistance'].CurrentValue > 0.0 and
+                Opts.riOpts['fTaper_Start_Deg'].CurrentValue > 0.0
+            ):
+                Opts.riOpts['fTaper_Start_Deg'].CurrentValue = -Opts.riOpts['fTaper_Start_Deg'].CurrentValue
+                Opts.riOpts['fTaper_End_Deg'].CurrentValue = -Opts.riOpts['fTaper_End_Deg'].CurrentValue
+                Opts.setValue('fTaper_Start_Deg')
+                Opts.setValue('fTaper_End_Deg')
+            elif (
+                Opts.riOpts['fDistance'].CurrentValue < 0.0 and
+                Opts.riOpts['fTaper_Start_Deg'].CurrentValue > 0.0
+            ):
+                Opts.riOpts['fTaper_Start_Deg'].CurrentValue = -Opts.riOpts['fTaper_Start_Deg'].CurrentValue
+                Opts.riOpts['fTaper_End_Deg'].CurrentValue = -Opts.riOpts['fTaper_End_Deg'].CurrentValue
+                Opts.setValue('fTaper_Start_Deg')
+                Opts.setValue('fTaper_End_Deg')
+            elif (
+                Opts.riOpts['fDistance'].CurrentValue < 0.0 and
+                Opts.riOpts['fTaper_Start_Deg'].CurrentValue < 0.0
+            ):
+                Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
+                Opts.riOpts['fTaper_Start_Deg'].CurrentValue = -Opts.riOpts['fTaper_Start_Deg'].CurrentValue
+                Opts.riOpts['fTaper_End_Deg'].CurrentValue = -Opts.riOpts['fTaper_End_Deg'].CurrentValue
+                Opts.setValue('fDistance')
+                Opts.setValue('fTaper_Start_Deg')
+                Opts.setValue('fTaper_End_Deg')
+            elif (
+                Opts.riOpts['fDistance'].CurrentValue > 0.0 and
+                Opts.riOpts['fTaper_Start_Deg'].CurrentValue < 0.0
+            ):
+                Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
+                Opts.riOpts['fTaper_Start_Deg'].CurrentValue = -Opts.riOpts['fTaper_Start_Deg'].CurrentValue
+                Opts.riOpts['fTaper_End_Deg'].CurrentValue = -Opts.riOpts['fTaper_End_Deg'].CurrentValue
+                Opts.setValue('fDistance')
+                Opts.setValue('fTaper_Start_Deg')
+                Opts.setValue('fTaper_End_Deg')
+            else:
+                raise Exception("What happened?")
+        go.Dispose()
+        return True, False
 
     if res == ri.GetResult.Number:
         key = 'fDistance' if Opts.values['bNumResForDist_NotAngle'] else 'fTaper_Start_Deg'
@@ -403,7 +470,7 @@ def getInput(bFirstGetObjects=False):
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
 
-    return objrefs, True, False
+    return True, False
 
 
 def continuityVectorsAt(nc, t, side=rg.CurveEvaluationSide.Default):
@@ -548,6 +615,16 @@ def getG2Discontinuities(rgCrv_In):
     return ts_discontinuities
 
 
+def tallyCurveTypes(crvs):
+    sCrvTypes = []
+    for crv in crvs:
+        sCrvTypes.append(crv.GetType().Name)
+    sOuts = []
+    for sCrvType in sorted(set(sCrvTypes)):
+        sOuts.append("{} of {}".format(sCrvTypes.count(sCrvType), sCrvType))
+    return sOuts
+
+
 def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeformable=True):
     """
     Prepare curves, including splitting per options.
@@ -557,29 +634,38 @@ def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeformable=Tr
 
     # JoinCurves groups curves for further processing
     # and also aligns direction within each PolyCurve.
-    rgCrvs_Joined = rg.Curve.JoinCurves(
-        rgCrvs_In,
-        joinTolerance=sc.doc.ModelAbsoluteTolerance)
-    if not rgCrvs_Joined: return
+    if len(rgCrvs_In) == 1:
+        rgCrvs_Joined = [rgCrvs_In[0].DuplicateCurve()]
+    else:
+        rgCrvs_Joined = rg.Curve.JoinCurves(
+            rgCrvs_In,
+            joinTolerance=sc.doc.ModelAbsoluteTolerance)
+        if not rgCrvs_Joined: return
 
     rgCs_Out_Nested = [] # Per connected path.
 
     for rgCrv_Joined in rgCrvs_Joined:
+        segs = rgCrv_Joined.DuplicateSegments()
 
-        if isinstance(rgCrv_Joined, rg.PolyCurve):
-            rgCrv_Joined.RemoveNesting()
+        rgCrvs_ExplodedPoly = []
 
-        if isinstance(rgCrv_Joined, rg.PolyCurve):
-            rc = rgCrv_Joined.Explode()
-            if not rc:
-                print("Could not Explode PolyCurve.")
-            rgCrvs_ExplodedPoly = []
-            for c in rc:
-                rgCrvs_ExplodedPoly.append(c.ToNurbsCurve())
-                c.Dispose()
-        else:
-            # not PolyCurve.
-            rgCrvs_ExplodedPoly = [rgCrv_Joined.ToNurbsCurve()]
+        for seg in segs:
+            nc = seg.ToNurbsCurve()
+            seg.Dispose()
+
+            if nc.Degree != 2:
+                rgCrvs_ExplodedPoly.append(nc)
+                continue
+
+            if nc.SpanCount == 1:
+                rgCrvs_ExplodedPoly.append(nc)
+                continue
+
+            bcs = rg.BezierCurve.CreateBeziers(nc)
+            for bc in bcs:
+                rgCrvs_ExplodedPoly.append(bc.ToNurbsCurve())
+        
+        #print("  ".join(tallyCurveTypes(rgCrvs_ExplodedPoly)))
 
         rgCrv_Joined.Dispose()
 
@@ -755,7 +841,6 @@ def _matchCrvEndDirs(nc_ToMod, nc_Ref):
     """
     
     if nc_ToMod.Points.Count < 4:
-        print("_matchCrvEndDirs skipped due to only {} control points along surface side.".format(nc_ToMod.Points.Count))
         return False
     
     bSuccess = nc_ToMod.SetEndCondition(
@@ -839,64 +924,142 @@ def createBrep(iBrepMethod, iLoftType, fBrepTol, rgCrv_Path, rgNurbsCrv_TaperEnd
     return rgBs_Out
 
 
+class DrawConduit(Rhino.Display.DisplayConduit):
+
+    def __init__(self):
+        self.breps = []
+        self.crvs = []
+        self.lines = []
+        displayMode = Rhino.RhinoDoc.ActiveDoc.Views.ActiveView.ActiveViewport.DisplayMode
+        self.crv_thk = displayMode.DisplayAttributes.CurveThickness + 1
+
+    def CalculateBoundingBox(self, calculateBoundingBoxEventArgs):
+        for brep in self.breps:
+            bbox = brep.GetBoundingBox(accurate=False)
+            calculateBoundingBoxEventArgs.IncludeBoundingBox(bbox)
+
+        for crv in self.crvs:
+            bbox = crv.GetBoundingBox(accurate=False)
+            calculateBoundingBoxEventArgs.IncludeBoundingBox(bbox)
+
+        for line in self.lines:
+            bbox = line.GetBoundingBox(accurate=False)
+            calculateBoundingBoxEventArgs.IncludeBoundingBox(bbox)
+
+    def PreDrawObjects(self, drawEventArgs):
+
+        breps = self.breps
+        color = sc.doc.Layers.CurrentLayer.Color
+
+        for brep in breps:
+            displayMode = Rhino.RhinoDoc.ActiveDoc.Views.ActiveView.ActiveViewport.DisplayMode
+            da = displayMode.DisplayAttributes
+            if da.ShadingEnabled:
+                drawEventArgs.Display.DrawBrepShaded(
+                    brep=brep,
+                    material=Rhino.Display.DisplayMaterial(diffuse=color))
+            drawEventArgs.Display.DrawBrepWires(
+                brep=brep,
+                color=color,
+                wireDensity=1)
+
+        for crv in self.crvs:
+            drawEventArgs.Display.DrawCurve(
+                curve=crv,
+                color=color,
+                thickness=self.crv_thk)
+
+        if self.lines:
+            drawEventArgs.Display.DrawLines(
+                lines=self.lines,
+                color=color,
+                thickness=self.crv_thk)
+
+    def clearGeometry(self):
+        for rgOs in self.breps, self.crvs, self.lines:
+            if rgOs:
+                for o in rgOs: o.Dispose()
+            list
+            rgOs.Clear() # .NET method.
+        #print("All conduit's geometry are disposed and cleared.")
+
+
 def main():
 
-    while True:
-        sc.escape_test()
+    sk_conduit = 'conduit({})'.format(__file__)
 
-        rc = getInput(bFirstGetObjects=True)
-        if rc is None: return
+    if (sk_conduit in sc.sticky) and sc.sticky[sk_conduit]:
+        conduit = sc.sticky[sk_conduit]
+        conduit.clearGeometry()
+        conduit.Enabled = False
+        sc.doc.Views.Redraw()
+        if Opts.values['bDebug']:
+            conduit = None
+            conduit = DrawConduit()
+            sc.sticky[sk_conduit] = conduit
+        conduit = DrawConduit()
+        sc.sticky[sk_conduit] = conduit
+    else:
+        conduit = DrawConduit()
+        sc.sticky[sk_conduit] = conduit
 
-        objrefs_Paths, bGenerateNew, bAcceptResults = rc
-        if not objrefs_Paths: continue
 
-        fDistance = Opts.values['fDistance']
-        bProjDist = Opts.values['bProjDist']
-        fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
-        bVariableTaper = Opts.values['bVariableTaper']
-        fTaper_End_Deg = Opts.values['fTaper_End_Deg']
-        bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
-        bAlignEndDirs = Opts.values['bAlignEndDirs']
-        bCPlane = Opts.values['bCPlane']
-        bAtGrevilles = Opts.values['bAtGrevilles']
-        bAtKnots = Opts.values['bAtKnots']
-        bAtEqualDivisions = Opts.values['bAtEqualDivisions']
-        iDivisionCt = Opts.values['iDivisionCt']
-        bSplitPathsAtG2PlusKnots = Opts.values['bSplitPathsAtG2PlusKnots']
-        bAddTaperStartCrvs = Opts.values['bAddTaperStartCrvs']
-        bAddTaperedLines = Opts.values['bAddTaperedLines']
-        bAddTaperEndCrvs = Opts.values['bAddTaperEndCrvs']
-        bAddBrep = Opts.values['bAddBrep']
-        iBrepMethod = Opts.values['iBrepMethod']
-        iLoftType = Opts.values['iLoftType']
-        fBrepTol = Opts.values['fBrepTol']
-        bEcho = Opts.values['bEcho']
-        bDebug = Opts.values['bDebug']
+    objrefs_Paths = _getInput_Crvs()
+    if objrefs_Paths is None: return
 
-        break
+
+    rgCs_Paths_In = []
+    for objref_Path in objrefs_Paths:
+        c = objref_Path.Curve()
+        rgCs_Paths_In.append(c)
+
+    bGenerateNew = True
+    bAcceptResults = False
+
+    fDistance = Opts.values['fDistance']
+    bProjDist = Opts.values['bProjDist']
+    fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+    bVariableTaper = Opts.values['bVariableTaper']
+    fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+    bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
+    bAlignEndDirs = Opts.values['bAlignEndDirs']
+    bCPlane = Opts.values['bCPlane']
+    bAtGrevilles = Opts.values['bAtGrevilles']
+    bAtKnots = Opts.values['bAtKnots']
+    bAtEqualDivisions = Opts.values['bAtEqualDivisions']
+    iDivisionCt = Opts.values['iDivisionCt']
+    bSplitPathsAtG2PlusKnots = Opts.values['bSplitPathsAtG2PlusKnots']
+    bAddTaperStartCrvs = Opts.values['bAddTaperStartCrvs']
+    bAddTaperedLines = Opts.values['bAddTaperedLines']
+    bAddTaperEndCrvs = Opts.values['bAddTaperEndCrvs']
+    bAddBrep = Opts.values['bAddBrep']
+    iBrepMethod = Opts.values['iBrepMethod']
+    iLoftType = Opts.values['iLoftType']
+    fBrepTol = Opts.values['fBrepTol']
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
 
 
     rgLine_ToArray = None
-    rgCrvs0_Path = []
     rgCs_Paths_PreparedForSampling_AllProfiles = []
+
 
     while True:
 
         while not (bAtGrevilles or bAtKnots or bAtEqualDivisions):
             print("No path point sampling is enabled.")
             sc.doc.Views.Redraw()
-            rc = getInput(bFirstGetObjects=False)
+
+            rc = _getInput_Opts()
             if rc is None:
                 if rgLine_ToArray: rgLine_ToArray.Dispose()
-                for c in rgCrvs0_Path: c.Dispose()
                 for c in rgCs_Paths_PreparedForSampling_AllProfiles: c.Dispose()
                 return
 
-            objrefs_Paths, bGenerateNew, bAcceptResults = rc
+            bGenerateNew, bAcceptResults = rc
 
             if bAcceptResults:
                 if rgLine_ToArray: rgLine_ToArray.Dispose()
-                for c in rgCrvs0_Path: c.Dispose()
                 for c in rgCs_Paths_PreparedForSampling_AllProfiles: c.Dispose()
                 return
 
@@ -924,17 +1087,12 @@ def main():
             bDebug = Opts.values['bDebug']
 
 
-        rgCrvs0_Path = []
-        for objref_Path in objrefs_Paths:
-            c = objref_Path.Curve()
-            rgCrvs0_Path.append(c)
-
-        bMakeDeformable = bAlignEndDirs or (fAngle_End_Deg and fAngle_End_Deg != fAngle_Start_Deg)
+        bMakeDeformable = bAlignEndDirs or (fTaper_End_Deg and fTaper_End_Deg != fTaper_Start_Deg)
 
         Rhino.RhinoApp.SetCommandPrompt("Preparing path curves ...")
 
         rgCs_Paths_PreparedForSampling_AllProfiles = _prepareCurves(
-            rgCrvs_In=rgCrvs0_Path,
+            rgCrvs_In=rgCs_Paths_In,
             bSplitPathsAtG2PlusKnots=bSplitPathsAtG2PlusKnots,
             bMakeDeformable=bMakeDeformable)
         if not rgCs_Paths_PreparedForSampling_AllProfiles:
@@ -964,12 +1122,10 @@ def main():
 
         rgLineCrv_ToArray = rg.LineCurve(rgLine_ToArray)
 
-        gCrvs_TaperStart_All = []
-        gLineCrvs1_Arrayed = []
-        gCrvs_TaperEnd_All = []
-        gBs_Out = []
-
-        rgCrvs_PathSegs = None
+        rgCs_TaperStart_All = []
+        rgLineCrvs1_Arrayed_All = []
+        rgCs_TaperEnd_All = []
+        rgBs_Res_All = []
 
         Rhino.RhinoApp.SetCommandPrompt("Creating geometry ...")
 
@@ -991,10 +1147,10 @@ def main():
                     iDivisionCt=iDivisionCt,
                     bDebug=bDebug)
                 if rc is None: return
-                print(rc)
+                #print(rc)
                 # Flatten list.
                 rgLineCrvs_Arrayed_1PathSeg = [rgLs[0] for rgLs in rc]
-                print(rgLineCrvs_Arrayed_1PathSeg)
+                #print(rgLineCrvs_Arrayed_1PathSeg)
 
                 if bAddTaperedLines:
                     pts_Start = []
@@ -1011,9 +1167,8 @@ def main():
                                 ):
                                     print("Skipped duplicate line.")
                                     continue
-                        gL = sc.doc.Objects.AddCurve(rgLc)
-                        if gL != gL.Empty:
-                            gLineCrvs1_Arrayed.append(gL)
+                        rgLineCrvs1_Arrayed_All.append(rgLc)
+                        conduit.crvs.append(rgLc)
                             #rgDot_ = rg.TextDot(str(i), rgObj1_Arrayed_1Seg.PointAtStart)
                             #sc.doc.Objects.AddTextDot(rgDot_)
                     rgLc_LastPathSeg = rgLc
@@ -1053,26 +1208,26 @@ def main():
                         rgLineCrvs_Arrayed_1PathSeg_GrevsOnly = [L[0] for L in rc]
                     else:
                         rgLineCrvs_Arrayed_1PathSeg_GrevsOnly = [L.Duplicate() for L in rgLineCrvs_Arrayed_1PathSeg]
-                
+
+                    # Create end of taper.
                     pts_EndOf_LineCrvs_Arrayed = []
                     for rgLineCrv in rgLineCrvs_Arrayed_1PathSeg_GrevsOnly:
                         pts_EndOf_LineCrvs_Arrayed.append(rgLineCrv.PointAtEnd)
-
                         nc_OppOfPath = rgCrv1_Path_1Seg.ToNurbsCurve()
                         nc_OppOfPath.SetGrevillePoints(pts_EndOf_LineCrvs_Arrayed)
 
                     if bAlignEndDirs:
                         _matchCrvEndDirs(nc_OppOfPath, rgCrv1_Path_1Seg)
 
+
                     if bAddTaperStartCrvs:
-                        gCrv_TaperStart_1Seg = sc.doc.Objects.AddCurve(rgCrv1_Path_1Seg)
-                        if gCrv_TaperStart_1Seg != gCrv_TaperStart_1Seg.Empty:
-                            gCrvs_TaperStart_All.append(gCrv_TaperStart_1Seg)
+                        conduit.crvs.append(rgCrv1_Path_1Seg)
+                        rgCs_TaperStart_All.append(rgCrv1_Path_1Seg)
 
                     if bAddTaperEndCrvs:
-                        gCrv_TaperEnd_1Seg = sc.doc.Objects.AddCurve(nc_OppOfPath)
-                        if gCrv_TaperEnd_1Seg != gCrv_TaperEnd_1Seg.Empty:
-                            gCrvs_TaperEnd_All.append(gCrv_TaperEnd_1Seg)
+                        conduit.crvs.append(nc_OppOfPath)
+                        rgCs_TaperEnd_All.append(nc_OppOfPath)
+
                     if bAddBrep:
                         rc = createBrep(
                                 iBrepMethod=iBrepMethod,
@@ -1092,45 +1247,36 @@ def main():
 
 
             if rgBs_1Profile:
-                rgBreps1_Joined = rg.Brep.JoinBreps(
-                        rgBs_1Profile,
-                        tolerance=0.5*sc.doc.ModelAbsoluteTolerance)
+                rgBs_Joined = rg.Brep.JoinBreps(
+                    rgBs_1Profile,
+                    tolerance=2.0*sc.doc.ModelAbsoluteTolerance)
                 for b in rgBs_1Profile: b.Dispose()
 
-                if rgBreps1_Joined:
-                    #gBs_Out = []
-                    iCt_Faces_Added = 0
-                    for rgBrep1_Joined in rgBreps1_Joined:
-                        gBrep1 = sc.doc.Objects.AddBrep(rgBrep1_Joined)
-                        if gBrep1 != gBrep1.Empty:
-                            gBs_Out.append(gBrep1)
-                            rdB_Out = sc.doc.Objects.FindId(gBrep1)
-                            iCt_Faces_Added += rdB_Out.BrepGeometry.Faces.Count
-                    if bEcho:
-                        print("{} breps with {} faces created.".format(
-                            len(gBs_Out), iCt_Faces_Added))
+                if rgBs_Joined:
+                    conduit.breps.extend(rgBs_Joined)
+
+        conduit.Enabled = True
 
         sc.doc.Views.Redraw()
 
-        rc = getInput(bFirstGetObjects=False)
+        rc = _getInput_Opts()
         if rc is None:
-            for g_ in gCrvs_TaperStart_All:
-                sc.doc.Objects.Delete(g_, True)
-            for g_ in gLineCrvs1_Arrayed:
-                sc.doc.Objects.Delete(g_, True)
-            for g_ in gCrvs_TaperEnd_All:
-                sc.doc.Objects.Delete(g_, True)
-            for g_ in gBs_Out:
-                sc.doc.Objects.Delete(g_, True)
-            break
+            conduit.clearGeometry()
+            conduit.Enabled = False
+            sc.doc.Views.Redraw()
+            return
 
-        objrefs_Paths, bGenerateNew, bAcceptResults = rc
+        bGenerateNew, bAcceptResults = rc
 
         if bAcceptResults:
             break
 
         if not bGenerateNew:
             continue
+
+        conduit.clearGeometry()
+        conduit.Enabled = False
+        sc.doc.Views.Redraw()
 
         fDistance = Opts.values['fDistance']
         bProjDist = Opts.values['bProjDist']
@@ -1156,22 +1302,45 @@ def main():
         bDebug = Opts.values['bDebug']
 
 
-        for g_ in gCrvs_TaperStart_All:
-            sc.doc.Objects.Delete(g_, True)
-        for g_ in gLineCrvs1_Arrayed:
-            sc.doc.Objects.Delete(g_, True)
-        for g_ in gCrvs_TaperEnd_All:
-            sc.doc.Objects.Delete(g_, True)
-        for g_ in gBs_Out:
-            sc.doc.Objects.Delete(g_, True)
+    if bAddBrep:
+        gBs_Out = []
+        iCt_Faces_Added = 0
+        for rgB in rgBs_Joined:
+            gB_Out = sc.doc.Objects.AddBrep(rgB)
+            if gB_Out != gB_Out.Empty:
+                gBs_Out.append(gB_Out)
+                if bEcho:
+                    rdB_Out = sc.doc.Objects.FindId(gB_Out)
+                    iCt_Faces_Added += rdB_Out.BrepGeometry.Faces.Count
+        if bEcho:
+            print("{} breps with {} faces created.".format(
+                len(gBs_Out), iCt_Faces_Added))
 
-    for c in rgCrvs0_Path: c.Dispose()
-    for cs in rgCs_Paths_PreparedForSampling_AllProfiles:
-        for c in cs:
-            c.Dispose()
-    rgLineCrv_ToArray.Dispose()
-    for c in rgLineCrvs_Arrayed_1PathSeg:
-        c.Dispose()
+    if bAddTaperedLines:
+        gLineCrvs1_Arrayed = []
+        for rgLc in rgLineCrvs1_Arrayed_All:
+            gL = sc.doc.Objects.AddCurve(rgLc)
+            if gL != gL.Empty:
+                gLineCrvs1_Arrayed.append(gL)
+
+
+    if bAddTaperStartCrvs:
+        gCrvs_TaperStart_All = []
+        for nc in rgCs_TaperStart_All:
+            gCrv_TaperStart_1Seg = sc.doc.Objects.AddCurve(nc)
+            if gCrv_TaperStart_1Seg != gCrv_TaperStart_1Seg.Empty:
+                gCrvs_TaperStart_All.append(gCrv_TaperStart_1Seg)
+
+    if bAddTaperEndCrvs:
+        gCrvs_TaperEnd_All = []
+        for nc in rgCs_TaperEnd_All:
+            gCrv_TaperEnd_1Seg = sc.doc.Objects.AddCurve(nc)
+            if gCrv_TaperEnd_1Seg != gCrv_TaperEnd_1Seg.Empty:
+                gCrvs_TaperEnd_All.append(gCrv_TaperEnd_1Seg)
+
+    conduit.clearGeometry()
+
+    sc.doc.Views.Redraw()
 
 
 if __name__ == '__main__': main()

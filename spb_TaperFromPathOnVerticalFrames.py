@@ -72,15 +72,15 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'True', 'Projected')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
+    key = 'bVariableTaper'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
     key = 'fTaper_Start_Deg'; keys.append(key)
     values[key] = 45.0
     names[key] = 'TaperAngle'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'bVariableTaper'; keys.append(key)
-    values[key] = False
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fTaper_End_Deg'; keys.append(key)
@@ -246,14 +246,16 @@ class Opts():
 def _addCommonOptions(go):
     idxs_Opt = {}
 
+    Opts.names['fTaper_Start_Deg'] = 'StartTaperAngle' if Opts.values['bVariableTaper'] else 'TaperAngle'
+
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
     addOption('bNumResForDist_NotAngle')
     addOption('fDistance')
     if not Opts.values['bVariableTaper']:
         addOption('bProjDist')
-    addOption('fTaper_Start_Deg')
     addOption('bVariableTaper')
+    addOption('fTaper_Start_Deg')
     if Opts.values['bVariableTaper']:
         addOption('fTaper_End_Deg')
         idxs_Opt['SwapAngles'] = go.AddOption('SwapAngles')
@@ -1216,7 +1218,7 @@ def main():
     bProjDist = Opts.values['bProjDist']
     fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
     bVariableTaper = Opts.values['bVariableTaper']
-    fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+    fTaper_End_Deg = Opts.values['fTaper_End_Deg'] if bVariableTaper else fTaper_Start_Deg
     bTaperChangePerCrvParam_NotArcLength = Opts.values['bTaperChangePerCrvParam_NotArcLength']
     bAlignEndDirs = Opts.values['bAlignEndDirs']
     bCPlane = Opts.values['bCPlane']
@@ -1262,7 +1264,7 @@ def main():
             bProjDist = Opts.values['bProjDist']
             fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
             bVariableTaper = Opts.values['bVariableTaper']
-            fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+            fTaper_End_Deg = Opts.values['fTaper_End_Deg'] if bVariableTaper else fTaper_Start_Deg
             bTaperChangePerCrvParam_NotArcLength = Opts.values['bTaperChangePerCrvParam_NotArcLength']
             bAlignEndDirs = Opts.values['bAlignEndDirs']
             bCPlane = Opts.values['bCPlane']
@@ -1389,7 +1391,7 @@ def main():
         bProjDist = Opts.values['bProjDist']
         fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
         bVariableTaper = Opts.values['bVariableTaper']
-        fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+        fTaper_End_Deg = Opts.values['fTaper_End_Deg'] if bVariableTaper else fTaper_Start_Deg
         bTaperChangePerCrvParam_NotArcLength = Opts.values['bTaperChangePerCrvParam_NotArcLength']
         bAlignEndDirs = Opts.values['bAlignEndDirs']
         bCPlane = Opts.values['bCPlane']

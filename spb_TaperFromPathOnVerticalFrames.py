@@ -11,8 +11,7 @@ it has a few additional features:
 
 Limitations:
     There is no equivalent option to _ExtrudeCrvTapered's Corners.
-    Periodic curves are not supported.
-    Variable taper is disabled for closed, non-periodic, curves.
+    Variable taper is disabled for closed, including periodic, curves.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
@@ -29,9 +28,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Input of curves can no longer be modified during script execution after their first selection.
         Instead, left clicks will cycle through distance and angle signs.
         Replaced adding DocObjects for pending geometry with DrawConduit until results are accepted.
-
-TODO: 
-    Support periodic curves.
+        Now supports periodic curves.
 """
 
 import Rhino
@@ -676,8 +673,6 @@ def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeg_1_Deforma
             bcs = rg.BezierCurve.CreateBeziers(nc)
             for bc in bcs:
                 rgCrvs_ExplodedPoly.append(bc.ToNurbsCurve())
-        
-        #print("  ".join(tallyCurveTypes(rgCrvs_ExplodedPoly)))
 
         rgCrv_Joined.Dispose()
 
@@ -718,9 +713,6 @@ def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeg_1_Deforma
         if len(rgCs_Out_1Profile) == 1:
             # Besides unnecessarily using JoinCurves,
             # JoinCurves will also convert a degree-1 NurbsCurve into a PolylineCurve.
-            if rgCs_Out_1Profile[0].IsPeriodic:
-                print("Periodic path profile skipped.")
-                continue
             rgCs_Out.append(rgCs_Out_1Profile[0])
             continue
 
@@ -916,16 +908,16 @@ def createBrep(iBrepMethod, iLoftType, fBrepTol, rgCrv_Path, rgNurbsCrv_TaperEnd
                 loftType=rg.LoftType.Straight,
                 closed=False)
     elif Opts.listValues['iBrepMethod'][Opts.values['iBrepMethod']] == 'LoftSectionLines':
-        for L in rgLineCrvs_Arrayed:
-            print(L.PointAtStart, L.PointAtEnd)
-        print(rgLineCrvs_Arrayed[0].PointAtEnd.EpsilonEquals(rgLineCrvs_Arrayed[-1].PointAtEnd, epsilon=1e-12))
+        #for L in rgLineCrvs_Arrayed:
+        #    print(L.PointAtStart, L.PointAtEnd)
+        #print(rgLineCrvs_Arrayed[0].PointAtEnd.EpsilonEquals(rgLineCrvs_Arrayed[-1].PointAtEnd, epsilon=1e-12))
         rgBs_Out = rg.Brep.CreateFromLoft(
                 curves=rgLineCrvs_Arrayed,
                 start=rg.Point3d.Unset,
                 end=rg.Point3d.Unset,
                 loftType=Enum.ToObject(rg.LoftType, iLoftType),
                 closed=rgNurbsCrv1_PathSeg.IsClosed)
-        print(rgBs_Out)
+        #print(rgBs_Out)
     elif Opts.listValues['iBrepMethod'][Opts.values['iBrepMethod']] == 'Sweep2A':
         rgBs_Out = rg.Brep.CreateFromSweep(
                 rail1=rgNurbsCrv1_PathSeg,
@@ -1241,7 +1233,9 @@ def main():
                         if t in ts_In:
                             rgLcs_Out.append(rgLcs_In[ts_In.index(t)])
                         else:
-                            raise Exception("Parameter, {}, is not in list: {}".format(t, ts_In))
+                            print("All Greville parameters: {}".format(rgC_Path_1Seg.GrevilleParameters()))
+                            print("Parameter, {}, is not in list: {}".format(t, ts_In))
+                            raise Exception("See command history for info on error.")
                     return rgLcs_Out
 
                 for i_Path_1Seg, rgCrv1_Path_1Seg in enumerate(segs):
@@ -1255,21 +1249,6 @@ def main():
                         rgLcs_Arrayed_PerPathProfile,
                         ts_Lcs_Arrayed_PerProfile)
 
-                    #rgLineCrvs_Arrayed_1PathSeg_GrevsOnly = _createArrayedGeometry(
-                    #    rgCrv_Path=rgCrv1_Path_1Seg,
-                    #    rgLc_ToArray=rgLineCrv_ToArray,
-                    #    plane_Proj=plane_Proj,
-                    #    fTaper_Start_Deg=fTaper_Start_Deg,
-                    #    fTaper_End_Deg=fTaper_End_Deg if bVariableTaper else fTaper_Start_Deg,
-                    #    bTaperChangePerCrvParam=bTaperChangePerCrvParam,
-                    #    bAtGrevilles=True,
-                    #    bAtKnots=False,
-                    #    bAtEqualDivisions=False,
-                    #    iDivisionCt=0,
-                    #    bDebug=bDebug)
-                    #if rgLineCrvs_Arrayed_1PathSeg_GrevsOnly is None:
-                    #    raise Exception("Nothing returned from createArrayedGeometry.")
-
                     # Create taper end curve.
                     pts_AtEndsOf_Lcs_Arrayed = []
                     for rgLc in rgLineCrvs_Arrayed_1PathSeg_GrevsOnly:
@@ -1277,7 +1256,7 @@ def main():
                     nc_OppOfPath = rgCrv1_Path_1Seg.DuplicateCurve()
                     nc_OppOfPath.SetGrevillePoints(pts_AtEndsOf_Lcs_Arrayed)
 
-                    if bAlignEndDirs:
+                    if bAlignEndDirs and not nc_OppOfPath.IsPeriodic:
                         _matchCrvEndDirs(nc_OppOfPath, rgCrv1_Path_1Seg)
 
 

@@ -3,12 +3,12 @@ This script is an alternative to _ExrudeCrvTapered.
 
 Although it doesn't have all _ExrudeCrvTapered's options, e.g., Corners,
 it has a few additional features:
-    It can create loose extrudes.
+    It can create simple/loose extrudes.
     It can create variable tapers, where the start and end angles are
         at the ends of each connected path profile.
     It can align the ends of the tapered-to curves with the curves to taper-from curves
         to aid in constructing contiguous breps with G1 continuity.
-    Besides b-reps, it can optionally output curves used in the construction of the b-reps.
+    Besides b-reps, it optionally outputs curves used in the construction of the b-reps.
 
 Limitations:
     There is no equivalent option to _ExtrudeCrvTapered's Corners.
@@ -25,14 +25,14 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 190624: Now, command waits for Enter or options when curves are preselected.
 ...
 220828: Added an option.  Refactored.
-231117-20: Added bAlignEndDirs.  Removed bRebuildPath.  Prepared path curves are now added with other curves.
+231117-21: Added bAlignEndDirs.  Removed bRebuildPath.  Prepared path curves are now added with other curves.
         Replaced an import with some of its code, then simplified it.
         Input of curves can no longer be modified during script execution after their first selection.
         Instead, left clicks will cycle through distance and angle signs.
         Replaced adding DocObjects for pending geometry with DrawConduit until results are accepted.
         Now supports periodic curves.
 
-TODO: For AlignEndDirs, adjust tapered line curves.
+TODO: (Maybe) For AlignEndDirs, adjust tapered line curves.
 """
 
 import Rhino
@@ -616,7 +616,7 @@ def _getG2Discontinuities(rgCrv_In):
     return ts_discontinuities
 
 
-def tallyCurveTypes(crvs):
+def _tallyCurveTypes(crvs):
     sCrvTypes = []
     for crv in crvs:
         sCrvTypes.append(crv.GetType().Name)
@@ -688,7 +688,7 @@ def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeg_1_Deforma
                 rgCs_AfterG2PlusSplits.extend(rgCrvs_SplitAtKnots)
                 c.Dispose()
 
-        rgCs_Out_1Profile = []
+        rgCs_Out_1Profile = [] # Will contain PolyCurves and/or NurbsCurves.
 
         if not (bMakeDeg_1_Deformable or bMakeDeg_2_Deformable):
             rgCs_Out_1Profile.extend(rgCs_AfterG2PlusSplits)
@@ -696,10 +696,10 @@ def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeg_1_Deforma
             for c in rgCs_AfterG2PlusSplits:
                 if bMakeDeg_1_Deformable and c.Points.Count == 2:
                     if not c.IncreaseDegree(3):
-                        print("Could not raise degree of {}.".format(c.GetType().Name))
+                        raise Exception("Could not raise degree of {}.".format(c.GetType().Name))
                 elif bMakeDeg_2_Deformable and c.Points.Count == 3:
                     if not c.IncreaseDegree(3):
-                        print("Could not raise degree of {}.".format(c.GetType().Name))
+                        raise Exception("Could not raise degree of {}.".format(c.GetType().Name))
                 rgCs_Out_1Profile.append(c)
 
         if len(rgCs_Out_1Profile) == 1:
@@ -708,12 +708,17 @@ def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeg_1_Deforma
             nc_Out = rgCs_Out_1Profile[0]
 
             if nc_Out.IsClosed and not nc_Out.IsPeriodic:
-                #raise Exception("Must open closed, non-periodic curve to allow split at seam.")
                 ncs_Out_Split = nc_Out.Split(nc_Out.Domain.Mid)
-                rgCs_Out.extend(ncs_Out_Split)
+                rgCs_Joined_Out = rg.Curve.JoinCurves(
+                    ncs_Out_Split,
+                    joinTolerance=sc.doc.ModelAbsoluteTolerance)
+                if len(rgCs_Joined_Out) != 1:
+                    raise Exception("JoinCurves should have returned 1 curves, but returned {} instead.".format(len(rgCs_Joined_Out)))
+
+                rgCs_Out.append(rgCs_Joined_Out[0])
                 continue
 
-            rgCs_Out.append(rgC_Out)
+            rgCs_Out.append(nc_Out)
             continue
 
         rgCs_Joined_Out = rg.Curve.JoinCurves(
@@ -738,7 +743,6 @@ def _getGrevilleParametersWithinDomain(nc, bDebug=False):
             del ts[0]
         while ts[-1] >= nc.Domain.T1:
             sc.escape_test()
-            print(ts[-1]-nc.Domain.T1)
             del ts[-1]
     if bDebug:
         sEval = "ts"; print("{}: {}".format(sEval, eval(sEval)))
@@ -778,7 +782,7 @@ def _getParametersForLines(rgCrv_PathProfile, bAtGrevilles, bAtKnots, iEqualDivi
     return ts
 
 
-def _calculateAnglesAtParameters(rgCrv_Path, ts, fTaper_Start_Deg, fTaper_End_Deg, bTaperChangePerCrvParam_NotArcLength):
+def _calculateAnglesAtParameters(rgCrv_Path, ts, fTaper_Start_Deg, fTaper_End_Deg, bTaperChangePerCrvParam_NotArcLength, bDebug=False):
     """
     All angles are in degrees.
     """
@@ -793,7 +797,7 @@ def _calculateAnglesAtParameters(rgCrv_Path, ts, fTaper_Start_Deg, fTaper_End_De
 
     angles_ts = [fTaper_Start_Deg]
 
-    for i, t in range(1, len(ts) - 1):
+    for i in range(1, len(ts) - 1):
 
         t = ts[i]
 
@@ -914,7 +918,7 @@ def _matchCrvEndDirs(nc_ToMod, nc_Ref):
         point=nc_ToMod.PointAtStart,
         tangent=nc_Ref.TangentAtStart)
     if not bSuccess:
-        print("SetEndCondition failed.")
+        raise Exception("SetEndCondition failed.")
         return False
     bSuccess = nc_ToMod.SetEndCondition(
         bSetEnd=True,
@@ -922,7 +926,7 @@ def _matchCrvEndDirs(nc_ToMod, nc_Ref):
         point=nc_ToMod.PointAtEnd,
         tangent=nc_Ref.TangentAtEnd)
     if not bSuccess:
-        print("SetEndCondition failed.")
+        raise Exception("SetEndCondition failed.")
         return False
 
     return True
@@ -947,16 +951,12 @@ def createBrep(iBrepMethod, iLoftType, fBrepTol, rgCrv_Path, rgNurbsCrv_TaperEnd
                 loftType=rg.LoftType.Straight,
                 closed=False)
     elif Opts.listValues['iBrepMethod'][Opts.values['iBrepMethod']] == 'LoftSectionLines':
-        #for L in rgLineCrvs_Arrayed:
-        #    print(L.PointAtStart, L.PointAtEnd)
-        #print(rgLineCrvs_Arrayed[0].PointAtEnd.EpsilonEquals(rgLineCrvs_Arrayed[-1].PointAtEnd, epsilon=1e-12))
         rgBs_Out = rg.Brep.CreateFromLoft(
                 curves=rgLineCrvs_Arrayed,
                 start=rg.Point3d.Unset,
                 end=rg.Point3d.Unset,
                 loftType=Enum.ToObject(rg.LoftType, iLoftType),
                 closed=rgNurbsCrv1_PathSeg.IsClosed)
-        #print(rgBs_Out)
     elif Opts.listValues['iBrepMethod'][Opts.values['iBrepMethod']] == 'Sweep2BrepMethod':
         rgBs_Out = rg.Brep.CreateFromSweep(
                 rail1=rgNurbsCrv1_PathSeg,
@@ -975,12 +975,13 @@ def createBrep(iBrepMethod, iLoftType, fBrepTol, rgCrv_Path, rgNurbsCrv_TaperEnd
                 rail2=rgNurbsCrv_TaperEnd_1Seg,
                 crossSections=rgLineCrvs_Arrayed)
     elif Opts.listValues['iBrepMethod'][Opts.values['iBrepMethod']] == 'Network':
+        # continuity of 1 = position
         rgNurbsSrf, iError = rg.NurbsSurface.CreateNetworkSurface(
                 curves=[rgNurbsCrv1_PathSeg, rgNurbsCrv_TaperEnd_1Seg]+rgLineCrvs_Arrayed,
                 continuity=1,
                 edgeTolerance=fBrepTol,
                 interiorTolerance=fBrepTol,
-                angleTolerance=0.1*sc.doc.ModelAngleToleranceDegrees)
+                angleTolerance=sc.doc.ModelAngleToleranceDegrees)
         if iError:
             print("CreateNetworkSurface error code: {}".format(iError))
         else:
@@ -1000,7 +1001,7 @@ def _createGeometryForProfile(rgC_Profile_Prepared, Lc_ToArray, plane_Proj, fTap
 
     if fTaper_Start_Deg != fTaper_End_Deg:
         if rgC_Profile_Prepared.IsClosed and fTaper_End_Deg != fTaper_Start_Deg:
-            print("Variable taper disabled for closed path profile.")
+            print("Variable taper was disabled for closed path profile.")
             if fTaper_Start_Deg != 0.0:
                 fTaper_End_Deg = fTaper_Start_Deg
             else:
@@ -1014,16 +1015,13 @@ def _createGeometryForProfile(rgC_Profile_Prepared, Lc_ToArray, plane_Proj, fTap
         ts_FullPath,
         fTaper_Start_Deg,
         fTaper_End_Deg,
-        bTaperChangePerCrvParam_NotArcLength)
+        bTaperChangePerCrvParam_NotArcLength,
+        bDebug)
 
     fAngles_ts_FullPath_Rads = [Rhino.RhinoMath.ToRadians(deg) for deg in fAngles_ts_FullPath_Degs]
 
 
     rgCs_TaperStart_Profile = rgC_Profile_Prepared.DuplicateSegments() # All are NurbsCurves.
-    #print(rgC_Path_Prepared.Domain)
-    #for seg in segs:
-    #    print(seg.Domain)
-    #1/0
 
 
     def getArrayedLineCrvsAtGrevillesOnly(rgC_Path_1Seg, rgLcs_In, ts_Lcs_In):
@@ -1360,7 +1358,7 @@ def main():
                 if rgLcs_Arrayed_Profile: conduit.crvs.extend(rgLcs_Arrayed_Profile)
                 if rgCs_TaperEnd_Profile: conduit.crvs.extend(rgCs_TaperEnd_Profile)
 
-            if bAddBrep:
+            if bAddBrep and rgBs_Res_Profile:
                 conduit.breps.extend(rgBs_Res_Profile)
 
         conduit.Enabled = True

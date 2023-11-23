@@ -1064,7 +1064,7 @@ def _createGeometryForProfile(rgC_Profile_Prepared, Lc_ToArray, plane_Proj, fTap
         # Breps require taper start segments, tapered lines, and/or taper end segments,
         # depending on the surface-creation method used.
 
-
+        nc_Path_Seg = nc_Path_Seg.ToNurbsCurve()
         # These arrayed lines are only at Greville points.
         rgLineCrvs_Arrayed_1PathSeg_GrevsOnly = getArrayedLineCrvsAtGrevillesOnly(
             nc_Path_Seg, 

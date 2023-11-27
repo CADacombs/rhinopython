@@ -15,6 +15,46 @@ Limitations:
     Variable taper is disabled for closed, including periodic, curves.
     Closed, non-periodic, single-segment curves are split in 2 instead of creating 3-vertex breps.
 
+Options:
+    NumberEntry
+        Dist: Direct numeric entry will set value of Distance setting.
+        DraftAngle: Direct numeric entry will set value of DraftAngle setting.
+    Distance: Length of taper
+    DistType
+        Projected: The extrusion direction length matches the Distance value (a la _ExtrudeCrvTapered).
+        True: Each section length matches the Distance value.
+    VariableTaper: Indicate whether the ends of the path profiles can have different DraftAngles with angles interpolated between them the profiles.
+    TaperChangePerCrv: 
+    DraftAngle/StartDraftAngle: Angle of draft/taper.
+    EndDraftAngle
+    SwapAngles: Swap the values of StartDraftAngle and EndDraftAngle.
+    TaperChangePerCrv
+        Length: Arc lengths determine the amount to interpolate the draft angles between assigned ends.
+        Param: Curve parameters determine the amount to interpolate the draft angles between assigned ends.
+    FlipDir: Negates value of Distance.
+    FlipAngle: Negates value of VariableTaper.
+    DirPerZAxisOf
+        CPlane: Working view's CPlane's ZAxis is the pull/draw direction.
+        World: World's ZAxis is the pull/draw direction regardless of current CPlane of the working view.
+    OnlyBezierOut: Multi-span NurbsCurves are split at all interior knots.
+    AlignEndDirs: Each end of taper segment is aligned to its relative end of its path segment.
+        This creates G1 continuity when the adjacent path segments are G1-continuous at their ends.
+    AtGrevilles: Calculate taper line at all Grevilles for optional output of the lines.  This is calculated regardless for some other option settings.
+    AtKnots: Calculate taper line at all knots for optional output of the lines.
+    AtEqualDivisions: Calculate taper line at all Grevilles for optional output of the lines.
+    DivisionCt: Only available when AtEqualDivisions=Yes, sets how many divisions each profile/segment is divided.
+    AddCrvs
+    AddBrep
+    BrepMethod
+        GrevilleOnly
+        LoftSectionLines
+        Sweep2BrepMethod
+        Sweep2Class
+        Network
+    BrepTol
+    Echo
+    Debug
+
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 
@@ -31,6 +71,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Instead, left clicks will cycle through distance and angle signs.
         Replaced adding DocObjects for pending geometry with DrawConduit until results are accepted.
         Now supports periodic curves.
+231126: Bug fixes: One for handling DuplicateCurve simplified output.  One for tapered line output versus brep method.
 
 TODO: (Maybe) For AlignEndDirs, adjust tapered line curves.
 """
@@ -77,15 +118,14 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fTaper_Start_Deg'; keys.append(key)
+    key = 'fAngle_Start_Deg'; keys.append(key)
     values[key] = 45.0
-    names[key] = 'TaperAngle'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fTaper_End_Deg'; keys.append(key)
+    key = 'fAngle_End_Deg'; keys.append(key)
     values[key] = 45.0
-    names[key] = 'EndTaperAngle'
+    names[key] = 'EndDraftAngle'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -146,7 +186,7 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iBrepMethod'; keys.append(key)
-    listValues[key] = 'Loft2Crvs', 'LoftSectionLines', 'Sweep2BrepMethod', 'Sweep2Class', 'Network' # All items must be strings.
+    listValues[key] = 'GrevilleOnly', 'LoftSectionLines', 'Sweep2BrepMethod', 'Sweep2Class', 'Network' # All items must be strings.
     values[key] = 0
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -246,7 +286,7 @@ class Opts():
 def _addCommonOptions(go):
     idxs_Opt = {}
 
-    Opts.names['fTaper_Start_Deg'] = 'StartTaperAngle' if Opts.values['bVariableTaper'] else 'TaperAngle'
+    Opts.names['fAngle_Start_Deg'] = 'StartDraftAngle' if Opts.values['bVariableTaper'] else 'DraftAngle'
 
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
@@ -255,9 +295,9 @@ def _addCommonOptions(go):
     if not Opts.values['bVariableTaper']:
         addOption('bProjDist')
     addOption('bVariableTaper')
-    addOption('fTaper_Start_Deg')
+    addOption('fAngle_Start_Deg')
     if Opts.values['bVariableTaper']:
-        addOption('fTaper_End_Deg')
+        addOption('fAngle_End_Deg')
         idxs_Opt['SwapAngles'] = go.AddOption('SwapAngles')
         addOption('bTaperChangePerCrvParam_NotArcLength')
     idxs_Opt['FlipDir'] = go.AddOption('FlipDir')
@@ -318,20 +358,20 @@ def _getInput_Crvs():
             return objrefs
 
         if res == ri.GetResult.Number:
-            key = 'fDistance' if Opts.values['bNumResForDist_NotAngle'] else 'fTaper_Start_Deg'
+            key = 'fDistance' if Opts.values['bNumResForDist_NotAngle'] else 'fAngle_Start_Deg'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
         elif Opts.values['bVariableTaper'] and go.OptionIndex() == idxs_Opt['SwapAngles']:
-            Opts.riOpts['fTaper_Start_Deg'].CurrentValue, Opts.riOpts['fTaper_End_Deg'].CurrentValue = (
-                    Opts.riOpts['fTaper_End_Deg'].CurrentValue, Opts.riOpts['fTaper_Start_Deg'].CurrentValue)
-            Opts.setValue('fTaper_Start_Deg')
-            Opts.setValue('fTaper_End_Deg')
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue, Opts.riOpts['fAngle_End_Deg'].CurrentValue = (
+                    Opts.riOpts['fAngle_End_Deg'].CurrentValue, Opts.riOpts['fAngle_Start_Deg'].CurrentValue)
+            Opts.setValue('fAngle_Start_Deg')
+            Opts.setValue('fAngle_End_Deg')
         elif go.OptionIndex() == idxs_Opt['FlipAngle']:
-            for key in 'fTaper_Start_Deg', 'fTaper_End_Deg':
+            for key in 'fAngle_Start_Deg', 'fAngle_End_Deg':
                 Opts.riOpts[key].CurrentValue = -Opts.riOpts[key].CurrentValue
                 Opts.setValue(key)
         elif go.OptionIndex() == idxs_Opt['FlipDir']:
-            for key in 'fDistance', 'fTaper_Start_Deg', 'fTaper_End_Deg':
+            for key in 'fDistance', 'fAngle_Start_Deg', 'fAngle_End_Deg':
                 Opts.riOpts[key].CurrentValue = -Opts.riOpts[key].CurrentValue
                 Opts.setValue(key)
         elif Opts.values['bAddBrep'] and go.OptionIndex() == idxs_Opt['iBrepMethod']:
@@ -361,11 +401,11 @@ def _getInput_Opts():
 
     bDefaultsForClickDirFlipOnly = (
         (not Opts.values['bVariableTaper'] and
-            Opts.values['fTaper_Start_Deg'] in (0.0, 90.0, 180.0, 270.0))
+            Opts.values['fAngle_Start_Deg'] in (0.0, 90.0, 180.0, 270.0))
         or
         (Opts.values['bVariableTaper'] and
-            Opts.values['fTaper_Start_Deg'] in (0.0, 90.0, 180.0, 270.0) and
-            Opts.values['fTaper_End_Deg'] == Opts.values['fTaper_Start_Deg'])
+            Opts.values['fAngle_Start_Deg'] in (0.0, 90.0, 180.0, 270.0) and
+            Opts.values['fAngle_End_Deg'] == Opts.values['fAngle_Start_Deg'])
         )
 
     if bDefaultsForClickDirFlipOnly:
@@ -394,8 +434,8 @@ def _getInput_Opts():
     #sEval = "bDefaultsForClickDirFlipOnly"; print("{}: {}".format(sEval, eval(sEval)))
     #sEval = "Opts.values['bVariableTaper']"; print("{}: {}".format(sEval, eval(sEval)))
     #sEval = "Opts.values['fDistance']"; print("{}: {}".format(sEval, eval(sEval)))
-    #sEval = "Opts.values['fTaper_Start_Deg']"; print("{}: {}".format(sEval, eval(sEval)))
-    #sEval = "Opts.values['fTaper_End_Deg']"; print("{}: {}".format(sEval, eval(sEval)))
+    #sEval = "Opts.values['fAngle_Start_Deg']"; print("{}: {}".format(sEval, eval(sEval)))
+    #sEval = "Opts.values['fAngle_End_Deg']"; print("{}: {}".format(sEval, eval(sEval)))
 
 
     if res == ri.GetResult.Point:
@@ -405,60 +445,60 @@ def _getInput_Opts():
         else:
             if (
                 Opts.riOpts['fDistance'].CurrentValue > 0.0 and
-                Opts.riOpts['fTaper_Start_Deg'].CurrentValue >= 0.0
+                Opts.riOpts['fAngle_Start_Deg'].CurrentValue >= 0.0
             ):
-                Opts.riOpts['fTaper_Start_Deg'].CurrentValue = -Opts.riOpts['fTaper_Start_Deg'].CurrentValue
-                Opts.riOpts['fTaper_End_Deg'].CurrentValue = -Opts.riOpts['fTaper_End_Deg'].CurrentValue
-                Opts.setValue('fTaper_Start_Deg')
-                Opts.setValue('fTaper_End_Deg')
+                Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
+                Opts.riOpts['fAngle_End_Deg'].CurrentValue = -Opts.riOpts['fAngle_End_Deg'].CurrentValue
+                Opts.setValue('fAngle_Start_Deg')
+                Opts.setValue('fAngle_End_Deg')
             elif (
                 Opts.riOpts['fDistance'].CurrentValue < 0.0 and
-                Opts.riOpts['fTaper_Start_Deg'].CurrentValue >= 0.0
+                Opts.riOpts['fAngle_Start_Deg'].CurrentValue >= 0.0
             ):
-                Opts.riOpts['fTaper_Start_Deg'].CurrentValue = -Opts.riOpts['fTaper_Start_Deg'].CurrentValue
-                Opts.riOpts['fTaper_End_Deg'].CurrentValue = -Opts.riOpts['fTaper_End_Deg'].CurrentValue
-                Opts.setValue('fTaper_Start_Deg')
-                Opts.setValue('fTaper_End_Deg')
+                Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
+                Opts.riOpts['fAngle_End_Deg'].CurrentValue = -Opts.riOpts['fAngle_End_Deg'].CurrentValue
+                Opts.setValue('fAngle_Start_Deg')
+                Opts.setValue('fAngle_End_Deg')
             elif (
                 Opts.riOpts['fDistance'].CurrentValue < 0.0 and
-                Opts.riOpts['fTaper_Start_Deg'].CurrentValue <= 0.0
+                Opts.riOpts['fAngle_Start_Deg'].CurrentValue <= 0.0
             ):
                 Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
-                Opts.riOpts['fTaper_Start_Deg'].CurrentValue = -Opts.riOpts['fTaper_Start_Deg'].CurrentValue
-                Opts.riOpts['fTaper_End_Deg'].CurrentValue = -Opts.riOpts['fTaper_End_Deg'].CurrentValue
+                Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
+                Opts.riOpts['fAngle_End_Deg'].CurrentValue = -Opts.riOpts['fAngle_End_Deg'].CurrentValue
                 Opts.setValue('fDistance')
-                Opts.setValue('fTaper_Start_Deg')
-                Opts.setValue('fTaper_End_Deg')
+                Opts.setValue('fAngle_Start_Deg')
+                Opts.setValue('fAngle_End_Deg')
             elif (
                 Opts.riOpts['fDistance'].CurrentValue > 0.0 and
-                Opts.riOpts['fTaper_Start_Deg'].CurrentValue <= 0.0
+                Opts.riOpts['fAngle_Start_Deg'].CurrentValue <= 0.0
             ):
                 Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
-                Opts.riOpts['fTaper_Start_Deg'].CurrentValue = -Opts.riOpts['fTaper_Start_Deg'].CurrentValue
-                Opts.riOpts['fTaper_End_Deg'].CurrentValue = -Opts.riOpts['fTaper_End_Deg'].CurrentValue
+                Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
+                Opts.riOpts['fAngle_End_Deg'].CurrentValue = -Opts.riOpts['fAngle_End_Deg'].CurrentValue
                 Opts.setValue('fDistance')
-                Opts.setValue('fTaper_Start_Deg')
-                Opts.setValue('fTaper_End_Deg')
+                Opts.setValue('fAngle_Start_Deg')
+                Opts.setValue('fAngle_End_Deg')
             else:
                 raise Exception("What happened?")
         gp.Dispose()
         return True, False
 
     if res == ri.GetResult.Number:
-        key = 'fDistance' if Opts.values['bNumResForDist_NotAngle'] else 'fTaper_Start_Deg'
+        key = 'fDistance' if Opts.values['bNumResForDist_NotAngle'] else 'fAngle_Start_Deg'
         Opts.riOpts[key].CurrentValue = gp.Number()
         Opts.setValue(key)
     elif Opts.values['bVariableTaper'] and gp.OptionIndex() == idxs_Opt['SwapAngles']:
-        Opts.riOpts['fTaper_Start_Deg'].CurrentValue, Opts.riOpts['fTaper_End_Deg'].CurrentValue = (
-                Opts.riOpts['fTaper_End_Deg'].CurrentValue, Opts.riOpts['fTaper_Start_Deg'].CurrentValue)
-        Opts.setValue('fTaper_Start_Deg')
-        Opts.setValue('fTaper_End_Deg')
+        Opts.riOpts['fAngle_Start_Deg'].CurrentValue, Opts.riOpts['fAngle_End_Deg'].CurrentValue = (
+                Opts.riOpts['fAngle_End_Deg'].CurrentValue, Opts.riOpts['fAngle_Start_Deg'].CurrentValue)
+        Opts.setValue('fAngle_Start_Deg')
+        Opts.setValue('fAngle_End_Deg')
     elif gp.OptionIndex() == idxs_Opt['FlipAngle']:
-        for key in 'fTaper_Start_Deg', 'fTaper_End_Deg':
+        for key in 'fAngle_Start_Deg', 'fAngle_End_Deg':
             Opts.riOpts[key].CurrentValue = -Opts.riOpts[key].CurrentValue
             Opts.setValue(key)
     elif gp.OptionIndex() == idxs_Opt['FlipDir']:
-        for key in 'fDistance', 'fTaper_Start_Deg', 'fTaper_End_Deg':
+        for key in 'fDistance', 'fAngle_Start_Deg', 'fAngle_End_Deg':
             Opts.riOpts[key].CurrentValue = -Opts.riOpts[key].CurrentValue
             Opts.setValue(key)
     elif Opts.values['bAddBrep'] and gp.OptionIndex() == idxs_Opt['iBrepMethod']:
@@ -660,13 +700,17 @@ def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeg_1_Deforma
                 rgCrvs_ExplodedPoly.append(nc)
                 continue
 
+            # Multi-span, degree-2 curves are split to avoid creating kinks.
             if nc.SpanCount == 1:
                 rgCrvs_ExplodedPoly.append(nc)
                 continue
 
             bcs = rg.BezierCurve.CreateBeziers(nc)
+            nc.Dispose()
             for bc in bcs:
-                rgCrvs_ExplodedPoly.append(bc.ToNurbsCurve())
+                nc2 = bc.ToNurbsCurve() # BezierCurve is not a subclass of rg.Curve.
+                rgCrvs_ExplodedPoly.append(nc2)
+                bc.Dispose()
 
         rgCrv_Joined.Dispose()
 
@@ -709,6 +753,8 @@ def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeg_1_Deforma
             # JoinCurves will also convert a degree-1 NurbsCurve into a PolylineCurve.
             nc_Out = rgCs_Out_1Profile[0]
 
+            # TODO?: Splitting a non-periodic closed curve in 2 may be a temporary solution
+            # for handling the 2 angles at the kink.
             if nc_Out.IsClosed and not nc_Out.IsPeriodic:
                 ncs_Out_Split = nc_Out.Split(nc_Out.Domain.Mid)
                 rgCs_Joined_Out = rg.Curve.JoinCurves(
@@ -734,7 +780,8 @@ def _prepareCurves(rgCrvs_In, bSplitPathsAtG2PlusKnots=False, bMakeDeg_1_Deforma
     return rgCs_Out
 
 
-def _getGrevilleParametersWithinDomain(nc, bDebug=False):
+def _getGrevilleParametersWithinDomain(rgCrv_In, bDebug=False):
+    nc = rgCrv_In.ToNurbsCurve()
     ts = list(nc.GrevilleParameters())
     if bDebug:
         print("_getGrevilleParametersWithinDomain ---v")
@@ -749,6 +796,7 @@ def _getGrevilleParametersWithinDomain(nc, bDebug=False):
     if bDebug:
         sEval = "ts"; print("{}: {}".format(sEval, eval(sEval)))
         print("_getGrevilleParametersWithinDomain ---^")
+    nc.Dispose()
     return ts
 
 
@@ -784,20 +832,20 @@ def _getParametersForLines(rgCrv_PathProfile, bAtGrevilles, bAtKnots, iEqualDivi
     return ts
 
 
-def _calculateAnglesAtParameters(rgCrv_Path, ts, fTaper_Start_Deg, fTaper_End_Deg, bTaperChangePerCrvParam_NotArcLength, bDebug=False):
+def _calculateAnglesAtParameters(rgCrv_Path, ts, fAngle_Start_Deg, fAngle_End_Deg, bTaperChangePerCrvParam_NotArcLength, bDebug=False):
     """
     All angles are in degrees.
     """
 
 
-    if fTaper_Start_Deg == fTaper_End_Deg:
-       return [fTaper_Start_Deg]*len(ts)
+    if fAngle_Start_Deg == fAngle_End_Deg:
+       return [fAngle_Start_Deg]*len(ts)
 
 
     if not bTaperChangePerCrvParam_NotArcLength:
         length_Full = rgCrv_Path.GetLength()
 
-    angles_ts = [fTaper_Start_Deg]
+    angles_ts = [fAngle_Start_Deg]
 
     for i in range(1, len(ts) - 1):
 
@@ -805,26 +853,26 @@ def _calculateAnglesAtParameters(rgCrv_Path, ts, fTaper_Start_Deg, fTaper_End_De
 
         #elif len(ts) >= 4 and iT == 1:
         #    # Same angle so that the brep starts at a tangent.
-        #    angle_Rad = Rhino.RhinoMath.ToRadians(fTaper_Start_Deg)
+        #    angle_Rad = Rhino.RhinoMath.ToRadians(fAngle_Start_Deg)
         #elif len(ts) >= 4 and iT == len(ts) - 2:
         #    # Same angle so that the brep end at a tangent.
-        #    angle_Rad = Rhino.RhinoMath.ToRadians(fTaper_End_Deg)
+        #    angle_Rad = Rhino.RhinoMath.ToRadians(fAngle_End_Deg)
 
         if bTaperChangePerCrvParam_NotArcLength:
             t_Normalized = rgCrv_Path.Domain.NormalizedParameterAt(t)
-            angle_t = (fTaper_Start_Deg * (1.0 - t_Normalized) +
-                       fTaper_End_Deg * t_Normalized)
+            angle_t = (fAngle_Start_Deg * (1.0 - t_Normalized) +
+                       fAngle_End_Deg * t_Normalized)
         else:
             length_to_t = rgCrv_Path.GetLength(
                     subdomain=rg.Interval(rgCrv_Path.Domain.T0, t))
-            angle_t = (fTaper_Start_Deg * (1.0 - length_to_t/length_Full) +
-                    fTaper_End_Deg * length_to_t/length_Full)
+            angle_t = (fAngle_Start_Deg * (1.0 - length_to_t/length_Full) +
+                    fAngle_End_Deg * length_to_t/length_Full)
 
         angles_ts.append(angle_t)
 
         if bDebug: print(angle_t)
 
-    angles_ts.append(fTaper_End_Deg)
+    angles_ts.append(fAngle_End_Deg)
 
     return angles_ts
 
@@ -867,16 +915,16 @@ def _createArrayedLines(rgCrv_Path_seg, Lc_ToArray, plane_Proj, ts_Profile, fAng
             axis=frame.ZAxis)
 
         # Debug frame orientation.
-        #                sc.doc.Objects.AddPoint(frame.PointAt(0.0,0.0,0.0))
-        #                attr_Red = rd.ObjectAttributes()
-        #                attr_Red.ColorSource = rd.ObjectColorSource.ColorFromObject
-        #                attr_Red.ObjectColor = Color.Red
-        #                sc.doc.Objects.AddPoint(frame.PointAt(1.0,0.0,0.0), attr_Red)
-        #                attr_Green = rd.ObjectAttributes()
-        #                attr_Green.ColorSource = rd.ObjectColorSource.ColorFromObject
-        #                attr_Green.ObjectColor = Color.Lime
-        #                sc.doc.Objects.AddPoint(frame.PointAt(0.0,1.0,0.0), attr_Green)
-                
+        #sc.doc.Objects.AddPoint(frame.PointAt(0.0,0.0,0.0))
+        #attr_Red = rd.ObjectAttributes()
+        #attr_Red.ColorSource = rd.ObjectColorSource.ColorFromObject
+        #attr_Red.ObjectColor = Color.Red
+        #sc.doc.Objects.AddPoint(frame.PointAt(1.0,0.0,0.0), attr_Red)
+        #attr_Green = rd.ObjectAttributes()
+        #attr_Green.ColorSource = rd.ObjectColorSource.ColorFromObject
+        #attr_Green.ObjectColor = Color.Lime
+        #sc.doc.Objects.AddPoint(frame.PointAt(0.0,1.0,0.0), attr_Green)
+
         xform1 = rg.Transform.PlaneToPlane(plane_Proj, frame)
         xform2 = rg.Transform.Translation(
                 nc_Path.PointAt(t)-nc_Path_Flattened.PointAt(t))
@@ -889,19 +937,20 @@ def _createArrayedLines(rgCrv_Path_seg, Lc_ToArray, plane_Proj, ts_Profile, fAng
     nc_Path.Dispose()
     nc_Path_Flattened.Dispose()
 
-    # Removing list if duplicate of first for certain closed curve cases.
-    dist_1st_and_last = rgLcs_Arrayed[0].Line.From.DistanceTo(rgLcs_Arrayed[-1].Line.From)
-    if bDebug:
-        sEval = "dist_1st_and_last"; print("{}: {}".format(sEval, eval(sEval)))
-
-    if dist_1st_and_last <= 1e-6:
-        dist_1st_and_last = rgLcs_Arrayed[0].Line.To.DistanceTo(rgLcs_Arrayed[-1].Line.To)
+    if rgCrv_Path_seg.IsClosed:
+        # Removing last if duplicate of first for certain closed curve cases.
+        dist_1st_and_last = rgLcs_Arrayed[0].Line.From.DistanceTo(rgLcs_Arrayed[-1].Line.From)
         if bDebug:
             sEval = "dist_1st_and_last"; print("{}: {}".format(sEval, eval(sEval)))
 
         if dist_1st_and_last <= 1e-6:
-            rgLcs_Arrayed.pop()
-            ts_Out.pop()
+            dist_1st_and_last = rgLcs_Arrayed[0].Line.To.DistanceTo(rgLcs_Arrayed[-1].Line.To)
+            if bDebug:
+                sEval = "dist_1st_and_last"; print("{}: {}".format(sEval, eval(sEval)))
+
+            if dist_1st_and_last <= 1e-6:
+                rgLcs_Arrayed.pop()
+                ts_Out.pop()
 
     return rgLcs_Arrayed, ts_Out
 
@@ -945,7 +994,7 @@ def createBrep(iBrepMethod, iLoftType, fBrepTol, rgCrv_Path, rgNurbsCrv_TaperEnd
 
     rgBs_Out = []
 
-    if Opts.listValues['iBrepMethod'][Opts.values['iBrepMethod']] == 'Loft2Crvs':
+    if Opts.listValues['iBrepMethod'][Opts.values['iBrepMethod']] == 'GrevilleOnly':
         rgBs_Out = rg.Brep.CreateFromLoft(
                 curves=[rgNurbsCrv1_PathSeg, rgNurbsCrv_TaperEnd_1Seg],
                 start=rg.Point3d.Unset,
@@ -995,40 +1044,48 @@ def createBrep(iBrepMethod, iLoftType, fBrepTol, rgCrv_Path, rgNurbsCrv_TaperEnd
     return rgBs_Out
 
 
-def _createGeometryForProfile(rgC_Profile_Prepared, Lc_ToArray, plane_Proj, fTaper_Start_Deg, fTaper_End_Deg, bTaperChangePerCrvParam_NotArcLength, bAlignEndDirs, bAtGrevilles, bAtKnots, iDivisionCt, bAddBrep, iBrepMethod, iLoftType, fBrepTol, bDebug=False):
+def _createGeometryForProfile(rgC_Profile_Prepared, Lc_ToArray, plane_Proj, fAngle_Start_Deg, fAngle_End_Deg, bTaperChangePerCrvParam_NotArcLength, bAlignEndDirs, bAtGrevilles, bAtKnots, iDivisionCt, bAddBrep, iBrepMethod, iLoftType, fBrepTol, bDebug=False):
 
-    rgLcs_Arrayed_Profile = []
+    Lcs_Arrayed_Profile = []
     rgCs_TaperEnd_Profile = []
     rgBs_1Profile = []
 
-    if fTaper_Start_Deg != fTaper_End_Deg:
-        if rgC_Profile_Prepared.IsClosed and fTaper_End_Deg != fTaper_Start_Deg:
+    if fAngle_Start_Deg != fAngle_End_Deg:
+        if rgC_Profile_Prepared.IsClosed and fAngle_End_Deg != fAngle_Start_Deg:
             print("Variable taper was disabled for closed path profile.")
-            if fTaper_Start_Deg != 0.0:
-                fTaper_End_Deg = fTaper_Start_Deg
+            if fAngle_Start_Deg != 0.0:
+                fAngle_End_Deg = fAngle_Start_Deg
             else:
-                fTaper_Start_Deg = fTaper_End_Deg
+                fAngle_Start_Deg = fAngle_End_Deg
 
+    ts_Lines_PerOpts_FullPath = _getParametersForLines(rgC_Profile_Prepared, bAtGrevilles, bAtKnots, iDivisionCt)
+    ts_Lines_GrevsOnly_FullPath = _getParametersForLines(rgC_Profile_Prepared, bAtGrevilles=True, bAtKnots=False, iEqualDivisionCt=None)
 
-    ts_FullPath = _getParametersForLines(rgC_Profile_Prepared, bAtGrevilles, bAtKnots, iDivisionCt)
-
-    fAngles_ts_FullPath_Degs = _calculateAnglesAtParameters(
+    fAngles_ts_PerOpts_FullPath_Degs = _calculateAnglesAtParameters(
         rgC_Profile_Prepared,
-        ts_FullPath,
-        fTaper_Start_Deg,
-        fTaper_End_Deg,
+        ts_Lines_PerOpts_FullPath,
+        fAngle_Start_Deg,
+        fAngle_End_Deg,
         bTaperChangePerCrvParam_NotArcLength,
         bDebug)
+    fAngles_ts_PerOpts_FullPath_Rads = [Rhino.RhinoMath.ToRadians(deg) for deg in fAngles_ts_PerOpts_FullPath_Degs]
 
-    fAngles_ts_FullPath_Rads = [Rhino.RhinoMath.ToRadians(deg) for deg in fAngles_ts_FullPath_Degs]
+    fAngles_ts_GrevsOnly_FullPath_Degs = _calculateAnglesAtParameters(
+        rgC_Profile_Prepared,
+        ts_Lines_GrevsOnly_FullPath,
+        fAngle_Start_Deg,
+        fAngle_End_Deg,
+        bTaperChangePerCrvParam_NotArcLength,
+        bDebug)
+    fAngles_ts_GrevsOnly_FullPath_Rads = [Rhino.RhinoMath.ToRadians(deg) for deg in fAngles_ts_GrevsOnly_FullPath_Degs]
 
 
-    rgCs_TaperStart_Profile = rgC_Profile_Prepared.DuplicateSegments() # All are NurbsCurves.
+    rgCs_TaperStart_Profile = rgC_Profile_Prepared.DuplicateSegments() # Various rg.Curve types.
 
 
-    def getArrayedLineCrvsAtGrevillesOnly(rgC_Path_1Seg, rgLcs_In, ts_Lcs_In):
+    def getArrayedLineCrvsAtGrevillesOnly(nc_Path_seg, rgLcs_In, ts_Lcs_In):
         rgLcs_Out = []
-        ts = _getGrevilleParametersWithinDomain(rgC_Path_1Seg)
+        ts = _getGrevilleParametersWithinDomain(nc_Path_seg)
         if bDebug:
             sEval = "ts"; print("{}: {}".format(sEval, eval(sEval)))
         for i, t in enumerate(ts):
@@ -1037,52 +1094,67 @@ def _createGeometryForProfile(rgC_Profile_Prepared, Lc_ToArray, plane_Proj, fTap
             elif i == len(ts)-1:
                 rgLcs_Out.append(rgLcs_Out[0])
             else:
-                print("All Greville parameters: {}".format(rgC_Path_1Seg.GrevilleParameters()))
+                print("All Greville parameters: {}".format(nc_Path_seg.GrevilleParameters()))
                 print("Parameter, {:.15f}, is not in list: {}".format(t, ts_Lcs_In))
                 raise Exception("Parameter is not in list. See Command History for more info.")
         return rgLcs_Out
 
 
-    for i_Path_1Seg, nc_Path_Seg in enumerate(rgCs_TaperStart_Profile):
+    for i_Path_1Seg, rgC_Path_Seg in enumerate(rgCs_TaperStart_Profile):
+
+        nc_Path_seg = rgC_Path_Seg.ToNurbsCurve()
 
         # These arrayed lines are per options.
         rc = _createArrayedLines(
-            rgCrv_Path_seg=nc_Path_Seg,
+            rgCrv_Path_seg=nc_Path_seg,
             Lc_ToArray=Lc_ToArray,
             plane_Proj=plane_Proj,
-            ts_Profile=ts_FullPath,
-            fAngles_ts_FullPath_Rads=fAngles_ts_FullPath_Rads,
+            ts_Profile=ts_Lines_PerOpts_FullPath,
+            fAngles_ts_FullPath_Rads=fAngles_ts_PerOpts_FullPath_Rads,
             bDebug=bDebug)
         if rc is None:
             raise Exception("Nothing returned from createArrayedGeometry.")
+        Lcs_Arrayed_PerOpts_PathSeg, ts_Lcs_Arrayed_ThisSeg = rc
 
-        Lcs_Arrayed_ThisSeg, ts_Lcs_Arrayed_ThisSeg = rc
-
-        rgLcs_Arrayed_Profile.extend(Lcs_Arrayed_ThisSeg)
+        Lcs_Arrayed_Profile.extend(Lcs_Arrayed_PerOpts_PathSeg)
 
         # Taper end segments require both taper start segments and tapered lines.
         # Breps require taper start segments, tapered lines, and/or taper end segments,
         # depending on the surface-creation method used.
 
-        nc_Path_Seg = nc_Path_Seg.ToNurbsCurve()
-        # These arrayed lines are only at Greville points.
-        rgLineCrvs_Arrayed_1PathSeg_GrevsOnly = getArrayedLineCrvsAtGrevillesOnly(
-            nc_Path_Seg, 
-            Lcs_Arrayed_ThisSeg,
-            ts_Lcs_Arrayed_ThisSeg)
+
+        # These arrayed lines are at Grevilles only.
+        rc = _createArrayedLines(
+            rgCrv_Path_seg=nc_Path_seg,
+            Lc_ToArray=Lc_ToArray,
+            plane_Proj=plane_Proj,
+            ts_Profile=ts_Lines_GrevsOnly_FullPath,
+            fAngles_ts_FullPath_Rads=fAngles_ts_GrevsOnly_FullPath_Rads,
+            bDebug=bDebug)
+        if rc is None:
+            raise Exception("Nothing returned from createArrayedGeometry.")
+        Lcs_Arrayed__GrevsOnly_PathSeg, ts_Lcs_Arrayed_ThisSeg = rc
+
+
+        ## These arrayed lines are only at Greville points.
+        #rgLineCrvs_Arrayed_1PathSeg_GrevsOnly = getArrayedLineCrvsAtGrevillesOnly(
+        #    nc_Path_seg, 
+        #    Lcs_Arrayed_ThisSeg,
+        #    ts_Lcs_Arrayed_ThisSeg)
+
 
         # Create taper end curve.
-        def createTaperEndCrv(rgCrv1_Path_1Seg, rgLineCrvs_Arrayed_1PathSeg_GrevsOnly):
+        def createTaperEndCrv(rgCrv1_Path_1Seg, rgLineCrvs_Arrayed_PathSeg_GrevsOnly):
             pts_AtEndsOf_Lcs_Arrayed = []
-            for rgLc in rgLineCrvs_Arrayed_1PathSeg_GrevsOnly:
+            for rgLc in rgLineCrvs_Arrayed_PathSeg_GrevsOnly:
                 pts_AtEndsOf_Lcs_Arrayed.append(rgLc.PointAtEnd)
             nc_OppOfPath = rgCrv1_Path_1Seg.DuplicateCurve()
             nc_OppOfPath.SetGrevillePoints(pts_AtEndsOf_Lcs_Arrayed)
             return nc_OppOfPath
-        nc_OppOfPath = createTaperEndCrv(nc_Path_Seg, rgLineCrvs_Arrayed_1PathSeg_GrevsOnly)
+        nc_OppOfPath = createTaperEndCrv(nc_Path_seg, Lcs_Arrayed__GrevsOnly_PathSeg)
 
         if bAlignEndDirs and not nc_OppOfPath.IsPeriodic:
-            _matchCrvEndDirs(nc_OppOfPath, nc_Path_Seg)
+            _matchCrvEndDirs(nc_OppOfPath, nc_Path_seg)
 
 
         rgCs_TaperEnd_Profile.append(nc_OppOfPath)
@@ -1092,9 +1164,9 @@ def _createGeometryForProfile(rgC_Profile_Prepared, Lc_ToArray, plane_Proj, fTap
                 iBrepMethod=iBrepMethod,
                 iLoftType=iLoftType,
                 fBrepTol=fBrepTol,
-                rgCrv_Path=nc_Path_Seg,
+                rgCrv_Path=nc_Path_seg,
                 rgNurbsCrv_TaperEnd_1Seg=nc_OppOfPath,
-                rgLineCrvs_Arrayed=rgLineCrvs_Arrayed_1PathSeg_GrevsOnly)
+                rgLineCrvs_Arrayed=Lcs_Arrayed_PerOpts_PathSeg)
             if rc is None:
                 print("Cannot create brep(s).  Check input.")
             else:
@@ -1111,7 +1183,7 @@ def _createGeometryForProfile(rgC_Profile_Prepared, Lc_ToArray, plane_Proj, fTap
 
     return (
         rgCs_TaperStart_Profile,
-        rgLcs_Arrayed_Profile,
+        Lcs_Arrayed_Profile,
         rgCs_TaperEnd_Profile,
         rgBs_Joined,
         )
@@ -1216,9 +1288,9 @@ def main():
 
     fDistance = Opts.values['fDistance']
     bProjDist = Opts.values['bProjDist']
-    fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+    fAngle_Start_Deg = Opts.values['fAngle_Start_Deg']
     bVariableTaper = Opts.values['bVariableTaper']
-    fTaper_End_Deg = Opts.values['fTaper_End_Deg'] if bVariableTaper else fTaper_Start_Deg
+    fAngle_End_Deg = Opts.values['fAngle_End_Deg'] if bVariableTaper else fAngle_Start_Deg
     bTaperChangePerCrvParam_NotArcLength = Opts.values['bTaperChangePerCrvParam_NotArcLength']
     bAlignEndDirs = Opts.values['bAlignEndDirs']
     bCPlane = Opts.values['bCPlane']
@@ -1262,9 +1334,9 @@ def main():
 
             fDistance = Opts.values['fDistance']
             bProjDist = Opts.values['bProjDist']
-            fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+            fAngle_Start_Deg = Opts.values['fAngle_Start_Deg']
             bVariableTaper = Opts.values['bVariableTaper']
-            fTaper_End_Deg = Opts.values['fTaper_End_Deg'] if bVariableTaper else fTaper_Start_Deg
+            fAngle_End_Deg = Opts.values['fAngle_End_Deg'] if bVariableTaper else fAngle_Start_Deg
             bTaperChangePerCrvParam_NotArcLength = Opts.values['bTaperChangePerCrvParam_NotArcLength']
             bAlignEndDirs = Opts.values['bAlignEndDirs']
             bCPlane = Opts.values['bCPlane']
@@ -1283,7 +1355,7 @@ def main():
 
 
         if bAlignEndDirs:
-            bMakeDeg_1_Deformable = fTaper_End_Deg and (fTaper_End_Deg != fTaper_Start_Deg)
+            bMakeDeg_1_Deformable = fAngle_End_Deg and (fAngle_End_Deg != fAngle_Start_Deg)
             bMakeDeg_2_Deformable = True
         else:
             bMakeDeg_1_Deformable = False
@@ -1307,7 +1379,7 @@ def main():
                 rg.Point3d(0.0, 0.0, 0.0),
                 rg.Point3d(
                     0.0,
-                    fDistance/math.cos(math.radians(fTaper_Start_Deg)),
+                    fDistance/math.cos(math.radians(fAngle_Start_Deg)),
                     0.0))
         else:
             rgLine_ToArray = rg.Line(
@@ -1334,8 +1406,8 @@ def main():
                 rgC_Profile_Prepared,
                 Lc_ToArray,
                 plane_Proj,
-                fTaper_Start_Deg,
-                fTaper_End_Deg,
+                fAngle_Start_Deg,
+                fAngle_End_Deg,
                 bTaperChangePerCrvParam_NotArcLength,
                 bAlignEndDirs=bAlignEndDirs,
                 bAtGrevilles=bAtGrevilles,
@@ -1389,9 +1461,9 @@ def main():
 
         fDistance = Opts.values['fDistance']
         bProjDist = Opts.values['bProjDist']
-        fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+        fAngle_Start_Deg = Opts.values['fAngle_Start_Deg']
         bVariableTaper = Opts.values['bVariableTaper']
-        fTaper_End_Deg = Opts.values['fTaper_End_Deg'] if bVariableTaper else fTaper_Start_Deg
+        fAngle_End_Deg = Opts.values['fAngle_End_Deg'] if bVariableTaper else fAngle_Start_Deg
         bTaperChangePerCrvParam_NotArcLength = Opts.values['bTaperChangePerCrvParam_NotArcLength']
         bAlignEndDirs = Opts.values['bAlignEndDirs']
         bCPlane = Opts.values['bCPlane']

@@ -22,6 +22,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 231031-1101: Improved G1 point placement when either
             1. Only 1 of the 2 reference surfaces at corner is planar.
             2. Ends of both reference surfaces at corner are linear and intersect into created surface.
+231226: Bug fix in splitting of curve input that extend through adjacent input.
 
 TODO:
     Convert (some) rational input to non-rational degree 5?
@@ -694,14 +695,15 @@ def getTrimInterval_NurbsCrv(nc, pt_End_ToRemain, pts_Xs):
     """
     """
 
-    b, t = nc.ClosestPoint(pt_End_ToRemain)
-    if not b:
-        raise Exception("ClosestPoint failed.")
+    if pt_End_ToRemain:
+        b, t = nc.ClosestPoint(pt_End_ToRemain)
+        if not b:
+            raise Exception("ClosestPoint failed.")
 
-    if (abs(t - nc.Domain.T0) <= 1e-6):
-        t_DomainEndToKeep = t
-    elif (abs(t - nc.Domain.T1) <= 1e-6):
-        t_DomainEndToKeep = t
+        if (abs(t - nc.Domain.T0) <= 1e-6):
+            t_DomainEndToKeep = t
+        elif (abs(t - nc.Domain.T1) <= 1e-6):
+            t_DomainEndToKeep = t
 
     ts_InsideDomain = []
     for pt in pts_Xs:

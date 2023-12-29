@@ -2,12 +2,15 @@
 This script is an alternative to _OffsetNormal in that it:
     1. Has options on how to prepare the input curves.
     2. Will offset within an input tolerance (Loose=No).
+
+Send any questions, comments, or script development service needs to @spb on the McNeel Forums:
+https://discourse.mcneel.com/
 """
 
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-231227: Created.
+231227-28: Created.
 """
 
 import Rhino
@@ -35,7 +38,7 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bLoose'; keys.append(key)
-    values[key] = True
+    values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -72,6 +75,12 @@ class Opts():
 
     key = 'bAlignEndDirs'; keys.append(key)
     values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bLoft'; keys.append(key)
+    values[key] = False
+    names[key] = 'AlsoAddFin'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -161,6 +170,7 @@ def _addCommonOptions(go):
     addOption('bLoose')
     if not Opts.values['bLoose']:
         addOption('fTol')
+    addOption('bLoft')
     addOption('bEcho')
     addOption('bDebug')
 
@@ -555,15 +565,16 @@ def _rebuildCrv(rgCrv_In, fTol_Simplify, bDebug=False):
 
 
     if nc_WIP.IsPeriodic and (nc_WIP.Knots.KnotStyle == rg.KnotStyle.Uniform):
-        sEval = "nc_WIP.Knots.Count"; print("{}: {}".format(sEval, eval(sEval)))
-        if bDebug: print("Curve is already periodic and uniform.")
+        if bDebug:
+            sEval = "nc_WIP.Knots.Count"; print("{}: {}".format(sEval, eval(sEval)))
+            print("Curve is already periodic and uniform.")
         return
 
 
     # Try to rebuild as a Bezier.
-    for degree in 2,3,5:
+    for degree in 1,2,3,5:
         nc_Rebuilt = nc_WIP.Rebuild(
-            pointCount=degree+4,
+            pointCount=degree+1,
             degree=degree,
             preserveTangents=True)
 
@@ -575,13 +586,15 @@ def _rebuildCrv(rgCrv_In, fTol_Simplify, bDebug=False):
         nc_Rebuilt.Dispose()
 
 
-    if nc_WIP.Degree == 3:
-        if (nc_WIP.Knots.KnotStyle in (
-            rg.KnotStyle.QuasiUniform,
-            rg.KnotStyle.Uniform)
-        ):
-            if bDebug: print("Curve is already {}.".format(nc_WIP.Knots.KnotStyle))
-            return
+    if nc_WIP.Degree != 3:
+        return
+
+    if (nc_WIP.Knots.KnotStyle in (
+        rg.KnotStyle.QuasiUniform,
+        rg.KnotStyle.Uniform)
+    ):
+        if bDebug: print("Curve is already {}.".format(nc_WIP.Knots.KnotStyle))
+        return
 
 
     # Try to rebuild as degree-3 uniform.
@@ -679,7 +692,7 @@ def _prepareCrvToOffset(rgCrv_In, bExplodePolyCrv, bRebuild, bSplitAtNonG2Knots,
             rc = _rebuildCrv(nc_WIP, fTol_Simplify=fTol_Simplify, bDebug=bDebug)
             if rc:
                 nc_WIP.Dispose()
-                ncs_Simplified.append(rc)
+                ncs_Simplified.append(rc[0])
                 fDevs_thisRebuild.append(rc[1])
             else:
                 ncs_Simplified.append(nc_WIP)
@@ -699,6 +712,7 @@ class DrawConduit(Rhino.Display.DisplayConduit):
 
     def __init__(self):
         self.crvs = []
+        self.breps = []
         displayMode = Rhino.RhinoDoc.ActiveDoc.Views.ActiveView.ActiveViewport.DisplayMode
         self.crv_thk = displayMode.DisplayAttributes.CurveThickness + 1
 
@@ -706,6 +720,10 @@ class DrawConduit(Rhino.Display.DisplayConduit):
         for crv in self.crvs:
             bbox = crv.GetBoundingBox(accurate=False)
             calculateBoundingBoxEventArgs.IncludeBoundingBox(bbox)
+        for brep in self.breps:
+            bbox = brep.GetBoundingBox(accurate=False)
+            calculateBoundingBoxEventArgs.IncludeBoundingBox(bbox)
+
 
     def PreDrawObjects(self, drawEventArgs):
 
@@ -716,6 +734,19 @@ class DrawConduit(Rhino.Display.DisplayConduit):
                 curve=crv,
                 color=color,
                 thickness=self.crv_thk)
+
+        for brep in self.breps:
+
+            displayMode = Rhino.RhinoDoc.ActiveDoc.Views.ActiveView.ActiveViewport.DisplayMode
+            da = displayMode.DisplayAttributes
+            if da.ShadingEnabled:
+                drawEventArgs.Display.DrawBrepShaded(
+                    brep=brep,
+                    material=Rhino.Display.DisplayMaterial(diffuse=color))
+            drawEventArgs.Display.DrawBrepWires(
+                brep=brep,
+                color=color,
+                wireDensity=1)
 
 
 def _createNurbsCurve_with_more_knots(nc_In, iQtyToAddInEachSpan):
@@ -751,7 +782,8 @@ def _createNurbsCurve_with_more_knots(nc_In, iQtyToAddInEachSpan):
 
 def createOffsetCurve(rgCrv_In, rgSrf, bLoose, bAlignEndDirs, fDistance, fTol, fSamplingDist, bDebug):
 
-    sEval = "fTol"; print("{}: {}".format(sEval, eval(sEval)))
+    if bDebug:
+        sEval = "fTol"; print("{}: {}".format(sEval, eval(sEval)))
 
     nc_Offset = rgCrv_In.OffsetNormalToSurface(
         surface=rgSrf, height=fDistance)
@@ -851,6 +883,7 @@ def _createGeometryInteractively():
     bRebuild = Opts.values['bRebuild']
     fDistance = Opts.values['fDistance']
     fTol = Opts.values['fTol']
+    bLoft = Opts.values['bLoft']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
@@ -900,18 +933,19 @@ def _createGeometryInteractively():
             fTol=fTol,
             bDebug=bDebug)
 
-        if bRebuild:
+        if bDebug and bRebuild:
             sEval = "fDev_fromRebuilds"; print("{}: {}".format(sEval, eval(sEval)))
 
 
-        ncs_FinEnd = []
+        ncs_Offset = []
+        rgBs_Loft = []
 
 
         for nc_toOffset in ncs_toOffset:
 
             if bDebug: sEval = "nc_toOffset.SpanCount"; print("{}: {}".format(sEval, eval(sEval)))
 
-            nc_FinEnd = createOffsetCurve(
+            nc_Offset = createOffsetCurve(
                 rgCrv_In=nc_toOffset,
                 rgSrf=rgF_In,
                 bLoose=bLoose,
@@ -920,17 +954,34 @@ def _createGeometryInteractively():
                 fTol=fTol-fDev_fromRebuilds,
                 fSamplingDist=fSamplingDist,
                 bDebug=bDebug)
-            if nc_FinEnd is None:
+            if nc_Offset is None:
                 if bEcho: print("No solution found.")
                 return
 
-            ncs_FinEnd.append(nc_FinEnd)
+            rc = _rebuildCrv(nc_Offset, fTol_Simplify=1e-6, bDebug=bDebug)
+            if rc:
+                nc_Offset.Dispose()
+                nc_Offset = rc[0]
+
+            ncs_Offset.append(nc_Offset)
+
+            if bLoft:
+                rgB_Loft = rg.Brep.CreateFromLoft(
+                    [nc_toOffset, nc_Offset],
+                    start=rg.Point3d.Unset,
+                    end=rg.Point3d.Unset,
+                    loftType=rg.LoftType.Straight,
+                    closed=nc_Offset.IsClosed)
+                if rgB_Loft:
+                    rgBs_Loft.extend(rgB_Loft)
+
 
             nc_toOffset.Dispose()
 
 
 
-        conduit.crvs = ncs_FinEnd
+        conduit.crvs = ncs_Offset
+        conduit.breps = rgBs_Loft
 
         conduit.Enabled = True
 
@@ -938,7 +989,7 @@ def _createGeometryInteractively():
 
         if bEcho:
             sOut = []
-            if len(ncs_FinEnd) > 1: sOut.append("{} curves".format(len(ncs_FinEnd)))
+            if len(ncs_Offset) > 1: sOut.append("{} curves".format(len(ncs_Offset)))
             if sOut:
                 print("Calculated {}.".format(", ".join(sOut)))
 
@@ -948,16 +999,18 @@ def _createGeometryInteractively():
         conduit.Enabled = False
 
         if rc is None:
-            for _ in ncs_FinEnd: _.Dispose()
+            for _ in ncs_Offset: _.Dispose()
+            for _ in rgBs_Loft: _.Dispose()
             return
 
         if not rc:
             return (
-                ncs_FinEnd,
+                ncs_Offset,
+                rgBs_Loft,
                 bEcho)
 
-
-        for _ in ncs_FinEnd: _.Dispose()
+        for _ in ncs_Offset: _.Dispose()
+        for _ in rgBs_Loft: _.Dispose()
 
 
 
@@ -968,27 +1021,39 @@ def _createGeometryInteractively():
         bSplitAtNonG2Knots = Opts.values['bSplitAtNonG2Knots']
         fDistance = Opts.values['fDistance']
         fTol = Opts.values['fTol']
+        bLoft = Opts.values['bLoft']
         bEcho = Opts.values['bEcho']
         bDebug = Opts.values['bDebug']
 
 
 def main():
 
-    rc = _createGeometryInteractively()
-    if rc is None: return
+    while True:
+        rc = _createGeometryInteractively()
+        if rc is None: return
 
-    rgCs, bEcho = rc
+        rgCs, rgBs_Out, bEcho = rc
 
-    gCs = []
-    for rgC in rgCs:
-        gC = sc.doc.Objects.AddCurve(rgC)
-        if gC != gC.Empty:
-            gCs.append(gC)
+        gCs_OneIteration = []
+        for rgC in rgCs:
+            gC = sc.doc.Objects.AddCurve(rgC)
+            if gC != gC.Empty:
+                gCs_OneIteration.append(gC)
 
-    if bEcho:
-        sOut = []
-        if gCs: sOut.append("{} offset curves".format(len(gCs)))
-        print("Added {}".format(", ".join(sOut)))
+        gBs_OneIteration = []
+        for rgB in rgBs_Out:
+            gB = sc.doc.Objects.AddBrep(rgB)
+            if gB != gB.Empty:
+                gBs_OneIteration.append(gB)
+
+        sc.doc.Objects.UnselectAll()
+        sc.doc.Views.Redraw()
+
+        if bEcho:
+            sOut = []
+            if gCs_OneIteration: sOut.append("{} offset curves".format(len(gCs_OneIteration)))
+            if gBs_OneIteration: sOut.append("{} lofts".format(len(gBs_OneIteration)))
+            print("Added {}".format(", ".join(sOut)))
 
 
 if __name__ == '__main__': main()

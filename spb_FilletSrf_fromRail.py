@@ -1,10 +1,16 @@
 """
 This script (will) creates a _FilletSrf-like surface from a BrepEdge.
-This type of fillet is useful as an alternate to _Fin Tangent or _ExtendSrf when the direction of the extension should
-immediately change.
+This type of fillet is useful as an alternate to _Fin Direction=Tangent or
+_ExtendSrf when it is desired to start a fillet/blend immediatly from an edge,
+not requiring the face of the edge to be trimmed.
 
 After the fillet is created, _Silhouette can be applied to it to for creating a profile
 from which to extrude in the same direction as the silhouette view.
+
+The Using_Sweep1 method uses the method as described at
+https://discourse.mcneel.com/t/wish-filletsrftorail-with-constant-radius/158321/7
+except the arcs may not be perpendicular to the edge. Instead, they are aligned to
+the theoretical pipe's cross-sections.
 
 TODO
 Allow any curve on face to be selected.
@@ -16,7 +22,7 @@ https://discourse.mcneel.com/
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-231228: Created.
+231228-29: Created.
 """
 
 import Rhino
@@ -56,8 +62,14 @@ class Opts:
     key = 'bApproximate_NotSweep1'; keys.append(key)
     values[key] = False
     names[key] = 'Method'
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Sweep1', 'Approx')
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Using_Sweep1', 'Approx_RC')
     stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'fTol'; keys.append(key)
+    values[key] = max((1.0*sc.doc.ModelAbsoluteTolerance, 1e-6))
+    names[key] = 'TargetTol'
+    riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
     key = 'bEcho'; keys.append(key)
     values[key] = True
@@ -124,6 +136,16 @@ class Opts:
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
             return
 
+        if key == 'fTol':
+            if cls.riOpts[key].CurrentValue < 0:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < 1e-6:
+                cls.riOpts[key].CurrentValue = 1e-6
+
+            cls.values[key] = cls.riOpts[key].CurrentValue
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+            return
+
         if key in cls.riOpts:
             cls.values[key] = cls.riOpts[key].CurrentValue
         elif key in cls.listValues:
@@ -143,6 +165,7 @@ def _addCommonOptions(go):
     addOption('fRadius')
     addOption('fArcAngle')
     addOption('bApproximate_NotSweep1')
+    addOption('fTol')
     addOption('bEcho')
     addOption('bDebug')
 
@@ -412,7 +435,7 @@ def getInput():
                 go.ClearCommandOptions()
                 break
 
-def _createArc_from_fin(ns_Loft, fRadius, fArcAngle, parameter, bEdgeIsReversedToTrim, bDebug=False):
+def _createArc_from_loft(ns_Loft, fRadius, fArcAngle, parameter, bFaceNormalIsReversedToSrf, bEdgeIsReversedToTrim, bDebug=False):
 
     ns = ns_Loft
 
@@ -431,12 +454,16 @@ def _createArc_from_fin(ns_Loft, fRadius, fArcAngle, parameter, bEdgeIsReversedT
 
     if fRadius > 0:
         vNormal = -vNormal
+    if bFaceNormalIsReversedToSrf:
+        vNormal = -vNormal
     if bEdgeIsReversedToTrim:
         vNormal = -vNormal
 
     vCross = rg.Vector3d.CrossProduct(vNormal, vEdgeTan)
 
     if fRadius > 0:
+        vCross = -vCross
+    if bFaceNormalIsReversedToSrf:
         vCross = -vCross
     if bEdgeIsReversedToTrim:
         vCross = -vCross
@@ -553,6 +580,7 @@ def _createGeometryInteractively():
     fRadius = Opts.values['fRadius']
     fArcAngle = Opts.values['fArcAngle']
     bApproximate_NotSweep1 = Opts.values['bApproximate_NotSweep1']
+    fTol = Opts.values['fTol']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
@@ -565,14 +593,12 @@ def _createGeometryInteractively():
     if isinstance(rgC_In, rg.PolyCurve):
         rgC_In.RemoveNesting()
 
-    fTol = sc.doc.ModelAbsoluteTolerance
-
 
     rgC_In_TrimmedToFace = spb_OffsetNormal._crvWithSpansCompletelyOnFace(
         rgC_In,
         rgF_In,
         t_Crv0_Pick,
-        fTol=fTol,
+        fTol=1.0*fTol,
         bDebug=bDebug)
     if rgC_In_TrimmedToFace is None: return
 
@@ -613,7 +639,7 @@ def _createGeometryInteractively():
             bRebuild=True,
             bSplitAtNonG2Knots=True,
             bMakeDeformable=False,
-            fTol=fTol,
+            fTol=0.5*fTol,
             bDebug=bDebug)
 
         if bDebug:
@@ -622,7 +648,7 @@ def _createGeometryInteractively():
 
         ncs_Offset = []
         breps_Loft = []
-        arcs_perLoft = []
+        arcs_perOffset = []
 
 
         bFaceNormalIsReversedToSrf = rgF_In.OrientationIsReversed
@@ -642,7 +668,7 @@ def _createGeometryInteractively():
                 sEval = "nc_toOffset.Degree"; print("{}: {}".format(sEval, eval(sEval)))
                 sEval = "nc_toOffset.SpanCount"; print("{}: {}".format(sEval, eval(sEval)))
 
-            nc_Offset = spb_OffsetNormal.createOffsetCurve(
+            rc = spb_OffsetNormal.createOffsetCurve(
                 rgCrv_In=nc_toOffset,
                 rgSrf=rgF_In,
                 bLoose=False,
@@ -651,19 +677,17 @@ def _createGeometryInteractively():
                 fTol=fTol-fDev_fromRebuilds,
                 fSamplingDist=fSamplingDist,
                 bDebug=bDebug)
-            if nc_Offset is None:
+            if rc is None:
                 if bEcho: print("No solution found.")
                 return
+
+            nc_Offset, dev_Offset = rc
+
+            #sc.doc.Objects.AddCurve(nc_Offset); sc.doc.Views.Redraw(); return
 
             if bDebug:
                 sEval = "nc_Offset.Degree"; print("{}: {}".format(sEval, eval(sEval)))
                 sEval = "nc_Offset.SpanCount"; print("{}: {}".format(sEval, eval(sEval)))
-
-            if nc_toOffset.Degree == 3 and nc_Offset.Degree == 3:
-                rc = spb_OffsetNormal._rebuildCrv(nc_Offset, fTol_Simplify=1e-6, bDebug=bDebug)
-                if rc:
-                    nc_Offset.Dispose()
-                    nc_Offset = rc[0]
 
             nc_Offset.Domain = rg.Interval(0.0, 1.0)
 
@@ -683,15 +707,14 @@ def _createGeometryInteractively():
             rgB_Loft = rgB_Loft[0]
             breps_Loft.append(rgB_Loft)
 
+            rgB_Loft.Surfaces[0].SetDomain(0, rg.Interval(0.0, 1.0))
+            rgB_Loft.Surfaces[0].SetDomain(1, rg.Interval(0.0, 1.0))
+
             #sc.doc.Objects.AddCurve(nc_toOffset)
             #sc.doc.Objects.AddCurve(nc_Offset)
             #sc.doc.Objects.AddBrep(rgB_Loft)
             #conduit.Enabled = False
             #1/0
-
-
-            rgB_Loft.Surfaces[0].SetDomain(0, rg.Interval(0.0, 1.0))
-            rgB_Loft.Surfaces[0].SetDomain(1, rg.Interval(0.0, 1.0))
 
             ns_Loft = rgB_Loft.Surfaces[0]
             if bDebug:
@@ -707,28 +730,30 @@ def _createGeometryInteractively():
                 ts_Grevs = nc_Offset.GrevilleParameters()
                 if bDebug:
                     sEval = "len(ts_Grevs)"; print("{}: {}".format(sEval, eval(sEval)))
-                arcs_perLoft.append([])
+                arcs_perOffset.append([])
                 for t in ts_Grevs:
-                    arc = _createArc_from_fin(
+                    arc = _createArc_from_loft(
                         ns_Loft,
                         fRadius,
                         fArcAngle,
                         parameter=t,
+                        bFaceNormalIsReversedToSrf=bFaceNormalIsReversedToSrf,
                         bEdgeIsReversedToTrim=bEdgeIsReversedToTrim,
                         bDebug=bDebug)
-                    arcs_perLoft[-1].append(arc)
+                    arcs_perOffset[-1].append(arc)
             else:
-                arc = _createArc_from_fin(
+                arc = _createArc_from_loft(
                     ns_Loft,
                     fRadius,
                     fArcAngle,
                     parameter=None,
+                    bFaceNormalIsReversedToSrf=bFaceNormalIsReversedToSrf,
                     bEdgeIsReversedToTrim=bEdgeIsReversedToTrim,
                     bDebug=bDebug)
-                arcs_perLoft.append([arc])
+                arcs_perOffset.append([arc])
 
 
-        conduit.arcs = [arc for arcs in arcs_perLoft for arc in arcs]
+        conduit.arcs = [arc for arcs in arcs_perOffset for arc in arcs]
 
         if bDebug:
             conduit.breps = breps_Loft
@@ -762,14 +787,14 @@ def _createGeometryInteractively():
             if bDebug:
                 [sc.doc.Objects.AddCurve(nc) for nc in ncs_toOffset]
                 [sc.doc.Objects.AddBrep(brep) for brep in breps_Loft]
-                [sc.doc.Objects.AddArc(arc) for arcs in arcs_perLoft for arc in arcs]
+                [sc.doc.Objects.AddArc(arc) for arcs in arcs_perOffset for arc in arcs]
 
             for _ in ncs_Offset: _.Dispose()
 
             for _ in ncs_toOffset: _.Dispose()
 
             return (
-                arcs_perLoft,
+                arcs_perOffset,
                 breps_Loft,
                 )
 
@@ -779,11 +804,12 @@ def _createGeometryInteractively():
         fRadius = Opts.values['fRadius']
         fArcAngle = Opts.values['fArcAngle']
         bApproximate_NotSweep1 = Opts.values['bApproximate_NotSweep1']
+        fTol = Opts.values['fTol']
         bEcho = Opts.values['bEcho']
         bDebug = Opts.values['bDebug']
 
 
-def addFilletApproximation(arcs, brep):
+def _addFilletApproximation(arcs, brep):
     acs = [rg.ArcCurve(arc) for arc in arcs]
 
     ns = brep.Surfaces[0]
@@ -832,7 +858,7 @@ def addFilletApproximation(arcs, brep):
         closed=nc.IsClosed,
         blendType=rg.SweepBlend.Local,
         miterType=rg.SweepMiter.None,
-        tolerance=sc.doc.ModelAbsoluteTolerance,
+        tolerance=0.5*sc.doc.ModelAbsoluteTolerance,
         rebuildType=rg.SweepRebuild.None,
         rebuildPointCount=0,
         refitTolerance=0.0)
@@ -849,7 +875,7 @@ def addFilletApproximation(arcs, brep):
     sc.doc.Views.Redraw()
 
 
-def _addSweep1_with_user_interaction(arc, loft):
+def _addSweep1_with_user_interaction(arc, loft, bDebug):
     gArc = sc.doc.Objects.AddArc(arc)
 
     gLoft = sc.doc.Objects.AddBrep(loft)
@@ -898,11 +924,11 @@ def main():
         bEcho = Opts.values['bEcho']
         bDebug = Opts.values['bDebug']
 
-        arcs_per_nc, rgBs_Lofts = rc
+        arcs_perOffset, rgBs_Lofts = rc
 
         if bApproximate_NotSweep1:
-            for arcs_thisOffset, loft in zip(arcs_per_nc, rgBs_Lofts):
-                addFilletApproximation(arcs_thisOffset, loft)
+            for arcs_thisOffset, loft in zip(arcs_perOffset, rgBs_Lofts):
+                _addFilletApproximation(arcs_thisOffset, loft)
             sc.doc.Objects.UnselectAll()
         else:
             if bDebug:
@@ -910,8 +936,8 @@ def main():
                 sc.doc.Views.Redraw()
                 continue
 
-            for arcs_thisOffset, loft in zip(arcs_per_nc, rgBs_Lofts):
-                _addSweep1_with_user_interaction(arcs_perLoft[0], loft)
+            for arcs_thisOffset, loft in zip(arcs_perOffset, rgBs_Lofts):
+                _addSweep1_with_user_interaction(arcs_thisOffset[0], loft, bDebug)
 
         sc.doc.Views.Redraw()
 

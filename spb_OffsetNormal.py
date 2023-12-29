@@ -10,7 +10,7 @@ https://discourse.mcneel.com/
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-231227-28: Created.
+231227-29: Created.
 """
 
 import Rhino
@@ -142,6 +142,8 @@ class Opts():
         if key == 'fTol':
             if cls.riOpts[key].CurrentValue < 0:
                 cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < 1e-6:
+                cls.riOpts[key].CurrentValue = 1e-6
 
             cls.values[key] = cls.riOpts[key].CurrentValue
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
@@ -452,7 +454,7 @@ def _getOffsetDeviation(crvA, crvB, fTarget):
             crvA, crvB, 0.1*sc.doc.ModelAbsoluteTolerance)
 
     if not rc[0]:
-        raise Exception("GetDistancesBetweenCurves returned None.")
+        print("GetDistancesBetweenCurves returned None.  The offset may be inverted to reference.")
         return None
 
     fDev_Max = rc[1]
@@ -785,24 +787,40 @@ def createOffsetCurve(rgCrv_In, rgSrf, bLoose, bAlignEndDirs, fDistance, fTol, f
     if bDebug:
         sEval = "fTol"; print("{}: {}".format(sEval, eval(sEval)))
 
+
+    if isinstance(rgSrf, rg.BrepFace) and rgSrf.OrientationIsReversed:
+        height = -fDistance
+    else:
+        height = fDistance
+
     nc_Offset = rgCrv_In.OffsetNormalToSurface(
-        surface=rgSrf, height=fDistance)
+        surface=rgSrf, height=height)
 
     if (bAlignEndDirs and
         not _matchCrvEndDirs(nc_Offset, rgCrv_In)
     ):
         raise Exception("Alignment of end tangent failed.")
 
-    if bLoose:
-        return nc_Offset
-
-
-    dev = _getOffsetDeviation(rgCrv_In, nc_Offset, fDistance)
+    dev = _getOffsetDeviation(rgCrv_In, nc_Offset, height)
     if bDebug: sEval = "dev"; print("{}: {}".format(sEval, eval(sEval)))
-    if dev <= fTol:
-        return nc_Offset
 
-    #if _do_curves_deviate_within_tolerance(rgCrv_In, nc_Offset, fDistance, fTol, fSamplingDist, bDebug=bDebug):
+    if bLoose:
+        return nc_Offset, dev
+
+    if dev is None:
+        return
+
+    if dev <= fTol:
+        if rgCrv_In.Degree == 3 and nc_Offset.Degree == 3:
+            rc = _rebuildCrv(nc_Offset, fTol_Simplify=fTol-dev, bDebug=bDebug)
+            if rc:
+                nc_Offset.Dispose()
+                nc_Offset, dev_Rebuild = rc
+                dev += dev_Rebuild
+
+        return nc_Offset, dev
+
+    #if _do_curves_deviate_within_tolerance(rgCrv_In, nc_Offset, height, fTol, fSamplingDist, bDebug=bDebug):
     #    return nc_Offset
 
     nc_Offset.Dispose()
@@ -823,21 +841,30 @@ def createOffsetCurve(rgCrv_In, rgSrf, bLoose, bAlignEndDirs, fDistance, fTol, f
             iQtyToAddInEachSpan=i)
 
         nc_Offset = nc_ToOffset.OffsetNormalToSurface(
-            surface=rgSrf, height=fDistance)
+            surface=rgSrf, height=height)
 
         if (bAlignEndDirs and
             not _matchCrvEndDirs(nc_Offset, rgCrv_In)
         ):
             raise Exception("Alignment of end tangent failed.")
 
-        dev = _getOffsetDeviation(rgCrv_In, nc_Offset, fDistance)
+        dev = _getOffsetDeviation(rgCrv_In, nc_Offset, height)
         if bDebug: sEval = "dev"; print("{}: {}".format(sEval, eval(sEval)))
-        if dev <= fTol:
+        if (dev is not None) and (dev <= fTol):
             print("Added {} knots between spans.".format(i))
-            return nc_Offset
+            print("But attempting to rebuild ...")
+
+            if rgCrv_In.Degree == 3 and nc_Offset.Degree == 3:
+                rc = _rebuildCrv(nc_Offset, fTol_Simplify=fTol-dev, bDebug=bDebug)
+                if rc:
+                    nc_Offset.Dispose()
+                    nc_Offset, dev_Rebuild = rc
+                    dev += dev_Rebuild
+
+            return nc_Offset, dev
 
         #if _do_curves_deviate_within_tolerance(
-        #    rgCrv_In, nc_Offset, fDistance, fTol, fSamplingDist,
+        #    rgCrv_In, nc_Offset, height, fTol, fSamplingDist,
         #    bDebug=bDebug
         #):
         #    return nc_Offset
@@ -896,7 +923,7 @@ def _createGeometryInteractively():
 
 
     rgC_In_TrimmedToFace = _crvWithSpansCompletelyOnFace(
-        rgC_In, rgF_In, t_Crv0_Pick, fTol, bDebug)
+        rgC_In, rgF_In, t_Crv0_Pick, 0.1*fTol, bDebug)
     if rgC_In_TrimmedToFace is None: return
 
     if (
@@ -930,7 +957,7 @@ def _createGeometryInteractively():
             bRebuild=bRebuild,
             bSplitAtNonG2Knots=bSplitAtNonG2Knots,
             bMakeDeformable=bAlignEndDirs,
-            fTol=fTol,
+            fTol=0.5*fTol,
             bDebug=bDebug)
 
         if bDebug and bRebuild:
@@ -945,7 +972,7 @@ def _createGeometryInteractively():
 
             if bDebug: sEval = "nc_toOffset.SpanCount"; print("{}: {}".format(sEval, eval(sEval)))
 
-            nc_Offset = createOffsetCurve(
+            rc = createOffsetCurve(
                 rgCrv_In=nc_toOffset,
                 rgSrf=rgF_In,
                 bLoose=bLoose,
@@ -954,14 +981,11 @@ def _createGeometryInteractively():
                 fTol=fTol-fDev_fromRebuilds,
                 fSamplingDist=fSamplingDist,
                 bDebug=bDebug)
-            if nc_Offset is None:
+            if rc is None:
                 if bEcho: print("No solution found.")
                 return
 
-            rc = _rebuildCrv(nc_Offset, fTol_Simplify=1e-6, bDebug=bDebug)
-            if rc:
-                nc_Offset.Dispose()
-                nc_Offset = rc[0]
+            nc_Offset, dev_Offset = rc
 
             ncs_Offset.append(nc_Offset)
 

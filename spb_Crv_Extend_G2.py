@@ -2,6 +2,7 @@
 201209: Created.
 210129: Bug fix in option input.
 231223: Modified option input for ease of use.
+231229: Now auto-repeats.
 """
 
 import Rhino
@@ -101,7 +102,7 @@ def getInput():
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Pick curve near its end for start of extension")
+    go.SetCommandPrompt("Select curve to extend")
 
     go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve
 
@@ -158,11 +159,12 @@ def getInput():
 
         if res == ri.GetResult.Number:
             key = 'iDegree'
-            if go.Number() == Opts.riOpts[key].CurrentValue:
+            n = go.Number()
+            if n == Opts.riOpts[key].CurrentValue:
                 continue
-            Opts.riOpts[key].CurrentValue = go.Number()
-            if Opts.riOpts[key].CurrentValue < 1:
-                Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
+            if n < 1:
+                continue
+            Opts.riOpts[key].CurrentValue = n
             Opts.setValue(key)
             continue
 
@@ -360,28 +362,28 @@ def processCurveObject(objref_In, iDeg_To=0, bEcho=True, bDebug=False):
 
 def main():
 
-    objref_In = getInput()
-    if objref_In is None: return
+    while True:
+        objref_In = getInput()
+        if objref_In is None: return
 
-    bSameDegree = Opts.values['bSameDegree']
-    iDegree = Opts.values['iDegree']
-    bEcho = Opts.values['bEcho']
-    bDebug = Opts.values['bDebug']
+        bSameDegree = Opts.values['bSameDegree']
+        iDegree = Opts.values['iDegree']
+        bEcho = Opts.values['bEcho']
+        bDebug = Opts.values['bDebug']
 
-    if not bDebug: sc.doc.Views.RedrawEnabled = False
+        sc.doc.Objects.UnselectAll()
 
-    sc.doc.Objects.UnselectAll()
+        gC_Res = processCurveObject(
+            objref_In=objref_In,
+            iDeg_To=0 if bSameDegree else iDegree,
+            bEcho=bEcho,
+            bDebug=bDebug,
+            )
+        if gC_Res is None:
+            return
 
-    gC_Res = processCurveObject(
-        objref_In=objref_In,
-        iDeg_To=0 if bSameDegree else iDegree,
-        bEcho=bEcho,
-        bDebug=bDebug,
-        )
-    if gC_Res is None:
-        return
-
-    sc.doc.Views.RedrawEnabled = True
+        sc.doc.Objects.UnselectAll()
+        sc.doc.Views.Redraw()
 
 
 if __name__ == '__main__': main()

@@ -1,19 +1,19 @@
 """
-This script (will) creates a _FilletSrf-like surface from a BrepEdge.
-This type of fillet is useful as an alternate to _Fin Direction=Tangent or
-_ExtendSrf when it is desired to start a fillet/blend immediatly from an edge,
-not requiring the face of the edge to be trimmed.
-
-After the fillet is created, _Silhouette can be applied to it to for creating a profile
-from which to extrude in the same direction as the silhouette view.
+This script creates a _FilletSrf-like surface from a BrepEdge.
 
 The Using_Sweep1 method uses the method as described at
 https://discourse.mcneel.com/t/wish-filletsrftorail-with-constant-radius/158321/7
 except the arcs may not be perpendicular to the edge. Instead, they are aligned to
 the theoretical pipe's cross-sections.
 
+Neither Brep.CreateFromSweep nor Geometry.SweepOneRail can create a simple sweep:
+https://discourse.mcneel.com/t/simple-sweep/159677/2
+
 TODO
-Allow any curve on face to be selected.
+- Allow any curve on face to be selected.
+- Provide another method where all Greville points of the loft's south curve
+have arcs to allow simple sweep created via _Sweep1.  Unlike the current interactive sweep,
+the south side of the loft will be picked as the rail.  Use Freeform instead of Align to surface.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums:
 https://discourse.mcneel.com/
@@ -63,6 +63,12 @@ class Opts:
     values[key] = False
     names[key] = 'Method'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Using_Sweep1', 'Approx_RC')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bPick_Center_NotEdge'; keys.append(key)
+    values[key] = True
+    names[key] = 'PickRail'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Edge', 'Center')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fTol'; keys.append(key)
@@ -165,6 +171,7 @@ def _addCommonOptions(go):
     addOption('fRadius')
     addOption('fArcAngle')
     addOption('bApproximate_NotSweep1')
+    addOption('bPick_Center_NotEdge')
     addOption('fTol')
     addOption('bEcho')
     addOption('bDebug')
@@ -496,6 +503,88 @@ def _createArc_from_loft(ns_Loft, fRadius, fArcAngle, parameter, bFaceNormalIsRe
     return arc
 
 
+def _createArcs_at_south_Grevilles(ns_Loft, fRadius, fArcAngle, bFaceNormalIsReversedToSrf, bEdgeIsReversedToTrim, bDebug=False):
+
+    ns = ns_Loft
+
+    nc_S = ns.IsoCurve(1, ns.Domain(0).T0)
+    nc_N = ns.IsoCurve(1, ns.Domain(0).T1)
+
+    nc_N_Ext = nc_N.Extend(-0.1, 1.1)
+
+    ts_Grevs_S = nc_S.GrevilleParameters()
+    pts_Grevs_S = nc_S.GrevillePoints(all=False)
+
+    ts_Closest_on_N = []
+    pts_Closest_on_N = []
+    for ptS in pts_Grevs_S:
+        bSuccess, tN = nc_N_Ext.ClosestPoint(ptS)
+        if not bSuccess:
+            raise Exception("ClosestPoint failed.")
+        ts_Closest_on_N.append(tN)
+        ptN = nc_N_Ext.PointAt(tN)
+        pts_Closest_on_N.append(ptN)
+
+    if bDebug:
+        [sc.doc.Objects.AddPoint(ptN) for ptN in pts_Closest_on_N]
+        sc.doc.Objects.AddCurve(nc_S)
+        #sc.doc.Objects.AddCurve(nc_N)
+        sc.doc.Objects.AddCurve(nc_N_Ext)
+        #sc.doc.Views.Redraw(); 1/0
+
+    arcs = []
+
+    for ptN, tN in zip(pts_Closest_on_N, ts_Closest_on_N):
+
+        vEdgeTan = nc_N.TangentAt(tN)
+        vNormal = ns.NormalAt(ns.Domain(0).T1, tN)
+
+        if fRadius > 0:
+            vNormal = -vNormal
+        if bFaceNormalIsReversedToSrf:
+            vNormal = -vNormal
+        if bEdgeIsReversedToTrim:
+            vNormal = -vNormal
+
+        vCross = rg.Vector3d.CrossProduct(vNormal, vEdgeTan)
+
+        if fRadius > 0:
+            vCross = -vCross
+        if bFaceNormalIsReversedToSrf:
+            vCross = -vCross
+        if bEdgeIsReversedToTrim:
+            vCross = -vCross
+
+        plane = rg.Plane(
+            origin=ptN,
+            xDirection=vCross,
+            yDirection=vNormal)
+
+        arc = rg.Arc(plane,
+               center=ptN,
+               radius=abs(fRadius),
+           angleRadians=Rhino.RhinoMath.ToRadians(fArcAngle))
+
+        arcs.append(arc)
+
+        if bDebug:
+            sEval = "tN"; print("{}: {}".format(sEval, eval(sEval)))
+            #sEval = "arc.IsValid"; print("{}: {}".format(sEval, eval(sEval)))
+            #sEval = "arc.AngleDegrees"; print("{}: {}".format(sEval, eval(sEval)))
+            #sEval = "arc.Center"; print("{}: {}".format(sEval, eval(sEval)))
+            #sEval = "arc.StartPoint"; print("{}: {}".format(sEval, eval(sEval)))
+            #sEval = "arc.EndPoint"; print("{}: {}".format(sEval, eval(sEval)))
+            #sEval = "arc.Radius"; print("{}: {}".format(sEval, eval(sEval)))
+            #sc.doc.Objects.AddCurve(crv)
+            sc.doc.Objects.AddLine(rg.Line(start=ptN, span=vEdgeTan))
+            sc.doc.Objects.AddLine(rg.Line(start=ptN, span=vNormal))
+            sc.doc.Objects.AddLine(rg.Line(start=ptN, span=vCross))
+            sc.doc.Objects.AddArc(arc)
+            sc.doc.Views.Redraw()
+
+    return arcs
+
+
 class DrawConduit(Rhino.Display.DisplayConduit):
 
     def __init__(self):
@@ -563,6 +652,7 @@ def _createGeometryInteractively():
     if rgEdge and bUseFaceOfSelNakedEdge and rgEdge.Valence == rg.EdgeAdjacency.Naked:
         idxF = objref_CrvToOffset.Edge().AdjacentFaces()[0]
         rgF_In = rgEdge.Brep.Faces[idxF]
+        gBrep = objref_CrvToOffset.ObjectId
     else:
         sc.doc.Objects.UnselectAll()
 
@@ -580,6 +670,7 @@ def _createGeometryInteractively():
     fRadius = Opts.values['fRadius']
     fArcAngle = Opts.values['fArcAngle']
     bApproximate_NotSweep1 = Opts.values['bApproximate_NotSweep1']
+    bPick_Center_NotEdge = Opts.values['bPick_Center_NotEdge']
     fTol = Opts.values['fTol']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -710,6 +801,7 @@ def _createGeometryInteractively():
             rgB_Loft.Surfaces[0].SetDomain(0, rg.Interval(0.0, 1.0))
             rgB_Loft.Surfaces[0].SetDomain(1, rg.Interval(0.0, 1.0))
 
+
             #sc.doc.Objects.AddCurve(nc_toOffset)
             #sc.doc.Objects.AddCurve(nc_Offset)
             #sc.doc.Objects.AddBrep(rgB_Loft)
@@ -721,13 +813,12 @@ def _createGeometryInteractively():
                 sEval = "ns_Loft.Domain(0)"; print("{}: {}".format(sEval, eval(sEval)))
                 sEval = "ns_Loft.Domain(1)"; print("{}: {}".format(sEval, eval(sEval)))
 
-            if bDebug:
-                sEval = "nc_toOffset.Domain"; print("{}: {}".format(sEval, eval(sEval)))
-                sEval = "nc_Offset.Domain"; print("{}: {}".format(sEval, eval(sEval)))
-
+            # The loft is now the master reference geometry for the remainder of this fillet creation.
 
             if bApproximate_NotSweep1:
-                ts_Grevs = nc_Offset.GrevilleParameters()
+                nc_North = ns_Loft.IsoCurve(1, ns_Loft.Domain(0).T1)
+                ts_Grevs = nc_North.GrevilleParameters()
+                #ts_Grevs = nc_Offset.GrevilleParameters()
                 if bDebug:
                     sEval = "len(ts_Grevs)"; print("{}: {}".format(sEval, eval(sEval)))
                 arcs_perOffset.append([])
@@ -742,16 +833,25 @@ def _createGeometryInteractively():
                         bDebug=bDebug)
                     arcs_perOffset[-1].append(arc)
             else:
-                arc = _createArc_from_loft(
-                    ns_Loft,
-                    fRadius,
-                    fArcAngle,
-                    parameter=None,
-                    bFaceNormalIsReversedToSrf=bFaceNormalIsReversedToSrf,
-                    bEdgeIsReversedToTrim=bEdgeIsReversedToTrim,
-                    bDebug=bDebug)
-                arcs_perOffset.append([arc])
-
+                if bPick_Center_NotEdge:
+                    arc = _createArc_from_loft(
+                        ns_Loft,
+                        fRadius,
+                        fArcAngle,
+                        parameter=None,
+                        bFaceNormalIsReversedToSrf=bFaceNormalIsReversedToSrf,
+                        bEdgeIsReversedToTrim=bEdgeIsReversedToTrim,
+                        bDebug=bDebug)
+                    arcs_perOffset.append([arc])
+                else:
+                    arcs = _createArcs_at_south_Grevilles(
+                        ns_Loft,
+                        fRadius,
+                        fArcAngle,
+                        bFaceNormalIsReversedToSrf=bFaceNormalIsReversedToSrf,
+                        bEdgeIsReversedToTrim=bEdgeIsReversedToTrim,
+                        bDebug=bDebug)
+                    arcs_perOffset.append(arcs)
 
         conduit.arcs = [arc for arcs in arcs_perOffset for arc in arcs]
 
@@ -796,6 +896,7 @@ def _createGeometryInteractively():
             return (
                 arcs_perOffset,
                 breps_Loft,
+                gBrep,
                 )
 
         for _ in breps_Loft: _.Dispose()
@@ -804,6 +905,7 @@ def _createGeometryInteractively():
         fRadius = Opts.values['fRadius']
         fArcAngle = Opts.values['fArcAngle']
         bApproximate_NotSweep1 = Opts.values['bApproximate_NotSweep1']
+        bPick_Center_NotEdge = Opts.values['bPick_Center_NotEdge']
         fTol = Opts.values['fTol']
         bEcho = Opts.values['bEcho']
         bDebug = Opts.values['bDebug']
@@ -813,7 +915,7 @@ def _addFilletApproximation(arcs, brep):
     acs = [rg.ArcCurve(arc) for arc in arcs]
 
     ns = brep.Surfaces[0]
-    nc = ns.IsoCurve(1, ns.Domain(1).T0)
+    nc = ns.IsoCurve(1, ns.Domain(0).T0)
 
     #s1 = rg.SweepOneRail()
 
@@ -875,7 +977,7 @@ def _addFilletApproximation(arcs, brep):
     sc.doc.Views.Redraw()
 
 
-def _addSweep1_with_user_interaction(arc, loft, bDebug):
+def _addSweep1_for_user_to_pick_center_spine(arc, loft, bDebug):
     gArc = sc.doc.Objects.AddArc(arc)
 
     gLoft = sc.doc.Objects.AddBrep(loft)
@@ -897,8 +999,8 @@ def _addSweep1_with_user_interaction(arc, loft, bDebug):
 
     # TODO: Set echo to bDebug
     Rhino.RhinoApp.RunScript("_Echo", echo=True)
-    script  = "_-Sweep1".format(gArc)
-    script += " _Pause".format(gArc)
+    script  = "_-Sweep1"
+    script += " _Pause"
     script += " _SelId {} _Enter".format(gArc)
     # _ShapeBlending is ignored when there is only 1 shape.
     script += " _Style=AlignWithSurface _Simplify=None _Enter"
@@ -906,6 +1008,44 @@ def _addSweep1_with_user_interaction(arc, loft, bDebug):
 
     if not bDebug:
         sc.doc.Objects.Delete(objectId=gArc, quiet=False)
+        sc.doc.Objects.Delete(objectId=gLoft, quiet=False)
+
+    sc.doc.Objects.UnselectAll()
+    sc.doc.Views.Redraw()
+
+
+def _addSweep1_for_user_to_pick_endpt_spine(arcs, loft, bDebug):
+    gArcs = [sc.doc.Objects.AddArc(arc) for arc in arcs]
+
+    gLoft = sc.doc.Objects.AddBrep(loft)
+
+    sc.doc.Views.Redraw()
+
+    #rdLoft = sc.doc.Objects.FindId(gLoft)
+
+    ## Presuming index of edge remains the same since loft is always defined the same way.
+    #compIdx = rg.ComponentIndex(
+    #        rg.ComponentIndexType.BrepEdge,
+    #        index=1)
+    ## TODO: Set syncHighlight to bDebug
+    #rdLoft.SelectSubObject(
+    #    componentIndex=compIdx,
+    #    select=True,
+    #    syncHighlight=True,
+    #    persistentSelect=True)
+
+    # TODO: Set echo to bDebug
+    Rhino.RhinoApp.RunScript("_Echo", echo=True)
+    script  = "_-Sweep1"
+    script += " _Edge _Pause"
+    for gArc in gArcs:
+        script += " _SelId {}".format(gArc)
+    script += " _Enter"
+    script += " _Style=Freeform _ShapeBlending=Local _Simplify=None _Enter"
+    Rhino.RhinoApp.RunScript(script, echo=True)
+
+    if not bDebug:
+        [sc.doc.Objects.Delete(objectId=gArc, quiet=False) for gArc in gArcs]
         sc.doc.Objects.Delete(objectId=gLoft, quiet=False)
 
     sc.doc.Objects.UnselectAll()
@@ -921,10 +1061,11 @@ def main():
         if rc is None: return
 
         bApproximate_NotSweep1 = Opts.values['bApproximate_NotSweep1']
+        bPick_Center_NotEdge = Opts.values['bPick_Center_NotEdge']
         bEcho = Opts.values['bEcho']
         bDebug = Opts.values['bDebug']
 
-        arcs_perOffset, rgBs_Lofts = rc
+        arcs_perOffset, rgBs_Lofts, gBrep_Picked = rc
 
         if bApproximate_NotSweep1:
             for arcs_thisOffset, loft in zip(arcs_perOffset, rgBs_Lofts):
@@ -936,8 +1077,17 @@ def main():
                 sc.doc.Views.Redraw()
                 continue
 
+            print(sc.doc.Objects.Lock(objectId=gBrep_Picked, ignoreLayerMode=True))
+
             for arcs_thisOffset, loft in zip(arcs_perOffset, rgBs_Lofts):
-                _addSweep1_with_user_interaction(arcs_thisOffset[0], loft, bDebug)
+                if bPick_Center_NotEdge:
+                    _addSweep1_for_user_to_pick_center_spine(arcs_thisOffset[0], loft, bDebug)
+                else:
+                    _addSweep1_for_user_to_pick_endpt_spine(arcs_thisOffset, loft, bDebug)
+
+            print(sc.doc.Objects.Show(objectId=gBrep_Picked, ignoreLayerMode=True))
+
+
 
         sc.doc.Views.Redraw()
 

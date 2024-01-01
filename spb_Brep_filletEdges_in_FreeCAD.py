@@ -8,14 +8,14 @@ intersections of non-tangent edges.
 
 Warning: Check the resultant B-Reps for missing faces.
 
-This script been tested on
-Rhino 7, 7.13.21348.13001 on Windows
-FreeCAD 0.019.3 (0.019.24267) on Windows
+This script was tested on
+- Rhino 7.35.23346.11001, 2023-12-12  & 8.2.23346.13001, 2023-12-12 on Windows
+- FreeCAD 0.19.24267 +99 (Git), 0.20.2.29603 (Git), & 0.21.1.33668 +26 (Git) on Windows
 
 
 Requirements to run:
-1. Rhino 7.  Other versions have not been tested.  If you try doing so,
-    please inform me (see below) the results.
+1. Rhino 7 or 8.  Other versions have not been tested.  If you try other versions,
+    please inform me (see below) of the results.
 
 2. FreeCAD, preferrably the same version as stated above,
     https://www.freecadweb.org/downloads.php
@@ -38,7 +38,7 @@ Send any questions, comments, or script development service needs to @spb on
 the McNeel Forums ( https://discourse.mcneel.com/ )
 """
 
-from __future__ import absolute_import, print_function, unicode_literals
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 211222-220103: Created.
@@ -47,6 +47,9 @@ from __future__ import absolute_import, print_function, unicode_literals
         Added multiple fillet radius input capability similar to _FilletEdge.
 220111: Added preview of text dots on edges containing their assigned radius.
         Added option to use previous input.
+240101: When running on Windows, now searches and automatically sets FreeCAD
+        version to the latest installed.  Also, added command option to change versions
+        if more than one are available.
 """
 
 import Rhino
@@ -63,22 +66,46 @@ from subprocess import Popen, PIPE
 from threading import Timer
 
 
+if not Rhino.Runtime.HostUtils.RunningOnWindows:
+    raise Exception(
+        "Non-Windows OS. Modify the code in class FC_paths, then delete this 'if' code block.")
 
-# Variables to modify per OS, installation paths, and desired placement of
-# .stp and .py files for communication between Rhino and FreeCAD.
 
-sFCcmd_Path = '"{}"'.format(r"C:\Program Files\FreeCAD 0.19\bin\FreeCADcmd.exe")
+class FC_paths:
+    """
+    Variables to modify per OS, installation paths, and desired placement of
+    .stp and .py files for communication between Rhino and FreeCAD.
+    """
 
-desktop = os.path.join(os.path.join(os.environ['USERPROFILE']), 'Desktop')
+    sFC_Path_Parent = os.environ["ProgramFiles"]
 
-sPath_Script_for_FC = desktop + r"\to_FC.py"
+    sFC_Vers = [s[8:] for s in os.listdir(sFC_Path_Parent) if "FreeCAD" in s]
+    if not sFC_Vers:
+        raise Exception("FreeCAD not found in Program Files.",
+        "If it is installed, this script needs to be modified to accommodate FreeCAD's path.")
 
-sPath_STEP_to_FC = desktop + r"\to_FC.stp"
+    sFreeCADcmd_path = '"{}"'.format(
+            os.path.join(
+            sFC_Path_Parent,
+            "FreeCAD {}".format(sFC_Vers[0]),
+            "bin\FreeCADcmd.exe"))
 
-sPath_STEP_from_FC = desktop + r"\from_FC.stp"
+    _desktop = os.path.join(os.path.join(os.environ['USERPROFILE']), 'Desktop')
 
-#
+    sPath_Script_for_FC = _desktop + r"\to_FC.py"
 
+    sPath_STEP_to_FC = _desktop + r"\to_FC.stp"
+
+    sPath_STEP_from_FC = _desktop + r"\from_FC.stp"
+
+
+    @classmethod
+    def setFC_Cmd_path(cls, sFC_Ver):
+        cls.sFreeCADcmd_path = '"{}"'.format(
+            os.path.join(
+            cls.sFC_Path_Parent,
+            "FreeCAD {}".format(sFC_Ver),
+            "bin\FreeCADcmd.exe"))
 
 
 s_FC = []
@@ -106,6 +133,11 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(values[key], setLowerLimit=True, limit=0.0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
+    key = 'iFC_ver'; keys.append(key)
+    listValues[key] = [s.replace('.', 'p') for s  in FC_paths.sFC_Vers]
+    values[key] = len(listValues[key]) - 1
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
     key = 'bEcho'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
@@ -128,6 +160,7 @@ class Opts:
             if key in riOpts:
                 riOpts[key].CurrentValue = values[key] = sc.sticky[stickyKeys[key]]
             else:
+                # For OptionList.
                 values[key] = sc.sticky[stickyKeys[key]]
 
 
@@ -146,11 +179,13 @@ class Opts:
             elif key[0] == 'i':
                 idxOpt = go.AddOptionInteger(
                     englishName=cls.names[key], intValue=cls.riOpts[key])[0]
-        else:
+        elif key in cls.listValues:
             idxOpt = go.AddOptionList(
                 englishOptionName=cls.names[key],
                 listValues=cls.listValues[key],
                 listCurrentIndex=cls.values[key])
+        else:
+            print("{} is not a valid key in Opts.".format(key))
 
         return idxOpt
 
@@ -162,12 +197,18 @@ class Opts:
             if cls.riOpts[key].CurrentValue < 2.0*sc.doc.ModelAbsoluteTolerance:
                 cls.riOpts[key].CurrentValue = 0.0
 
+            cls.values[key] = cls.riOpts[key].CurrentValue
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+            return
+
         if key in cls.riOpts:
             cls.values[key] = cls.riOpts[key].CurrentValue
         elif key in cls.listValues:
             cls.values[key] = idxList
         else:
+            print("Why is key, {}, here?  Value was not set or sticky-saved.".format(key))
             return
+
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
@@ -210,6 +251,7 @@ def getInput(bPrevBrepsArePresent):
         if bPrevBrepsArePresent:
             idxs_Opt['UsePrevInput'] = go.AddOption('UsePrevInput')
         addOption('fFreeCADTimeoutSecs')
+        if len(FC_paths.sFC_Vers) > 1: addOption('iFC_ver')
         addOption('bEcho')
         addOption('bDebug')
 
@@ -249,7 +291,6 @@ def getInput(bPrevBrepsArePresent):
 class DrawRadiusDotsConduit(Rhino.Display.DisplayConduit):
 
     def __init__(self):
-        print("in __init__")
         self.prs = None
         displayMode = Rhino.RhinoDoc.ActiveDoc.Views.ActiveView.ActiveViewport.DisplayMode
 
@@ -370,7 +411,7 @@ def export_to_STEP(rgBrep, bDebug=False):
 
     scriptToExportStp = " ".join([
         "_-Export",
-        '"{}"'.format(sPath_STEP_to_FC),
+        '"{}"'.format(FC_paths.sPath_STEP_to_FC),
         "_Schema=AP214AutomotiveDesign",
         "_ExportParameterSpaceCurves=No",
         "_SplitClosedSurfaces=No",
@@ -391,7 +432,7 @@ def import_STEP_into_Rhino(bDebug=False):
 
     scriptToImportStp = " ".join([
         "_-Import",
-        '"{}"'.format(sPath_STEP_from_FC),
+        '"{}"'.format(FC_paths.sPath_STEP_from_FC),
         "_JoinSurfaces=Yes",
         "_LimitFaces=No",
         "_SkipInvisibles=Yes",
@@ -569,19 +610,19 @@ def processBrep(rgBrep_In, idxs_Edges, fRadii, fFreeCADTimeoutSecs=10.0, bEcho=T
         Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt_In)
 
         fc('shape = Part.Shape()')
-        fc('shape.read(r"{}")'.format(sPath_STEP_to_FC))
+        fc('shape.read(r"{}")'.format(FC_paths.sPath_STEP_to_FC))
 
         fc('Part.show(shape)')
 
         fc('doc = FreeCAD.ActiveDocument')
-        fc('doc.recompute()')
+        #fc('doc.recompute()') # Worked in 0.19.
 
 
 
         # For debugging.
         #fc()
         #script_FC = "\n".join(s_FC)
-        #with open(sPath_Script_for_FC, "w") as f: 
+        #with open(FC_paths.sPath_Script_for_FC, "w") as f: 
         #    f.write(script_FC) 
         #return True, None
         #
@@ -589,7 +630,7 @@ def processBrep(rgBrep_In, idxs_Edges, fRadii, fFreeCADTimeoutSecs=10.0, bEcho=T
 
         fc('doc.addObject("Part::Fillet","Fillet")')
         fc('doc.Fillet.Base = doc.Shape')
-        fc('doc.recompute()')
+        #fc('doc.recompute()') # Worked in 0.19, but raised 'Recompute failed!' in more recent versions.  Also, disabled previous recompute since it seems to work without, even in 0.19.
 
 
         create_FC_code_Determine_edges_to_fillet()
@@ -609,26 +650,30 @@ def processBrep(rgBrep_In, idxs_Edges, fRadii, fFreeCADTimeoutSecs=10.0, bEcho=T
 
     # Create STEP file for Rhino.
     fc('import Import')
-    fc('Import.export([FreeCAD.ActiveDocument.Fillet], r"{}")'.format(sPath_STEP_from_FC))
+    fc('Import.export([FreeCAD.ActiveDocument.Fillet], r"{}")'.format(
+        FC_paths.sPath_STEP_from_FC))
 
 
     # Create script file.
     fc()
     script_FC = "\n".join(s_FC)
 
-    with open(sPath_Script_for_FC, "w") as f: 
+    with open(FC_paths.sPath_Script_for_FC, "w") as f: 
         f.write(script_FC) 
 
 
     # Send script to headless FreeCAD (FreeCADcmd.exe) via subprocess.
-    sForConsole = sFCcmd_Path + " RunMode=Script " + '"{}"'.format(sPath_Script_for_FC)
-
+    sForConsole = FC_paths.sFreeCADcmd_path + " RunMode=Script " + '"{}"'.format(
+        FC_paths.sPath_Script_for_FC)
+    if bDebug: print(sForConsole)
 
     Rhino.RhinoApp.SetCommandPrompt("Running FreeCAD ...")
 
-    rc = subprocess_FC(sForConsole, fFreeCADTimeoutSecs=fFreeCADTimeoutSecs, bEcho=bEcho)
+    rc = subprocess_FC(
+        sForConsole, fFreeCADTimeoutSecs=fFreeCADTimeoutSecs, bEcho=bEcho)
 
     Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt_In)
+    if bDebug: print(rc)
 
     if not rc: return False, None
 
@@ -907,6 +952,7 @@ def main():
 
         fRadius = Opts.values['fRadius']
         fFreeCADTimeoutSecs = Opts.values['fFreeCADTimeoutSecs']
+        iFC_ver = Opts.values['iFC_ver']
         bEcho = Opts.values['bEcho']
         bDebug = Opts.values['bDebug']
 
@@ -914,7 +960,6 @@ def main():
         sc.doc.Views.Redraw()
 
         if not rc:
-            print("Proceeding to create fillets.")
             conduit.Enabled = False
             del conduit
             break
@@ -933,7 +978,13 @@ def main():
         sc.doc.Views.Redraw()
 
 
+    if not gBs_In: return
+
+    print("Proceeding to create fillets.")
+
     if not bDebug: sc.doc.Views.RedrawEnabled = False
+
+    FC_paths.setFC_Cmd_path(FC_paths.sFC_Vers[iFC_ver])
 
     gBreps_Res_All = []
 

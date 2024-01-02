@@ -21,7 +21,7 @@ https://discourse.mcneel.com/
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-231228-240101: Created.
+231228-240102: Created.
 
 TODO
 - Allow any curve on face to be selected.
@@ -192,7 +192,7 @@ def _addCommonOptions(go):
     addOption('bApproximate_NotSweep1')
     if not Opts.values['bApproximate_NotSweep1']:
         addOption('bOnlyOneArc_NotAll')
-    addOption('bUseSweep1Dialog')
+        addOption('bUseSweep1Dialog')
     addOption('fTol')
     addOption('bEcho')
     addOption('bDebug')
@@ -484,6 +484,7 @@ def _createArcs(ns_Loft, nc_TanEdge, fRadius, fArcAngle, bFaceNormalIsReversedTo
     nc_E_Ext = nc_E.Extend(-0.1, 1.1)
 
     #if bDebug:
+    #    sc.doc.Objects.AddSurface(ns)
     #    sc.doc.Objects.AddCurve(nc_W)
     #    sc.doc.Objects.AddCurve(nc_E)
     #    sc.doc.Objects.AddCurve(nc_E_Ext)
@@ -495,7 +496,12 @@ def _createArcs(ns_Loft, nc_TanEdge, fRadius, fArcAngle, bFaceNormalIsReversedTo
     pts_Closest_on_N = []
     arcs = []
 
-    for ptS in pts_Grevs_W:
+    #if bDebug:
+    #    attr = rd.ObjectAttributes()
+    #    attr.LayerIndex = sc.doc.Layers.CurrentLayerIndex
+    #    attr.ColorSource = rd.ObjectColorSource.ColorFromObject
+
+    for i, ptS in enumerate(pts_Grevs_W):
         bSuccess, t_E = nc_E_Ext.ClosestPoint(ptS)
         if not bSuccess:
             raise Exception("ClosestPoint failed.")
@@ -504,29 +510,53 @@ def _createArcs(ns_Loft, nc_TanEdge, fRadius, fArcAngle, bFaceNormalIsReversedTo
         pt_E = nc_E_Ext.PointAt(t_E)
         pts_Closest_on_N.append(pt_E)
 
-        #if bDebug:
+        #if bDebug and i > 0:
         #    sc.doc.Objects.AddPoint(pt_E)
-        #    sc.doc.Objects.AddCurve(nc_E_Ext)
 
 
         vEdgeTan_E = nc_E.TangentAt(t_E)
+
+        iCt_Tan_Reversed = 0
+        if fRadius > 0:
+            vEdgeTan_E = -vEdgeTan_E
+            iCt_Tan_Reversed += 1
+        if bFaceNormalIsReversedToSrf:
+            vEdgeTan_E = -vEdgeTan_E
+            iCt_Tan_Reversed += 1
+        if bEdgeIsReversedToTrim:
+            vEdgeTan_E = -vEdgeTan_E
+            iCt_Tan_Reversed += 1
+
+        if bDebug and i > 0: sEval = "iCt_Tan_Reversed"; print("{}: {}".format(sEval, eval(sEval)))
+
+        #attr.ObjectColor = attr.ObjectColor.Lime
+        #sc.doc.Objects.AddLine(rg.Line(start=pt_E, span=vEdgeTan_E), attr)
+
+
         vNormal_E = ns.NormalAt(ns.Domain(0).T1, t_E)
 
+        iCt_Normal_Reversed = 0
         if fRadius > 0:
             vNormal_E = -vNormal_E
+            iCt_Normal_Reversed += 1
         if bFaceNormalIsReversedToSrf:
             vNormal_E = -vNormal_E
+            iCt_Normal_Reversed += 1
         if bEdgeIsReversedToTrim:
             vNormal_E = -vNormal_E
+            iCt_Normal_Reversed += 1
+
+        if bDebug and i > 0: sEval = "iCt_Normal_Reversed"; print("{}: {}".format(sEval, eval(sEval)))
+
+        #attr.ObjectColor = attr.ObjectColor.Red
+        #sc.doc.Objects.AddLine(rg.Line(start=pt_E, span=vNormal_E), attributes=attr)
 
         vCross = rg.Vector3d.CrossProduct(vNormal_E, vEdgeTan_E)
 
-        if fRadius > 0:
-            vCross = -vCross
-        if bFaceNormalIsReversedToSrf:
-            vCross = -vCross
-        if bEdgeIsReversedToTrim:
-            vCross = -vCross
+        #attr.ObjectColor = attr.ObjectColor.Blue
+        #sc.doc.Objects.AddLine(rg.Line(start=pt_E, span=vCross), attr)
+
+        #return
 
         plane = rg.Plane(
             origin=pt_E,
@@ -552,10 +582,12 @@ def _createArcs(ns_Loft, nc_TanEdge, fRadius, fArcAngle, bFaceNormalIsReversedTo
             #sEval = "arc.StartPoint"; print("{}: {}".format(sEval, eval(sEval)))
             #sEval = "arc.EndPoint"; print("{}: {}".format(sEval, eval(sEval)))
             #sEval = "arc.Radius"; print("{}: {}".format(sEval, eval(sEval)))
-            #sc.doc.Objects.AddCurve(crv)
-            #sc.doc.Objects.AddLine(rg.Line(start=pt_E, span=vEdgeTan_E))
-            #sc.doc.Objects.AddLine(rg.Line(start=pt_E, span=vNormal_E))
-            #sc.doc.Objects.AddLine(rg.Line(start=pt_E, span=vCross))
+            #attr.ObjectColor = attr.ObjectColor.Red
+            #sc.doc.Objects.AddLine(rg.Line(start=pt_E, span=vNormal_E), attributes=attr)
+            #attr.ObjectColor = attr.ObjectColor.Lime
+            #sc.doc.Objects.AddLine(rg.Line(start=pt_E, span=vEdgeTan_E), attr)
+            #attr.ObjectColor = attr.ObjectColor.Blue
+            #sc.doc.Objects.AddLine(rg.Line(start=pt_E, span=vCross), attr)
             #sc.doc.Objects.AddArc(arc)
             #sc.doc.Views.Redraw()
 
@@ -620,26 +652,29 @@ def _createGeometryInteractively():
     objref_CrvToOffset = _getInput_Curve()
     if objref_CrvToOffset is None: return
 
-
     bUseFaceOfSelNakedEdge = Opts.values['bUseFaceOfSelNakedEdge']
 
+    rgE_In = objref_CrvToOffset.Edge()
+    if not rgE_In: return
+    sEval = "rgE_In.EdgeIndex"; print("{}: {}".format(sEval, eval(sEval)))
 
-    rgEdge = objref_CrvToOffset.Edge()
+    rgT_In = objref_CrvToOffset.Trim()
+    sEval = "rgT_In.TrimIndex"; print("{}: {}".format(sEval, eval(sEval)))
+    rgF_In = rgT_In.Face
 
-    if rgEdge and bUseFaceOfSelNakedEdge and rgEdge.Valence == rg.EdgeAdjacency.Naked:
-        idxF = objref_CrvToOffset.Edge().AdjacentFaces()[0]
-        rgF_In = rgEdge.Brep.Faces[idxF]
-        gBrep = objref_CrvToOffset.ObjectId
-    else:
-        sc.doc.Objects.UnselectAll()
+    # TODO: Enable and modify this block when non-edges are allowed as input.
+    #if rgE_In and bUseFaceOfSelNakedEdge and rgE_In.Valence == rg.EdgeAdjacency.Naked:
+    #    idxF = objref_CrvToOffset.Edge().AdjacentFaces()[0]
+    #    rgF_In = rgE_In.Brep.Faces[idxF]
+    #else:
+    #    sc.doc.Objects.UnselectAll()
+    #    objref_Face = _getInput_Face()
+    #    if objref_Face is None: return
 
-        objref_Face = _getInput_Face()
-        if objref_Face is None: return
+    #    rgF_In = objref_Face.Face()
 
-        sc.doc.Objects.UnselectAll()
-
-
-        rgF_In = objref_Face.Face()
+    gBrep = objref_CrvToOffset.ObjectId
+    sc.doc.Objects.UnselectAll()
 
 
     Rhino.RhinoApp.SetCommandPrompt("Working ...")
@@ -722,9 +757,10 @@ def _createGeometryInteractively():
 
         bFaceNormalIsReversedToSrf = rgF_In.OrientationIsReversed
 
-        bEdgeIsReversedToTrim = rgF_In.Brep.Trims[edge_In.TrimIndices()[0]].IsReversed()
+        bEdgeIsReversedToTrim = rgT_In.IsReversed()
 
         if bDebug:
+            sEval = "fRadius>0.0"; print("{}: {}".format(sEval, eval(sEval)))
             sEval = "bFaceNormalIsReversedToSrf"; print("{}: {}".format(sEval, eval(sEval)))
             sEval = "bEdgeIsReversedToTrim"; print("{}: {}".format(sEval, eval(sEval)))
 
@@ -827,6 +863,7 @@ def _createGeometryInteractively():
                 bFaceNormalIsReversedToSrf=bFaceNormalIsReversedToSrf,
                 bEdgeIsReversedToTrim=bEdgeIsReversedToTrim,
                 bDebug=bDebug)
+            if not arcs: return
             arcs_perOffset.append(arcs)
 
 
@@ -981,14 +1018,14 @@ def _addSweep_using_Sweep1(arcs, loft, bUseSweep1Dialog, bDebug):
     # So that user can see prompt to pick rail.
     #Rhino.RhinoApp.RunScript("_Echo", echo=False)
 
-    script  = "_Sweep1" if bUseSweep1Dialog else "_-Sweep1"
-    script += " _Pause"
+    script  = "_Sweep1 " if bUseSweep1Dialog else "_-Sweep1 "
+    script += "_Pause "
     for gArc in gArcs:
-        script += " _SelId {}".format(gArc)
-    if not bUseSweep1Dialog:
-        script += " _EnterEnd"
+        script += "_SelId {} ".format(gArc)
+    script += "_Enter"
+    #script += "_Enter" if bUseSweep1Dialog else "_EnterEnd"
     #script += " _Style=Freeform _ShapeBlending=Local _Simplify=None _Enter"
-    #script += " _Style=AlignWithSurface _Simplify=None _Enter"
+    script += " _Style=AlignWithSurface _Simplify=None _Enter"
     Rhino.RhinoApp.RunScript(script, echo=True)
 
     if not bDebug:

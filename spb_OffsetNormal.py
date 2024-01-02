@@ -10,7 +10,7 @@ https://discourse.mcneel.com/
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-231227-29: Created.
+231227-240101: Created.
 """
 
 import Rhino
@@ -364,7 +364,7 @@ def _getInput_Click():
     return True
 
 
-def _crvWithSpansCompletelyOnFace(rgCrv, rgFace, t_Crv_Pick, fTol, bDebug=False):
+def crvWithSpansCompletelyOnFace(rgCrv, rgFace, t_Crv_Pick, fTol, bDebug=False):
     """
     Only process spans of the curve whose spans start and ends are on the Face.
     """
@@ -551,7 +551,7 @@ def _rebuildCrv(rgCrv_In, fTol_Simplify, bDebug=False):
     """
     Returns:
         Curve, float(deviation)
-        None for no Rebuild.
+        None for no rebuild within tolerance.
     """
 
     #if isinstance(rgCrv_In, rg.PolylineCurve):
@@ -600,7 +600,7 @@ def _rebuildCrv(rgCrv_In, fTol_Simplify, bDebug=False):
 
 
     # Try to rebuild as degree-3 uniform.
-    pointcount = 4
+    pointcount = 5
     while True:
         nc_Rebuilt = nc_WIP.Rebuild(
             pointCount=pointcount,
@@ -652,7 +652,14 @@ def _split_NurbsCrv_at_nonG2_knots(nc_In):
     return rc
 
 
-def _prepareCrvToOffset(rgCrv_In, bExplodePolyCrv, bRebuild, bSplitAtNonG2Knots, bMakeDeformable, fTol, bDebug=False):
+def prepareCrvToOffset(rgCrv_In, bExplodePolyCrv, bRebuild, bSplitAtNonG2Knots, bMakeDeformable, fTol, bDebug=False):
+
+    if bRebuild:
+        # Attempt to rebuild to the full tolerance.
+        rc = _rebuildCrv(rgCrv_In, fTol_Simplify=fTol, bDebug=bDebug)
+        if rc:
+            return [rc[0]], rc[1]
+
     if bExplodePolyCrv and isinstance(rgCrv_In, rg.PolyCurve):
         ncs_WIP = [_.ToNurbsCurve() for _ in rgCrv_In.Explode()]
     else:
@@ -661,7 +668,7 @@ def _prepareCrvToOffset(rgCrv_In, bExplodePolyCrv, bRebuild, bSplitAtNonG2Knots,
     fDev = 0.0
 
     if bRebuild:
-        # Rebuilding to a smaller tolerance to reduce toleranc stackup.
+        # Rebuilding to a smaller tolerance to reduce tolerance stackup.
         fTol_Simplify = max((0.5*fTol, 1e-4))
         if bDebug: sEval = "fTol_Simplify"; print("{}: {}".format(sEval, eval(sEval)))
 
@@ -922,7 +929,7 @@ def _createGeometryInteractively():
         rgC_In.RemoveNesting()
 
 
-    rgC_In_TrimmedToFace = _crvWithSpansCompletelyOnFace(
+    rgC_In_TrimmedToFace = crvWithSpansCompletelyOnFace(
         rgC_In, rgF_In, t_Crv0_Pick, 0.1*fTol, bDebug)
     if rgC_In_TrimmedToFace is None: return
 
@@ -951,7 +958,7 @@ def _createGeometryInteractively():
     while True:
         sc.escape_test()
 
-        ncs_toOffset, fDev_fromRebuilds = _prepareCrvToOffset(
+        ncs_toOffset, fDev_fromRebuilds = prepareCrvToOffset(
             rgC_In_TrimmedToFace,
             bExplodePolyCrv=bExplodePolyCrv,
             bRebuild=bRebuild,

@@ -21,7 +21,7 @@ https://discourse.mcneel.com/
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-231228-31: Created.
+231228-240101: Created.
 
 TODO
 - Allow any curve on face to be selected.
@@ -665,7 +665,7 @@ def _createGeometryInteractively():
     rgC_In_TrimmedToFace = rgC_In
     # TODO: Re-enable the following when non-edges are allowed as input.  This line above should then be deleted.
 
-    #rgC_In_TrimmedToFace = spb_OffsetNormal._crvWithSpansCompletelyOnFace(
+    #rgC_In_TrimmedToFace = spb_OffsetNormal.crvWithSpansCompletelyOnFace(
     #    rgC_In,
     #    rgF_In,
     #    t_Crv0_Pick,
@@ -702,7 +702,7 @@ def _createGeometryInteractively():
 
     fSamplingDist = 100.0*sc.doc.ModelAbsoluteTolerance
     while True:
-        ncs_toOffset, fDev_fromRebuilds = spb_OffsetNormal._prepareCrvToOffset(
+        ncs_toOffset, fDev_fromRebuilds = spb_OffsetNormal.prepareCrvToOffset(
             rgC_In_TrimmedToFace,
             bExplodePolyCrv=True,
             bRebuild=bRebuildInCrv,
@@ -978,13 +978,15 @@ def _addSweep_using_Sweep1(arcs, loft, bUseSweep1Dialog, bDebug):
     #    syncHighlight=True,
     #    persistentSelect=True)
 
-    Rhino.RhinoApp.RunScript("_Echo", echo=False)
+    # So that user can see prompt to pick rail.
+    #Rhino.RhinoApp.RunScript("_Echo", echo=False)
 
     script  = "_Sweep1" if bUseSweep1Dialog else "_-Sweep1"
     script += " _Pause"
     for gArc in gArcs:
         script += " _SelId {}".format(gArc)
-    script += " _EnterEnd"
+    if not bUseSweep1Dialog:
+        script += " _EnterEnd"
     #script += " _Style=Freeform _ShapeBlending=Local _Simplify=None _Enter"
     #script += " _Style=AlignWithSurface _Simplify=None _Enter"
     Rhino.RhinoApp.RunScript(script, echo=True)

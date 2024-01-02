@@ -53,12 +53,12 @@ class Opts:
 
     key = 'fRadius'; keys.append(key)
     values[key] = 1.0
-    riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
     key = 'fArcAngle'; keys.append(key)
     values[key] = 90.0
-    riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
+    riOpts[key] = ri.Custom.OptionDouble(values[key], sc.doc.ModelAngleToleranceDegrees, 360.0)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
     key = 'bUseFaceOfSelNakedEdge'; keys.append(key)
@@ -92,7 +92,7 @@ class Opts:
     key = 'fTol'; keys.append(key)
     values[key] = max((1.0*sc.doc.ModelAbsoluteTolerance, 1e-6))
     names[key] = 'TargetTol'
-    riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
     key = 'bEcho'; keys.append(key)

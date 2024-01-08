@@ -18,7 +18,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210515: Now by default, will try to rebuild both degrees 3 and 5 within tolerance.
         Now, supports sub-selected BrepFaces as input.
 220821-22: Refactored main V5&6 from V7 routines into separate functions.  Bug fixes.
-240106-07: Removed code that only works in V5 & V6.  Added more direction options.
+240106-08: Removed code that only works in V5 & V6.  Added more direction options.
         Modified simplification routine.  Refactored.
 """
 
@@ -41,6 +41,12 @@ class Opts():
     listValues = {}
     stickyKeys = {}
 
+
+    key = 'bPerFace'; keys.append(key)
+    values[key] = True
+    names[key] = 'ComputePer'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Brep', 'Face')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iPullDir'; keys.append(key)
     listValues[key] = (
@@ -67,7 +73,7 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fDraftAngle'; keys.append(key)
-    values[key] = 20.0
+    values[key] = 0.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -211,6 +217,7 @@ def getInput():
         go.ClearCommandOptions()
         idxs_Opt.clear()
 
+        addOption('bPerFace')
         addOption('iPullDir')
         addOption('fDraftAngle')
         addOption('fDistTol')
@@ -301,6 +308,13 @@ def _getDirectionVector(iPullDir):
     raise Exception("Error in getDirectionVector.")
 
 
+def _tangentAngleDifference(cA, cB):
+    tanDiffAtStart = rg.Vector3d.VectorAngle(cA.TangentAtStart, cB.TangentAtStart)
+    tanDiffAtEnd = rg.Vector3d.VectorAngle(cA.TangentAtEnd, cB.TangentAtEnd)
+    sEval='Rhino.RhinoMath.ToDegrees(tanDiffAtStart)'; print(sEval+':',eval(sEval))
+    sEval='Rhino.RhinoMath.ToDegrees(tanDiffAtEnd)'; print(sEval+':',eval(sEval))
+
+
 def _areEpsilonEqual(a, b, epsilon):
     # This is a relative comparison.
     delta = abs(a - b)
@@ -357,8 +371,8 @@ def is_NurbsCrv_internally_G2_continuous(nc, fAngleTol, bDebug=False):
         continuityType=rg.Continuity.G2_locus_continuous if nc.IsPeriodic else rg.Continuity.G2_continuous,
         t0=nc.Domain.T0,
         t1=nc.Domain.T1)
+    sEval='bFoundG2_discont'; print(sEval+':',eval(sEval))
     if bFoundG2_discont:
-        print(t)
         return False
 
     # Testing G1 separately to apply a custom tolerance.
@@ -375,33 +389,56 @@ def is_NurbsCrv_internally_G2_continuous(nc, fAngleTol, bDebug=False):
     return True
 
 
-def rebuild(nc, tolerance):
-    if bDebug: print("rebuild with tolerance:{}".format(tolerance))
+def rebuild_Bezier(nc_In, iDegs, tolerance, bDebug=False):
+    """
+    More strict tolerance used on degree 2 since that Bezier doesn't allow
+    tangency matching of both ends when they are not already aligned.
 
-    # First, try to rebuild as a Bezier.
+    Returns on success: rg.NurbsCurve, float(deviation)
+    Returns on fail: None
+    """
+    if bDebug: print("rebuild_Bezier with tolerance={}:".format(tolerance))
+
     for iDeg in iDegs:
         pointCount = iDeg + 1
-    
-        rebuilt = nc.Rebuild(
+
+        rebuilt = nc_In.Rebuild(
             pointCount=pointCount,
             degree=iDeg,
             preserveTangents=True)
-    
+
         bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-            nc, rebuilt, tolerance=0.1*tolerance)[:2]
-    
-        if bSuccess and fDistMax <= tolerance:
-            if bDebug:
-                print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
-                    tolerance, iDeg, pointCount))
-            return rebuilt
+            nc_In, rebuilt, tolerance=0.1*tolerance)[:2]
+
+        if bSuccess:
+            if iDeg==2:
+                if fDistMax < 1e-6:
+                    if bDebug:
+                        print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
+                            fDistMax, iDeg, pointCount))
+                        _tangentAngleDifference(nc_In, rebuilt)
+                    return rebuilt, fDistMax
+            elif fDistMax <= tolerance:
+                if bDebug:
+                    print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
+                        fDistMax, iDeg, pointCount))
+                    _tangentAngleDifference(nc_In, rebuilt)
+                return rebuilt, fDistMax
 
         if bDebug:
-            print("Not rebuilt within {}  Deg:{}  PtCt:{}".format(
-                tolerance, iDeg, pointCount))
+            print("Rebuild requires {}  Deg:{}  PtCt:{}".format(
+                fDistMax, iDeg, pointCount))
         rebuilt.Dispose()
 
-    iCt_MaxSpans = nc.SpanCount
+
+def rebuild_MultiSpan(nc_In, iDegs, tolerance, bDebug=False):
+    """
+    Will not bother rebuilding to degree-2 since multiple spans are divided by
+    G1-likely knots.
+    """
+    if bDebug: print("rebuild_MultiSpan with tolerance={}:".format(tolerance))
+
+    iCt_MaxSpans = nc_In.SpanCount
 
     #iCt_MaxCp = int(round(nc.GetLength() / (100.0 * sc.doc.ModelAbsoluteTolerance)))
     #if bDebug: sEval='iCt_MaxCp'; print(sEval+':',eval(sEval))
@@ -412,6 +449,7 @@ def rebuild(nc, tolerance):
 
     iDegs_ForRebuildSearch = []
     rebuilts_LastSuccess = [] # per iDeg.
+    fDevs = [] # per iDeg.
 
     for iDeg in iDegs:
 
@@ -419,19 +457,20 @@ def rebuild(nc, tolerance):
 
         pointCount = iDeg + iCt_MaxSpans
 
-        rebuilt = nc.Rebuild(
+        rebuilt = nc_In.Rebuild(
             pointCount=pointCount,
             degree=iDeg,
             preserveTangents=True)
 
         bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-            nc,
+            nc_In,
             rebuilt,
             tolerance=0.1*tolerance)[:2]
 
         if bSuccess and fDistMax <= tolerance:
             iDegs_ForRebuildSearch.append(iDeg)
             rebuilts_LastSuccess.append(rebuilt)
+            fDevs.append(fDistMax)
             if bDebug:
                 print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
                     tolerance, iDeg, pointCount))
@@ -441,31 +480,32 @@ def rebuild(nc, tolerance):
 
     if not iDegs_ForRebuildSearch:
         if bDebug:
-            print("Not rebuilt within {}  Degs:{}  PtCt:{}".format(
-                tolerance, iDegs, pointCount))
-            print(", so quit searching.")
+            print("Not rebuilt within {} at max. span ct. of {}, so quitting rebuilding.".format(
+                tolerance, iCt_MaxSpans))
         return
 
 
     if bDebug: print("Binary search.")
 
     for i, iDeg in enumerate(iDegs_ForRebuildSearch):
-                
+
+        iCt_MaxCp = iDeg + iCt_MaxSpans
+
         iCts_Cps_Tried = [iDeg + 1, iCt_MaxCp]
-    
+
         iCt_Cp_Try = (iCt_MaxCp + iDeg + 1) // 2
-    
+
         while iCt_Cp_Try not in iCts_Cps_Tried:
             sc.escape_test()
-    
-    
-            rebuilt = nc.Rebuild(
+
+
+            rebuilt = nc_In.Rebuild(
                 pointCount=iCt_Cp_Try,
                 degree=iDeg,
                 preserveTangents=True)
-    
+
             bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-                nc, rebuilt, tolerance=0.1*tolerance)[:2]
+                nc_In, rebuilt, tolerance=0.1*tolerance)[:2]
 
             if bDebug:
                 print("Degree:{}  CPtCt:{}  fDistMax:{}  WithinTol:{}".format(
@@ -478,10 +518,11 @@ def rebuild(nc, tolerance):
 
             iCts_Cps_Tried.append(iCt_Cp_Try)
             iCts_Cps_Tried.sort()
-    
+
             if bSuccess and fDistMax <= tolerance:
                 rebuilts_LastSuccess[i].Dispose()
                 rebuilts_LastSuccess[i] = rebuilt
+                fDevs[i] = fDistMax
                 # Bisect left.
                 iCt_Cp_Try = (
                     (iCt_Cp_Try +
@@ -494,34 +535,59 @@ def rebuild(nc, tolerance):
                         iCts_Cps_Tried[iCts_Cps_Tried.index(iCt_Cp_Try)+1]) // 2)
 
     if len(rebuilts_LastSuccess) == 1:
-        return rebuilts_LastSuccess[0]
+        _tangentAngleDifference(nc_In, rebuilts_LastSuccess[0])
+        return rebuilts_LastSuccess[0], fDevs[0]
 
-    iCts_Pts = [nc.Points.Count for nc in rebuilts_LastSuccess]
-    return rebuilts_LastSuccess[iCts_Pts.index(min(iCts_Pts))]
+    # TODO: Change the winner to that with minimum deviation instead of least CPs?
+    iCts_Pts = [nc_In.Points.Count for nc_In in rebuilts_LastSuccess]
+    idx_Winner = iCts_Pts.index(min(iCts_Pts))
+    _tangentAngleDifference(nc_In, rebuilts_LastSuccess[idx_Winner])
+    return rebuilts_LastSuccess[idx_Winner], fDevs[idx_Winner]
 
 
-def removeMultiKnots(nc_In, tolerance):
-    nc_WIP = nc_In.DuplicateCurve()
-    iCt_KnotsRemoved = nc_WIP.Knots.RemoveMultipleKnots(
-        minimumMultiplicity=nc_WIP.Degree-2,
-        maximumMultiplicity=nc_WIP.Degree+1,
-        tolerance=1.0)
-    if not iCt_KnotsRemoved:
+def removeMultiKnots(nc_In, iDegs, tolerance, bDebug):
+    """
+    Returns on success: rg.NurbsCurve, float(deviation)
+    Returns on fail: None
+
+
+    minimumMultiplicity: Remove knots with multiplicity > minimumKnotMultiplicity.
+    maximumMultiplicity: Remove knots with multiplicity < maximumKnotMultiplicity.
+    """
+
+    if bDebug: print("removeMultiKnots:".format(tolerance))
+
+    for iDeg in iDegs:
+        if iDeg < nc_In.Degree: continue
+
+        nc_WIP = nc_In.DuplicateCurve()
+
+        if iDeg > nc_In.Degree:
+            nc_WIP.IncreaseDegree(iDeg)
+
+        for minimumMultiplicity in range(1, nc_WIP.Degree-2+1):
+
+            iCt_KnotsRemoved = nc_WIP.Knots.RemoveMultipleKnots(
+                minimumMultiplicity=minimumMultiplicity,
+                maximumMultiplicity=nc_WIP.Degree+1,
+                tolerance=1.0)
+            if not iCt_KnotsRemoved:
+                print("RemoveMultipleKnots failed to remove any knots.")
+                continue # to next minimumMultiplicity.
+
+            bSuccess, fDev = rg.Curve.GetDistancesBetweenCurves(
+                nc_WIP, nc_In, tolerance=0.1*tolerance)[:2]
+            if not bSuccess:
+                continue # to next minimumMultiplicity.
+
+            sEval='fDev'; print(sEval+':',eval(sEval))
+            if fDev > tolerance:
+                continue # to next minimumMultiplicity.
+
+            _tangentAngleDifference(nc_In, nc_WIP)
+            return nc_WIP, fDev
+
         nc_WIP.Dispose()
-        return
-
-    bSuccess, fDev = rg.Curve.GetDistancesBetweenCurves(
-        nc_WIP, nc_In, tolerance=0.1*tolerance)[:2]
-    if not bSuccess:
-        nc_WIP.Dispose()
-        return
-
-    sEval='fDev'; print(sEval+':',eval(sEval))
-    if fDev > tolerance:
-        nc_WIP.Dispose()
-        return
-
-    return nc_WIP
 
 
 def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=None, bDebug=False):
@@ -532,7 +598,7 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=No
     Returns on success: rg.ArcCurve, rgLineCurve, or simplified rg.NurbsCurve.
     Returns on fail: None
     """
-    if bDebug: print("simplifyCurves with fTol_Rebuild:{}".format(fTol))
+    if bDebug: print("simplifyCurve with fTol={}:".format(fTol))
 
 
     rgCrvs_Out = []
@@ -583,19 +649,29 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=No
     if isUniformNurbsCurve(nc_In):
         return nc_In.Duplicate()
 
-    if is_NurbsCrv_internally_G2_continuous(nc_In, fAngleTol, bDebug):
-        rc = removeMultiKnots(nc_In, fTol)
-        if rc: return rc
-        return nc_In.Duplicate()
-
-    rebuilt = rebuild(
+    rc = rebuild_Bezier(
         nc_In,
-        tolerance=fTol)
+        iDegs=iDegs,
+        tolerance=fTol,
+        bDebug=bDebug)
 
-    if is_NurbsCrv_internally_G2_continuous(rebuilt, fAngleTol, bDebug):
-        return rebuilt
+    if rc is not None:
+        return rc[0]
 
-    rebuilt.Dispose()
+    if is_NurbsCrv_internally_G2_continuous(nc_In, fAngleTol, bDebug):
+        rc = removeMultiKnots(nc_In, iDegs, fTol, bDebug)
+        if rc: return rc[0]
+
+    rc = rebuild_MultiSpan(
+        nc_In,
+        iDegs=iDegs,
+        tolerance=fTol,
+        bDebug=bDebug)
+
+    if rc:
+        return rc[0]
+
+    print("TODO: Split at non-G2 knots.")
 
 
 def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
@@ -622,6 +698,7 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
+    bPerFace = getOpt('bPerFace')
     iPullDir = getOpt('iPullDir')
     fDraftAngle = getOpt('fDraftAngle')
     fDistTol = getOpt('fDistTol')
@@ -634,8 +711,6 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
     bDebug = getOpt('bDebug')
 
 
-    bPerFace = True
-    
     iDegs = []
     if bDeg2:
         iDegs.append(2)
@@ -650,58 +725,67 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
     def computeDraftCurvesWithSimplify(rgGeomForSilh, bArcOK):
         if bDebug: print("computeDraftCurvesWithSimplify:")
 
+        tolerance = 0.5 * fDistTol
 
         if bDebug:
             sEval='rgGeomForSilh'; print(sEval+':',eval(sEval))
             sEval='draftAngle'; print(sEval+':',eval(sEval))
             sEval='pullDirection'; print(sEval+':',eval(sEval))
-            sEval='fDistTol'; print(sEval+':',eval(sEval))
+            sEval='tolerance'; print(sEval+':',eval(sEval))
             sEval='angleToleranceRadians'; print(sEval+':',eval(sEval))
 
         silhouettes = rg.Silhouette.ComputeDraftCurve(
             geometry=rgGeomForSilh,
             draftAngle=draftAngle,
             pullDirection=pullDirection,
-            tolerance=0.5*fDistTol,
+            tolerance=tolerance,
             angleToleranceRadians=angleToleranceRadians)
 
         if not silhouettes:
             if bDebug: print("Silhouette.ComputeDraftCurve produced no results.")
             return
+        elif bDebug:
+            print("Silhouette.ComputeDraftCurve produced {} results.".format(
+                len(silhouettes)))
 
-        rgCs_Res_FullTol = []
+
+        rgCs_Res_FirstTol = []
         bNonG2KnotsFound = False
+        fLengths_Totals = [0.0]
         for silh in silhouettes:
             if silh.Curve is None: continue
             if silh.SilhouetteType != rg.SilhouetteType.DraftCurve:
                 if bDebug: sEval='silh.SilhouetteType'; print(sEval+':',eval(sEval))
             rgC_Silh = silh.Curve
+            fLengths_Totals[-1] += rgC_Silh.GetLength()
 
             rgC_Simplified = simplifyCurve(
                 rgC_Silh,
                 bArcOK=bArcOK,
                 iDegs=iDegs,
-                fTol=max((0.5*fDistTol, 1e-6)),
+                fTol=max((fDistTol-tolerance, 1e-6)),
                 fAngleTol=None,
                 bDebug=bDebug)
 
             if rgC_Simplified is None:
-                rgCs_Res_FullTol.append(rgC_Silh)
+                rgCs_Res_FirstTol.append(rgC_Silh)
                 bNonG2KnotsFound = True
             else:
-                rgCs_Res_FullTol.append(rgC_Simplified)
+                rgCs_Res_FirstTol.append(rgC_Simplified)
                 rgC_Silh.Dispose()
+
+        sEval="fLengths_Totals[-1]"; print(sEval+':',eval(sEval))
 
         if not bNonG2KnotsFound:
             if bDebug:
                 print("All curves are uniform at default tolerance, {}.".format(
                     fDistTol))
-            return rgCs_Res_FullTol
+            return rgCs_Res_FirstTol
 
 
         # ComputeDraftCurve to a different tolerance.
 
-        for pow in range(1, 5):
+        for pow in range(2, 4+1):
             fTol_forCDC_WIP = fDistTol / (2**pow)
             if bDebug: sEval='fTol_forCDC_WIP'; print(sEval+':',eval(sEval))
 
@@ -717,11 +801,13 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
                 return
 
             rgCs_Res_WIPTol = []
+            fLengths_Totals.append(0.0)
             for silh in silhouettes:
                 if silh.Curve is None: continue
                 if silh.SilhouetteType != rg.SilhouetteType.DraftCurve:
                     if bDebug: sEval='silh.SilhouetteType'; print(sEval+':',eval(sEval))
                 rgC_Silh = silh.Curve
+                fLengths_Totals[-1] += rgC_Silh.GetLength()
 
                 rgC_Simplified = simplifyCurve(
                     rgC_Silh,
@@ -739,11 +825,16 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
                 rgC_Silh.Dispose()
             else:
                 # Success.
-                for c in rgCs_Res_FullTol: c.Dispose()
+                sEval="fLengths_Totals[-1]"; print(sEval+':',eval(sEval))
+                for c in rgCs_Res_FirstTol: c.Dispose()
                 return rgCs_Res_WIPTol
 
+        sEval="fLengths_Totals[-1]"; print(sEval+':',eval(sEval))
+        sEval="min(fLengths_Totals)"; print(sEval+':',eval(sEval))
+        sEval="max(fLengths_Totals)"; print(sEval+':',eval(sEval))
+
         # Fail.
-        return rgCs_Res_FullTol
+        return rgCs_Res_FirstTol
 
 
     draftAngle = Rhino.RhinoMath.ToRadians(fDraftAngle)
@@ -776,19 +867,20 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
                 rgCs_Res.extend(rgCs_Res_perFace)
 
                 for c in rgCs_Res_perFace:
-                    pulled = c.PullToBrepFace(face=rgF, tolerance=1e-8)
+                    pulled = c.PullToBrepFace(face=rgF, tolerance=1e-7)
                     if len(pulled) != 1:
                         print("PullToBrepFace produced {} curves.".format(len(pulled)))
                     if len(pulled) == 1:
                         pulled = pulled[0]
                         bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-                            c, pulled, tolerance=1e-9)[:2]
-                            
-                        if bSuccess:
-                            if bDebug: sEval='fDistMax'; print(sEval+':',eval(sEval))
-                            
+                            c, pulled, tolerance=1e-7)[:2]
+                        if not bSuccess:
+                            raise Exception("GetDistancesBetweenCurves failed.")
+
+                        if bDebug: sEval='fDistMax'; print(sEval+':',eval(sEval))
+                        sEval='fDistMax'; print(sEval+':',eval(sEval))
                         #sc.doc.Objects.AddCurve(pulled)
-                            
+
                         pulled.Dispose()
 
     return rgCs_Res
@@ -801,6 +893,7 @@ def createSilhouetteCurves_NoSimplify(rgGeomForSilh, **kwargs):
     Parameters:
         rgGeomForSilh
         kwargs:
+            bPerFace
             iPullDir
             fDraftAngle
             fDistTol
@@ -815,15 +908,13 @@ def createSilhouetteCurves_NoSimplify(rgGeomForSilh, **kwargs):
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
+    bPerFace = getOpt('bPerFace')
     iPullDir = getOpt('iPullDir')
     fDraftAngle = getOpt('fDraftAngle')
     fDistTol = getOpt('fDistTol')
     fAngleTol = getOpt('fAngleTol')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
-
-
-    bPerFace = True
 
 
     draftAngleRadians = Rhino.RhinoMath.ToRadians(fDraftAngle)
@@ -895,6 +986,7 @@ def processDocObjects(rhBreps, **kwargs):
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
+    bPerFace = getOpt('bPerFace')
     iPullDir = getOpt('iPullDir')
     fDraftAngle = getOpt('fDraftAngle')
     fDistTol = getOpt('fDistTol')
@@ -946,6 +1038,7 @@ def processDocObjects(rhBreps, **kwargs):
         if bSimplifyRes:
             rgCs_Res = createSilhouetteCurves_Simplify(
                 rdObj_In,
+                bPerFace=bPerFace,
                 iPullDir=iPullDir,
                 fDraftAngle=fDraftAngle,
                 fDistTol=fDistTol,
@@ -956,6 +1049,7 @@ def processDocObjects(rhBreps, **kwargs):
         else:
             rgCs_Res = createSilhouetteCurves_NoSimplify(
                 rdObj_In,
+                bPerFace=bPerFace,
                 iPullDir=iPullDir,
                 fDraftAngle=fDraftAngle,
                 fDistTol=fDistTol,
@@ -992,6 +1086,7 @@ def main():
     objrefs = getInput()
     if objrefs is None: return
 
+    bPerFace = Opts.values['bPerFace']
     iPullDir = Opts.values['iPullDir']
     fDraftAngle = Opts.values['fDraftAngle']
     fDistTol = Opts.values['fDistTol']

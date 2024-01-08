@@ -16,7 +16,8 @@ this script converts all curves to NurbsCurves.
 See page 5 in http://graphics.stanford.edu/courses/cs348a-17-winter/ReaderNotes/handout27.pdf
 
 Per studies it was found that
-Rhino's default G2 discontinuity is where at least one of the following two items is true:
+Rhino's default G2 discontinuity (for Curve.GetNextDiscontinuity and/or _GCon)?
+is where at least one of the following two items is true:
     1. abs(k0-k1) / max(k0,k1) > 0.05, where k0 and k1 are magnitudes of the curvature vectors below and above the knot.
     2. The difference in curvature vectors is > 2.0 degrees.
 
@@ -43,6 +44,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 230505: Numeric option input is now more robust.
 230818: Now, options can be set when curves are preselected.
 240106: Bug fix.
+240107: Changed input for G2 check from radius delta to
+        curvature relative delta (per cent) and curvature vector delta.
 """
 
 import Rhino
@@ -72,16 +75,23 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], '1', '2')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fAngleTol_Deg'; keys.append(key)
+    key = 'fG1AngleTol_Deg'; keys.append(key)
     values[key] = sc.doc.ModelAngleToleranceDegrees
-    names[key] = 'AngleTol'
+    names[key] = 'G1AngleTol'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fRadiusTol'; keys.append(key)
-    values[key] = 10.0 * sc.doc.ModelAbsoluteTolerance
+    key = 'fG2AngleTol_Deg'; keys.append(key)
+    values[key] = 2.0
+    names[key] = 'G2AngleTol'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
-    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'fCrvDelta'; keys.append(key)
+    values[key] = 5.0
+    names[key] = 'CurvatureDeltaPercentage'
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bAddPts'; keys.append(key)
     values[key] = True
@@ -148,13 +158,18 @@ class Opts():
     @classmethod
     def setValue(cls, key, idxList=None):
 
-        if key == 'fAngleTol_Deg':
+        if key == 'fG1AngleTol_Deg':
             if cls.riOpts[key].CurrentValue < 0.0:
                 sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
                 return
 
-        if key == 'fRadiusTol':
+        if key == 'fG2AngleTol_Deg':
             if cls.riOpts[key].CurrentValue < 0.0:
+                sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+                return
+
+        if key == 'fCrvDelta':
+            if cls.riOpts[key].CurrentValue <= 0.0:
                 sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
                 return
 
@@ -213,9 +228,10 @@ def getInput():
         def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
         addOption('bG2_NotG1')
-        addOption('fAngleTol_Deg')
+        addOption('fG1AngleTol_Deg')
         if Opts.values['bG2_NotG1']:
-            addOption('fRadiusTol')
+            addOption('fG2AngleTol_Deg')
+            addOption('fCrvDelta')
         addOption('bAddPts')
         addOption('bSplitCurve')
         addOption('bEcho')
@@ -249,7 +265,7 @@ def getInput():
                 key = 'bG2_NotG1'
                 Opts.riOpts[key].CurrentValue = True
             else:
-                key = 'fAngleTol_Deg'
+                key = 'fG1AngleTol_Deg'
                 Opts.riOpts[key].CurrentValue = num
             Opts.setValue(key)
             continue
@@ -279,12 +295,12 @@ def createSpanCurvesEachSideOfParameter(rgCrv0, t):
     return crv_Below, crv_Above
 
 
-def getDiscontinuities_OLD(rgCrv0, sContinuity, fAngleTol_Deg, fRadiusTol=None, bDebug=False):
+def getDiscontinuities_OLD(rgCrv0, sContinuity, fG1AngleTol_Deg, fRadiusTol=None, bDebug=False):
     """
     Returns: list(float(parameters of discontinuities))
     """
 
-    fAngleTol_Rad = Rhino.RhinoMath.ToRadians(fAngleTol_Deg)
+    fAngleTol_Rad = Rhino.RhinoMath.ToRadians(fG1AngleTol_Deg)
     if bDebug: print("fAngleTol_Rad: {}".format(fAngleTol_Rad))
 
     t0 = rgCrv0.Domain.Min
@@ -416,12 +432,16 @@ def continuityVectorsAt(nc, t, side=rg.CurveEvaluationSide.Default):
     return vs[0], vTangency, vCurvature, vG3_Condition
 
 
-def getDiscontinuities(rgCrv_In, bG2_NotG1, fAngleTol_Deg, fRadiusTol, bDebug=False):
+def getDiscontinuities(rgCrv_In, bG2_NotG1, fG1AngleTol_Deg, fG2AngleTol_Deg, fCrvDelta, bDebug=False):
     """
+    Parameters:
+        fCrvDelta: Percentage of relative difference in curvature: 100.0 * abs(k0-k1)/max(k0, k1)
     """
 
-    fAngleTol_Rad = Rhino.RhinoMath.ToRadians(fAngleTol_Deg)
-    if bDebug: print("fAngleTol_Rad: {}".format(fAngleTol_Rad))
+    fG1AngleTol_Rad = Rhino.RhinoMath.ToRadians(fG1AngleTol_Deg)
+    if bDebug: sEval="fG1AngleTol_Rad"; print(sEval+':',eval(sEval))
+    fG2AngleTol_Rad = Rhino.RhinoMath.ToRadians(fG2AngleTol_Deg)
+    if bDebug: sEval="fG2AngleTol_Rad"; print(sEval+':',eval(sEval))
 
     nc = rgCrv_In.ToNurbsCurve()
 
@@ -505,7 +525,7 @@ def getDiscontinuities(rgCrv_In, bG2_NotG1, fAngleTol_Deg, fRadiusTol, bDebug=Fa
         if m > nc.Degree - 1:
 
             iParallel = vG1_Below.IsParallelTo(
-                other=vG1_Above, angleTolerance=fAngleTol_Rad)
+                other=vG1_Above, angleTolerance=fG1AngleTol_Rad)
 
             fTanDelta_Degrees = Rhino.RhinoMath.ToDegrees(
                 rg.Vector3d.VectorAngle(vG1_Below, vG1_Above))
@@ -542,7 +562,7 @@ def getDiscontinuities(rgCrv_In, bG2_NotG1, fAngleTol_Deg, fRadiusTol, bDebug=Fa
             else:
 
                 iParallel = vG2_Below.IsParallelTo(
-                    other=vG2_Above, angleTolerance=fAngleTol_Rad)
+                    other=vG2_Above, angleTolerance=fG2AngleTol_Rad)
 
                 if bDebug: sEval='iParallel'; print("{}: {}".format(sEval, eval(sEval)))
 
@@ -562,22 +582,33 @@ def getDiscontinuities(rgCrv_In, bG2_NotG1, fAngleTol_Deg, fRadiusTol, bDebug=Fa
                     kappa_Above = vG2_Above.Length
                     ratio_of_curvature = (abs(kappa_Below-kappa_Above) /
                                         max(kappa_Below, kappa_Above))
-                    if bDebug:
-                        print("Ratio of curvature: {:.2f} % ".format(100.0*ratio_of_curvature))
-                    delta_radius = abs(1.0/kappa_Below-1.0/kappa_Above)
-                    #if ratio_of_curvature > 0.02:
-                    if delta_radius > fRadiusTol:
-                        #print("Not G2 at {} per relative difference of curvature vector magnitudes being {:.2f} %.  (2% is the tolerance.)".format(
-                        #    nc.Knots[iK],
-                        #    100.0*ratio_of_curvature))
+
+                    if 100.0*ratio_of_curvature > fCrvDelta:
                         if bDebug:
-                            print("{:.{}f} radius difference.".format(
-                                delta_radius, sc.doc.ModelDistanceDisplayPrecision))
+                            print("Ratio of curvature: {:.2f} % ".format(
+                                100.0*ratio_of_curvature))
                         ts_discontinuities.append(nc.Knots[iK])
                         iK += m
                         continue
                     else:
                         if bDebug: print("Are G2.")
+
+
+                    # Previous way of comparing curvature magnitudes.
+                    #delta_radius = abs(1.0/kappa_Below-1.0/kappa_Above)
+                    ##if ratio_of_curvature > 0.02:
+                    #if delta_radius > fRadiusTol:
+                    #    #print("Not G2 at {} per relative difference of curvature vector magnitudes being {:.2f} %.  (2% is the tolerance.)".format(
+                    #    #    nc.Knots[iK],
+                    #    #    100.0*ratio_of_curvature))
+                    #    if bDebug:
+                    #        print("{:.{}f} radius difference.".format(
+                    #            delta_radius, sc.doc.ModelDistanceDisplayPrecision))
+                    #    ts_discontinuities.append(nc.Knots[iK])
+                    #    iK += m
+                    #    continue
+                    #else:
+                    #    if bDebug: print("Are G2.")
 
                     #sc.doc.Objects.AddLine(rg.Line(rg.Point3d(vG0_Below), vG2_Below))
                     #sc.doc.Objects.AddLine(rg.Line(rg.Point3d(vG0_Above), vG2_Above))
@@ -700,16 +731,26 @@ def getDiscontinuities(rgCrv_In, bG2_NotG1, fAngleTol_Deg, fRadiusTol, bDebug=Fa
 
 
 def processCurves(curvesAndEdges0, **kwargs):
-    #, sContinuity=None, fAngleTol_Deg=None, fRadiusTol=None, bG2=None, bC2=None, bAddPts=None, bSplitCurve=None, bEcho=None, bDebug=None):
     """
+    Parameters:
+        bG2_NotG1
+        fG1AngleTol_Deg
+        fG2AngleTol_Deg
+        fCrvDelta
+        bAddPts
+        bSplitCurve
+        bEcho
+        bDebug
+    Returns:
     """
 
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
     bG2_NotG1 = getOpt('bG2_NotG1')
-    fAngleTol_Deg = getOpt('fAngleTol_Deg')
-    fRadiusTol = getOpt('fRadiusTol')
+    fG1AngleTol_Deg = getOpt('fG1AngleTol_Deg')
+    fG2AngleTol_Deg = getOpt('fG2AngleTol_Deg')
+    fCrvDelta = getOpt('fCrvDelta')
     bAddPts = getOpt('bAddPts')
     bSplitCurve = getOpt('bSplitCurve')
     bEcho = getOpt('bEcho')
@@ -743,8 +784,9 @@ def processCurves(curvesAndEdges0, **kwargs):
         ts_discontinuities = getDiscontinuities(
                 rgCrv_In=rgCrv_In,
                 bG2_NotG1=bG2_NotG1,
-                fAngleTol_Deg=fAngleTol_Deg,
-                fRadiusTol=fRadiusTol,
+                fG1AngleTol_Deg=fG1AngleTol_Deg,
+                fG2AngleTol_Deg=fG2AngleTol_Deg,
+                fCrvDelta=fCrvDelta,
                 bDebug=bDebug)
 
         if ts_discontinuities:
@@ -824,8 +866,9 @@ def main():
     if objrefs is None: return
 
     bG2_NotG1 = Opts.values['bG2_NotG1']
-    fAngleTol_Deg = Opts.values['fAngleTol_Deg']
-    fRadiusTol = Opts.values['fRadiusTol']
+    fG1AngleTol_Deg = Opts.values['fG1AngleTol_Deg']
+    fG2AngleTol_Deg = Opts.values['fG2AngleTol_Deg']
+    fCrvDelta = Opts.values['fCrvDelta']
     bAddPts = Opts.values['bAddPts']
     bSplitCurve = Opts.values['bSplitCurve']
     bEcho = Opts.values['bEcho']
@@ -836,8 +879,9 @@ def main():
     gCrvs_with_discont = processCurves(
         curvesAndEdges0=objrefs,
         bG2_NotG1=bG2_NotG1,
-        fAngleTol_Deg=fAngleTol_Deg,
-        fRadiusTol=fRadiusTol,
+        fG1AngleTol_Deg=fG1AngleTol_Deg,
+        fG2AngleTol_Deg=fG2AngleTol_Deg,
+        fCrvDelta=fCrvDelta,
         bAddPts=bAddPts,
         bSplitCurve=bSplitCurve,
         bEcho=bEcho,

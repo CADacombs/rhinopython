@@ -18,7 +18,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210515: Now by default, will try to rebuild both degrees 3 and 5 within tolerance.
         Now, supports sub-selected BrepFaces as input.
 220821-22: Refactored main V5&6 from V7 routines into separate functions.  Bug fixes.
-240106: Removed code that only works in V5 & V6.  Added more direction options.
+240106-07: Removed code that only works in V5 & V6.  Added more direction options.
         Modified simplification routine.  Refactored.
 """
 
@@ -29,7 +29,7 @@ import Rhino.Input as ri
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
-import spb_Crv_discontinuities
+import math
 
 
 class Opts():
@@ -268,7 +268,7 @@ def getInput():
                 break
 
 
-def _gsetDirectionVector(iPullDir):
+def _getDirectionVector(iPullDir):
     sDirs = Opts.listValues['iPullDir']
     if sDirs[iPullDir] == 'CPlanePosX':
         return sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane().XAxis
@@ -346,23 +346,185 @@ def isUniformNurbsCurve(nc):
     return True
 
 
-def isNurbsCrvWithNonG2Knots(nc, fAngleTol, bDebug=False):
-    if not isinstance(nc, rg.NurbsCurve): return
-    if isUniformNurbsCurve(nc): return False
+def is_NurbsCrv_internally_G2_continuous(nc, fAngleTol, bDebug=False):
+    if not isinstance(nc, rg.NurbsCurve):
+        return
 
-    ts_Discont = spb_Crv_discontinuities.getDiscontinuities(
-        nc,
-        bG2_NotG1=True,
-        fAngleTol_Deg=fAngleTol,
-        fRadiusTol=sc.doc.ModelAbsoluteTolerance,
-        bDebug=bDebug)
+    if nc.Degree >= 3 and isUniformNurbsCurve(nc):
+        return True
 
-    if bDebug: sEval="ts_Discont"; print(sEval+':',eval(sEval))
+    bFoundG2_discont, t = nc.GetNextDiscontinuity(
+        continuityType=rg.Continuity.G2_locus_continuous if nc.IsPeriodic else rg.Continuity.G2_continuous,
+        t0=nc.Domain.T0,
+        t1=nc.Domain.T1)
+    if bFoundG2_discont:
+        print(t)
+        return False
 
-    return bool(ts_Discont)
+    # Testing G1 separately to apply a custom tolerance.
+    bFoundG1_discont, t = nc.GetNextDiscontinuity(
+        continuityType=rg.Continuity.G1_locus_continuous if nc.IsPeriodic else rg.Continuity.G1_continuous,
+        t0=nc.Domain.T0,
+        t1=nc.Domain.T1,
+        cosAngleTolerance=math.cos(sc.doc.ModelAngleToleranceRadians),
+        curvatureTolerance=Rhino.RhinoMath.SqrtEpsilon)
+    if bFoundG1_discont:
+        print(t)
+        return False
+
+    return True
 
 
-def _simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=None, bDebug=False):
+def rebuild(nc, tolerance):
+    if bDebug: print("rebuild with tolerance:{}".format(tolerance))
+
+    # First, try to rebuild as a Bezier.
+    for iDeg in iDegs:
+        pointCount = iDeg + 1
+    
+        rebuilt = nc.Rebuild(
+            pointCount=pointCount,
+            degree=iDeg,
+            preserveTangents=True)
+    
+        bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
+            nc, rebuilt, tolerance=0.1*tolerance)[:2]
+    
+        if bSuccess and fDistMax <= tolerance:
+            if bDebug:
+                print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
+                    tolerance, iDeg, pointCount))
+            return rebuilt
+
+        if bDebug:
+            print("Not rebuilt within {}  Deg:{}  PtCt:{}".format(
+                tolerance, iDeg, pointCount))
+        rebuilt.Dispose()
+
+    iCt_MaxSpans = nc.SpanCount
+
+    #iCt_MaxCp = int(round(nc.GetLength() / (100.0 * sc.doc.ModelAbsoluteTolerance)))
+    #if bDebug: sEval='iCt_MaxCp'; print(sEval+':',eval(sEval))
+
+
+    # Rebuild at maximum control point count.
+    #pointCount = iCt_MaxCp
+
+    iDegs_ForRebuildSearch = []
+    rebuilts_LastSuccess = [] # per iDeg.
+
+    for iDeg in iDegs:
+
+        if iDeg < 3: continue
+
+        pointCount = iDeg + iCt_MaxSpans
+
+        rebuilt = nc.Rebuild(
+            pointCount=pointCount,
+            degree=iDeg,
+            preserveTangents=True)
+
+        bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
+            nc,
+            rebuilt,
+            tolerance=0.1*tolerance)[:2]
+
+        if bSuccess and fDistMax <= tolerance:
+            iDegs_ForRebuildSearch.append(iDeg)
+            rebuilts_LastSuccess.append(rebuilt)
+            if bDebug:
+                print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
+                    tolerance, iDeg, pointCount))
+        else:
+            rebuilt.Dispose()
+
+
+    if not iDegs_ForRebuildSearch:
+        if bDebug:
+            print("Not rebuilt within {}  Degs:{}  PtCt:{}".format(
+                tolerance, iDegs, pointCount))
+            print(", so quit searching.")
+        return
+
+
+    if bDebug: print("Binary search.")
+
+    for i, iDeg in enumerate(iDegs_ForRebuildSearch):
+                
+        iCts_Cps_Tried = [iDeg + 1, iCt_MaxCp]
+    
+        iCt_Cp_Try = (iCt_MaxCp + iDeg + 1) // 2
+    
+        while iCt_Cp_Try not in iCts_Cps_Tried:
+            sc.escape_test()
+    
+    
+            rebuilt = nc.Rebuild(
+                pointCount=iCt_Cp_Try,
+                degree=iDeg,
+                preserveTangents=True)
+    
+            bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
+                nc, rebuilt, tolerance=0.1*tolerance)[:2]
+
+            if bDebug:
+                print("Degree:{}  CPtCt:{}  fDistMax:{}  WithinTol:{}".format(
+                    iDeg,
+                    iCt_Cp_Try,
+                    fDistMax if bSuccess else bSuccess,
+                    fDistMax <= tolerance if bSuccess else bSuccess
+                    ))
+
+
+            iCts_Cps_Tried.append(iCt_Cp_Try)
+            iCts_Cps_Tried.sort()
+    
+            if bSuccess and fDistMax <= tolerance:
+                rebuilts_LastSuccess[i].Dispose()
+                rebuilts_LastSuccess[i] = rebuilt
+                # Bisect left.
+                iCt_Cp_Try = (
+                    (iCt_Cp_Try +
+                        iCts_Cps_Tried[iCts_Cps_Tried.index(iCt_Cp_Try)-1]) // 2)
+            else:
+                rebuilt.Dispose()
+                # Bisect right.
+                iCt_Cp_Try = (
+                    (iCt_Cp_Try +
+                        iCts_Cps_Tried[iCts_Cps_Tried.index(iCt_Cp_Try)+1]) // 2)
+
+    if len(rebuilts_LastSuccess) == 1:
+        return rebuilts_LastSuccess[0]
+
+    iCts_Pts = [nc.Points.Count for nc in rebuilts_LastSuccess]
+    return rebuilts_LastSuccess[iCts_Pts.index(min(iCts_Pts))]
+
+
+def removeMultiKnots(nc_In, tolerance):
+    nc_WIP = nc_In.DuplicateCurve()
+    iCt_KnotsRemoved = nc_WIP.Knots.RemoveMultipleKnots(
+        minimumMultiplicity=nc_WIP.Degree-2,
+        maximumMultiplicity=nc_WIP.Degree+1,
+        tolerance=1.0)
+    if not iCt_KnotsRemoved:
+        nc_WIP.Dispose()
+        return
+
+    bSuccess, fDev = rg.Curve.GetDistancesBetweenCurves(
+        nc_WIP, nc_In, tolerance=0.1*tolerance)[:2]
+    if not bSuccess:
+        nc_WIP.Dispose()
+        return
+
+    sEval='fDev'; print(sEval+':',eval(sEval))
+    if fDev > tolerance:
+        nc_WIP.Dispose()
+        return
+
+    return nc_WIP
+
+
+def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=None, bDebug=False):
     """
     Simplify includes:
         Uniform knot vectors.
@@ -371,127 +533,6 @@ def _simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=N
     Returns on fail: None
     """
     if bDebug: print("simplifyCurves with fTol_Rebuild:{}".format(fTol))
-
-
-    def rebuild(nc, tolerance):
-        if bDebug: print("rebuild with tolerance:{}".format(tolerance))
-
-        # First, try to rebuild as a Bezier.
-        for iDeg in iDegs:
-            iCt_Pt = iDeg + 1
-    
-            rebuilt = nc.Rebuild(
-                pointCount=iCt_Pt,
-                degree=iDeg,
-                preserveTangents=True)
-    
-            bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-                nc, rebuilt, tolerance=0.1*tolerance)[:2]
-    
-            if bSuccess and fDistMax <= tolerance:
-                if bDebug:
-                    print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
-                        tolerance, iDeg, iCt_Pt))
-                return rebuilt
-
-            if bDebug:
-                print("Not rebuilt within {}  Deg:{}  PtCt:{}".format(
-                    tolerance, iDeg, iCt_Pt))
-            rebuilt.Dispose()
-
-
-        iCt_MaxCp = int(round(nc.GetLength() / (100.0 * sc.doc.ModelAbsoluteTolerance)))
-        if bDebug: sEval='iCt_MaxCp'; print(sEval+':',eval(sEval))
-        #iCt_MaxSpans = int(round(nc.GetLength() / (100.0 * sc.doc.ModelAbsoluteTolerance)))
-
-
-        # Rebuild at maximum control point count.
-        iCt_Pt = iCt_MaxCp
-
-        iDegs_ForRebuildSearch = []
-        rebuilts_LastSuccess = [] # per iDeg.
-
-        for iDeg in iDegs:
-
-            rebuilt = nc.Rebuild(
-                pointCount=iCt_Pt,
-                degree=iDeg,
-                preserveTangents=True)
-
-            bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-                nc,
-                rebuilt,
-                tolerance=0.1*tolerance)[:2]
-
-            if bSuccess and fDistMax <= tolerance:
-                iDegs_ForRebuildSearch.append(iDeg)
-                rebuilts_LastSuccess.append(rebuilt)
-                if bDebug:
-                    print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
-                        tolerance, iDeg, iCt_Pt))
-            else:
-                rebuilt.Dispose()
-
-
-        if not iDegs_ForRebuildSearch:
-            if bDebug:
-                print("Not rebuilt within {}  Degs:{}  PtCt:{}".format(
-                    tolerance, iDegs, iCt_Pt))
-                print(", so quit searching.")
-            return
-
-
-        if bDebug: print("Binary search.")
-
-        for i, iDeg in enumerate(iDegs_ForRebuildSearch):
-                
-            iCts_Cps_Tried = [iDeg + 1, iCt_MaxCp]
-    
-            iCt_Cp_Try = (iCt_MaxCp + iDeg + 1) // 2
-    
-            while iCt_Cp_Try not in iCts_Cps_Tried:
-                sc.escape_test()
-    
-    
-                rebuilt = nc.Rebuild(
-                    pointCount=iCt_Cp_Try,
-                    degree=iDeg,
-                    preserveTangents=True)
-    
-                bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-                    nc, rebuilt, tolerance=0.1*tolerance)[:2]
-
-                if bDebug:
-                    print("Degree:{}  CPtCt:{}  fDistMax:{}  WithinTol:{}".format(
-                        iDeg,
-                        iCt_Cp_Try,
-                        fDistMax if bSuccess else bSuccess,
-                        fDistMax <= tolerance if bSuccess else bSuccess
-                        ))
-
-
-                iCts_Cps_Tried.append(iCt_Cp_Try)
-                iCts_Cps_Tried.sort()
-    
-                if bSuccess and fDistMax <= tolerance:
-                    rebuilts_LastSuccess[i].Dispose()
-                    rebuilts_LastSuccess[i] = rebuilt
-                    # Bisect left.
-                    iCt_Cp_Try = (
-                        (iCt_Cp_Try +
-                            iCts_Cps_Tried[iCts_Cps_Tried.index(iCt_Cp_Try)-1]) // 2)
-                else:
-                    rebuilt.Dispose()
-                    # Bisect right.
-                    iCt_Cp_Try = (
-                        (iCt_Cp_Try +
-                            iCts_Cps_Tried[iCts_Cps_Tried.index(iCt_Cp_Try)+1]) // 2)
-
-        if len(rebuilts_LastSuccess) == 1:
-            return rebuilts_LastSuccess[0]
-
-        iCts_Pts = [nc.Points.Count for nc in rebuilts_LastSuccess]
-        return rebuilts_LastSuccess[iCts_Pts.index(min(iCts_Pts))]
 
 
     rgCrvs_Out = []
@@ -542,14 +583,16 @@ def _simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=N
     if isUniformNurbsCurve(nc_In):
         return nc_In.Duplicate()
 
-    if not isNurbsCrvWithNonG2Knots(nc_In, fAngleTol, bDebug):
+    if is_NurbsCrv_internally_G2_continuous(nc_In, fAngleTol, bDebug):
+        rc = removeMultiKnots(nc_In, fTol)
+        if rc: return rc
         return nc_In.Duplicate()
 
     rebuilt = rebuild(
         nc_In,
         tolerance=fTol)
 
-    if not isNurbsCrvWithNonG2Knots(rebuilt, fAngleTol, bDebug):
+    if is_NurbsCrv_internally_G2_continuous(rebuilt, fAngleTol, bDebug):
         return rebuilt
 
     rebuilt.Dispose()
@@ -619,7 +662,7 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
             geometry=rgGeomForSilh,
             draftAngle=draftAngle,
             pullDirection=pullDirection,
-            tolerance=fDistTol,
+            tolerance=0.5*fDistTol,
             angleToleranceRadians=angleToleranceRadians)
 
         if not silhouettes:
@@ -634,11 +677,11 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
                 if bDebug: sEval='silh.SilhouetteType'; print(sEval+':',eval(sEval))
             rgC_Silh = silh.Curve
 
-            rgC_Simplified = _simplifyCurve(
+            rgC_Simplified = simplifyCurve(
                 rgC_Silh,
                 bArcOK=bArcOK,
                 iDegs=iDegs,
-                fTol=max((0.01*fDistTol, 1e-6)),
+                fTol=max((0.5*fDistTol, 1e-6)),
                 fAngleTol=None,
                 bDebug=bDebug)
 
@@ -680,7 +723,7 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
                     if bDebug: sEval='silh.SilhouetteType'; print(sEval+':',eval(sEval))
                 rgC_Silh = silh.Curve
 
-                rgC_Simplified = _simplifyCurve(
+                rgC_Simplified = simplifyCurve(
                     rgC_Silh,
                     bArcOK=bArcOK,
                     iDegs=iDegs,
@@ -704,7 +747,7 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
 
 
     draftAngle = Rhino.RhinoMath.ToRadians(fDraftAngle)
-    pullDirection = _gsetDirectionVector(Opts.values['iPullDir'])
+    pullDirection = _getDirectionVector(Opts.values['iPullDir'])
     angleToleranceRadians = Rhino.RhinoMath.ToRadians(fAngleTol)
 
 
@@ -739,7 +782,7 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
                     if len(pulled) == 1:
                         pulled = pulled[0]
                         bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-                            c, pulled, tolerance=0.001*sc.doc.ModelAbsoluteTolerance)[:2]
+                            c, pulled, tolerance=1e-9)[:2]
                             
                         if bSuccess:
                             if bDebug: sEval='fDistMax'; print(sEval+':',eval(sEval))
@@ -784,7 +827,7 @@ def createSilhouetteCurves_NoSimplify(rgGeomForSilh, **kwargs):
 
 
     draftAngleRadians = Rhino.RhinoMath.ToRadians(fDraftAngle)
-    pullDirection = _gsetDirectionVector(Opts.values['iPullDir'])
+    pullDirection = _getDirectionVector(Opts.values['iPullDir'])
     angleToleranceRadians = Rhino.RhinoMath.ToRadians(fAngleTol)
 
 

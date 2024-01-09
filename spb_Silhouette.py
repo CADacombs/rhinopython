@@ -11,20 +11,20 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 """
 171019-21: Created.
 200509: Updated for V7 using newly added Silhouette.ComputeDraftCurve method.
-200511,13: Added routine that simplifies curves.  Added some options.
-200805: Modified pullDirection sign to match change in ComputeDraftCurve in Rhino 7.0.20217.3575, 8/4/2020.  Bug fix in printed output.
-210223: Added bArcOK.  Bug fixes.
-210315-17: Modified to check accuracy of output curves against input tolerances.  Added bDeg5.
+200511,13: Added routine that simplifies curves. Added some options.
+200805: Modified pullDirection sign to match change in ComputeDraftCurve in Rhino 7.0.20217.3575, 8/4/2020. Bug fix in printed output.
+210223: Added bArcOK. Bug fixes.
+210315-17: Modified to check accuracy of output curves against input tolerances. Added bDeg5.
 210515: Now by default, will try to rebuild both degrees 3 and 5 within tolerance.
         Now, supports sub-selected BrepFaces as input.
-220821-22: Refactored main V5&6 from V7 routines into separate functions.  Bug fixes.
-240106-08: Removed code that only works in V5 & V6.  Added more direction options.
-        Modified simplification routine.  Refactored.
+220821-22: Refactored main V5&6 from V7 routines into separate functions. Bug fixes.
+240106-09: Removed code that only works in V5 & V6. Added more direction options.
+        Modified simplification routine. Refactored.
+        Added option and routine to split output curves at G2 discontinuities.
 
 TODO:
     Investigate computed curves that are more than input tolerance off of their faces. Replace with new pulled curve?
-    Similar to the no-simplify routines, split simplify function into draft and no-draft functions.
-    Add non-G2 splits to simplification functions.
+        Check for self-intersections? Intersect.Intersection.CurveSelf
 """
 
 import Rhino
@@ -71,9 +71,15 @@ class Opts():
     values[key] = sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane().ZAxis
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fDraftAngle'; keys.append(key)
+    key = 'fDraftAngle_Deg'; keys.append(key)
     values[key] = 0.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bUseDraftComputeFor0'; keys.append(key)
+    values[key] = False
+    names[key] = 'ComputeMethod'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'NoDraft', 'Draft')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fDistTol'; keys.append(key)
@@ -82,7 +88,7 @@ class Opts():
         values[key], setLowerLimit=True, limit=1e-6)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'fAngleTol'; keys.append(key)
+    key = 'fAngle_Tol_Deg'; keys.append(key)
     values[key] = 0.5 * sc.doc.ModelAngleToleranceDegrees
     riOpts[key] = ri.Custom.OptionDouble(
         values[key], setLowerLimit=True, limit=1e-6)
@@ -111,6 +117,11 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bDeg5'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bSplitNonG2'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
@@ -170,7 +181,7 @@ class Opts():
     @classmethod
     def setValue(cls, key, idxList=None):
 
-        if key == 'fDraftAngle':
+        if key == 'fDraftAngle_Deg':
             cls.values[key] = cls.riOpts[key].CurrentValue
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
             return
@@ -217,15 +228,18 @@ def getInput():
         idxs_Opt.clear()
 
         addOption('iPullDir')
-        addOption('fDraftAngle')
+        addOption('fDraftAngle_Deg')
+        if Opts.values['fDraftAngle_Deg'] == 0.0:
+            addOption('bUseDraftComputeFor0')
         addOption('fDistTol')
-        addOption('fAngleTol')
+        addOption('fAngle_Tol_Deg')
         addOption('bSimplifyRes')
         if Opts.values['bSimplifyRes']:
             addOption('bArcOK')
             addOption('bDeg2')
             addOption('bDeg3')
             addOption('bDeg5')
+        addOption('bSplitNonG2')
         addOption('bEcho')
         addOption('bDebug')
 
@@ -241,7 +255,7 @@ def getInput():
             return objrefs
 
         if res == ri.GetResult.Number:
-            key = 'fDraftAngle'
+            key = 'fDraftAngle_Deg'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
@@ -271,6 +285,18 @@ def getInput():
             if go.Option().Index == idxs_Opt[key]:
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
+
+
+def formatDistance(fDistance, iPrecision=15):
+    if fDistance is None: return "(No deviation provided)"
+    
+    if fDistance < 0.01:
+        return "{:.{}e}".format(fDistance, iPrecision)
+    
+    if fDistance < 0.1:
+        return "{:.{}g}".format(fDistance, iPrecision+1)
+    
+    return "{:.{}g}".format(fDistance, iPrecision)
 
 
 def _getDirectionVector(iPullDir):
@@ -359,7 +385,7 @@ def isUniformNurbsCurve(nc):
     return True
 
 
-def is_NurbsCrv_internally_G2_continuous(nc, fAngleTol, bDebug=False):
+def is_NurbsCrv_internally_G2_continuous(nc, fAngle_Tol_Deg, bDebug=False):
     if not isinstance(nc, rg.NurbsCurve):
         raise ValueError("{} passed to is_NurbsCrv_internally_G2_continuous.".format(nc))
 
@@ -395,7 +421,7 @@ def split_NurbsCrv_at_G2_discontinuities(nc_In, bDebug=False):
 
     cosAngleTolerance = math.cos(sc.doc.ModelAngleToleranceRadians)
 
-    t0 = nc_In.Domain.T0 # Start parameter of check.  Is itself ignored.
+    t0 = nc_In.Domain.T0 # Start parameter of check. Is itself ignored.
 
     ts_Found = []
 
@@ -422,12 +448,19 @@ def split_NurbsCrv_at_G2_discontinuities(nc_In, bDebug=False):
     split = nc_In.Split(ts_Found)
 
     if len(split) < 2:
-        raise Exception("Split produced {} curves. Should have been {}.".format(len(ts_Found)))
+        s = "Split produced {} curves. Should have been {}.".format(
+            len(split), len(ts_Found)+1)
+        print(s)
+        sc.doc.Objects.AddCurve(nc_In)
+        [sc.doc.Objects.AddCurve(c) for c in split]
+
+        raise Exception(s)
 
     joined = rg.Curve.JoinCurves(split)
 
     if len(joined) != 1:
-        raise Exception("JoinCurves produced {} curves. Should have been 1.".format(len(joined)))
+        raise Exception("JoinCurves produced {} curves. Should have been 1.".format(
+            len(joined)))
 
     for c in split: c.Dispose()
 
@@ -657,7 +690,7 @@ def removeMultiKnots(nc_In, iDegs, tolerance, bDebug):
         nc_WIP.Dispose()
 
 
-def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=None, bDebug=False):
+def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_Deg=None, bDebug=False):
     """
     Simplify includes:
         Uniform knot vectors.
@@ -675,8 +708,8 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=No
     if fTol is None:
         fTol = fTol_Min
 
-    if fAngleTol is None:
-        fAngleTol = sc.doc.ModelAngleToleranceDegrees
+    if fAngle_Tol_Deg is None:
+        fAngle_Tol_Deg = sc.doc.ModelAngleToleranceDegrees
 
     fTol_MaxRad = 1e3
 
@@ -685,7 +718,7 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=No
         raise Exception("Input is {}.".format(rgCrv_In.GetType().Name))
 
     if isinstance(rgCrv_In, (rg.ArcCurve, rg.LineCurve)):
-        print("Curve is already a {}.  How did that happen?".format(rgCrv_In.GetType().Name))
+        print("Curve is already a {}. How did that happen?".format(rgCrv_In.GetType().Name))
         return rgCrv_In.DuplicateCurve()
 
     nc_In = rgCrv_In
@@ -725,7 +758,7 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=No
     if rc is not None:
         return rc[0]
 
-    if is_NurbsCrv_internally_G2_continuous(nc_In, fAngleTol, bDebug):
+    if is_NurbsCrv_internally_G2_continuous(nc_In, fAngle_Tol_Deg, bDebug):
         rc = removeMultiKnots(nc_In, iDegs, fTol, bDebug)
         if rc: return rc[0]
 
@@ -741,51 +774,84 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngleTol=No
     print("TODO: Split at non-G2 knots.")
 
 
-def computeMaxDistFromFace(rgFace, rgC_on_face, tolerance):
-    tolerance=1e-7
-    pulled = rgC_on_face.PullToBrepFace(face=rgFace, tolerance=tolerance)
+def create_hi_def_pull_to_face(rgFace, rgC_on_face, tolerance_forRef=1e-7, bDebug=False):
+
+    pulled = rgC_on_face.PullToBrepFace(face=rgFace, tolerance=tolerance_forRef)
     if len(pulled) == 1:
-        pulled = pulled[0]
+        return pulled[0]
     else:
-        pullback = rgFace.Pullback(rgC_on_face, tolerance=tolerance)
+        pullback = rgFace.Pullback(rgC_on_face, tolerance=tolerance_forRef)
         sEval='pullback.GetType().Name'; print(sEval+':',eval(sEval))
-        print(pullback.GetType().Name)
-        pushup = rgFace.Pushup(pullback, tolerance=tolerance)
+        pushup = rgFace.Pushup(pullback, tolerance=tolerance_forRef)
         sEval='pushup.GetType().Name'; print(sEval+':',eval(sEval))
-        pulled = pushup
 #        sc.doc.Objects.AddCurve(rgC_on_face); sc.doc.Views.Redraw()
 #        raise Exception("PullToBrepFace produced {} curves, but should have been 1.".format(
 #            len(pulled)))
+        return pushup
+
+
+def isCurveOnFace(rgC_on_face, rgFace, tolerance, bDebug=False):
+
+    hi_def_pull = create_hi_def_pull_to_face(rgFace, rgC_on_face)
+
     bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-        rgC_on_face, pulled, tolerance=tolerance)[:2]
+        rgC_on_face, hi_def_pull, tolerance=0.1*tolerance)[:2]
     if not bSuccess:
+        # Some results where this occurs:
+        #   Closed curves that are collapse, appearing like an open segment.
+        return
+        sc.doc.Objects.AddCurve(rgC_on_face)
+        sc.doc.Objects.AddCurve(hi_def_pull)
+        sc.doc.Views.Redraw()
         raise Exception("GetDistancesBetweenCurves failed.")
 
+    # 1e-5 is an additional tolerance helper for when the tolerance is arguably negligibly missed.
+    helper = 1e-5
     if fDistMax > tolerance:
-        sc.doc.Objects.AddCurve(rgC_on_face)
-        sc.doc.Objects.AddCurve(pulled)
-        sc.doc.Views.Redraw()
-        1/0
+        missed = fDistMax-tolerance
+        if missed > helper:
+            print("Tolerance was missed by {}.".format(missed))
+            print("Recommended helper to deviation check: {:.0e}".format(missed))
+    if fDistMax > (tolerance + helper):
 
-    pulled.Dispose()
+        if bDebug:
+            print("Tolerance is {}, but curve is {} off of face.".format(
+                tolerance, fDistMax))
+
+        if isinstance(rgFace.UnderlyingSurface(), rg.RevSurface):
+            pass
+        elif isinstance(rgFace.UnderlyingSurface(), rg.NurbsSurface) and rgFace.UnderlyingSurface().IsRational:
+            pass
+        else:
+            sc.doc.Objects.AddSurface(rgFace)
+            sc.doc.Objects.AddCurve(rgC_on_face)
+            sc.doc.Objects.AddCurve(hi_def_pull)
+            sc.doc.Views.Redraw()
+            1/0
+
+
+    hi_def_pull.Dispose()
 
     return fDistMax
 
 
-def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
+def createSilhouetteCurves(rgGeomForSilh, **kwargs):
     """
-    V7+ function due to use of Silhouette.ComputeDraftCurve.
+    Main function that calls the "createSilhouetteCurves..." functions,
+    and post-processes the results.
 
     Parameters:
         rgGeomForSilh
         kwargs:
             iPullDir
-            fDraftAngle
+            fDraftAngle_Deg
             fDistTol
-            fAngleTol
+            fAngle_Tol_Deg
+            bSimplifyRes
+            bArcOK
             bDeg3
             bDeg5
-            bArcOK
+            bSplitNonG2
             bEcho
             bDebug
     """
@@ -797,15 +863,24 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
     iPullDir = getOpt('iPullDir')
-    fDraftAngle = getOpt('fDraftAngle')
+    fDraftAngle_Deg = getOpt('fDraftAngle_Deg')
+    bUseDraftComputeFor0 = getOpt('bUseDraftComputeFor0')
     fDistTol = getOpt('fDistTol')
-    fAngleTol = getOpt('fAngleTol')
+    fAngle_Tol_Deg = getOpt('fAngle_Tol_Deg')
+    bSimplifyRes = getOpt('bSimplifyRes')
     bArcOK = getOpt('bArcOK')
     bDeg2 = getOpt('bDeg2')
     bDeg3 = getOpt('bDeg3')
     bDeg5 = getOpt('bDeg5')
+    bSplitNonG2 = getOpt('bSplitNonG2')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
+
+    # Prepare variables to be passed to Compute or ComputeDraftCurves.
+    draftAngleRadians = Rhino.RhinoMath.ToRadians(fDraftAngle_Deg)
+    pullDirection = _getDirectionVector(Opts.values['iPullDir'])
+    tol_ForCompute_or_CDC = 0.5*fDistTol if bSimplifyRes else fDistTol
+    angleToleranceRadians = Rhino.RhinoMath.ToRadians(fAngle_Tol_Deg)
 
 
     iDegs = []
@@ -819,365 +894,114 @@ def createSilhouetteCurves_Simplify(rgGeomForSilh, **kwargs):
         print("No degrees for rebuild.")
 
 
-    def computeDraftCurvesWithSimplify(rgGeomForSilh, bArcOK):
-        if bDebug: print("computeDraftCurvesWithSimplify:")
 
-        tolerance = 0.5 * fDistTol
 
-        if bDebug:
-            sEval='rgGeomForSilh'; print(sEval+':',eval(sEval))
-            sEval='draftAngle'; print(sEval+':',eval(sEval))
-            sEval='pullDirection'; print(sEval+':',eval(sEval))
-            sEval='tolerance'; print(sEval+':',eval(sEval))
-            sEval='angleToleranceRadians'; print(sEval+':',eval(sEval))
+    if isinstance(rgGeomForSilh, rg.Brep):
+        rgFs = rgGeomForSilh.Faces
+    elif isinstance(rgGeomForSilh, rg.BrepFace):
+        rgFs = [rgGeomForSilh]
+    else:
+        raise ValueError("{} is not supported for this script.".format(rgGeomForSilh.GetType().Name))
 
-        silhouettes = rg.Silhouette.ComputeDraftCurve(
-            geometry=rgGeomForSilh,
-            draftAngle=draftAngle,
-            pullDirection=pullDirection,
-            tolerance=tolerance,
-            angleToleranceRadians=angleToleranceRadians)
+    if (fDraftAngle_Deg != 0.0) or bUseDraftComputeFor0:
+        bUseDraftCompute = True
+        silhTypes_Allowed = rg.SilhouetteType.DraftCurve, rg.SilhouetteType.Tangent
+    else:
+        # Use Silhouette.Compute.
+        bUseDraftCompute = False
+        silhTypes_Allowed = rg.SilhouetteType.Tangent,
+
+
+    if bDebug:
+        sEval='fDraftAngle_Deg'; print(sEval+':',eval(sEval))
+        sEval='draftAngleRadians'; print(sEval+':',eval(sEval))
+        sEval="Opts.values['iPullDir']"; print(sEval+':',eval(sEval))
+        sEval='pullDirection'; print(sEval+':',eval(sEval))
+        sEval='fDistTol'; print(sEval+':',eval(sEval))
+        sEval='fAngle_Tol_Deg'; print(sEval+':',eval(sEval))
+        sEval='angleToleranceRadians'; print(sEval+':',eval(sEval))
+        sEval='iDegs'; print(sEval+':',eval(sEval))
+        sEval='bUseDraftCompute'; print(sEval+':',eval(sEval))
+        sEval='silhTypes_Allowed'; print(sEval+':',eval(sEval))
+
+
+
+    rgCs_Res_Compute_Filtered = []
+    fLengths_Totals = [0.0]
+
+    for rgF in rgFs:
+        if bUseDraftCompute:
+            silhouettes = rg.Silhouette.ComputeDraftCurve(
+                geometry=rgF,
+                draftAngle=draftAngleRadians,
+                pullDirection=pullDirection,
+                tolerance=tol_ForCompute_or_CDC,
+                angleToleranceRadians=angleToleranceRadians)
+        else:
+            silhouettes = rg.Silhouette.Compute(
+                geometry=rgF,
+                silhouetteType=rg.SilhouetteType.Tangent,
+                parallelCameraDirection=pullDirection,
+                tolerance=tol_ForCompute_or_CDC,
+                angleToleranceRadians=angleToleranceRadians)
 
         if not silhouettes:
-            if bDebug: print("Silhouette.ComputeDraftCurve produced no results.")
-            return
-        elif bDebug:
-            print("Silhouette.ComputeDraftCurve produced {} results.".format(
-                len(silhouettes)))
+            continue
 
-
-        rgCs_Res_FirstTol = []
-        bNonG2KnotsFound = False
-        fLengths_Totals = [0.0]
         for silh in silhouettes:
-            if silh.Curve is None: continue
-            if silh.SilhouetteType != rg.SilhouetteType.DraftCurve:
-                if bDebug: sEval='silh.SilhouetteType'; print(sEval+':',eval(sEval))
-            rgC_Silh = silh.Curve
-            fLengths_Totals[-1] += rgC_Silh.GetLength()
+            if silh.Curve is None:
+                continue
 
+            if silh.SilhouetteType not in silhTypes_Allowed:
+                if bDebug: print("Skipped {}.".format(silh.SilhouetteType))
+                continue
+
+            fLength = silh.Curve.GetLength()
+            if fLength < fDistTol:
+                print("Curve with length of {} skipped.".format(formatDistance(fLength)))
+                continue
+
+            if not isCurveOnFace(silh.Curve, rgF, tol_ForCompute_or_CDC, bDebug=bDebug):
+                continue
+
+            fLengths_Totals[-1] += silh.Curve.GetLength()
+            if bDebug: sEval="fLengths_Totals[-1]"; print(sEval+':',eval(sEval))
+
+            rgCs_Res_Compute_Filtered.append(silh.Curve)
+
+
+    if not bSimplifyRes and not bSplitNonG2:
+        return rgCs_Res_Compute_Filtered
+
+
+    if not bSimplifyRes:
+        rgCs_PostProcessed = rgCs_Res_Compute_Filtered
+    else:
+        rgCs_Post_simplified = []
+        for c in rgCs_Res_Compute_Filtered:
             rgC_Simplified = simplifyCurve(
-                rgC_Silh,
+                c,
                 bArcOK=bArcOK,
                 iDegs=iDegs,
                 fTol=max((fDistTol-tolerance, 1e-6)),
-                fAngleTol=None,
+                fAngle_Tol_Deg=None,
                 bDebug=bDebug)
 
             if rgC_Simplified is None:
-                rgCs_Res_FirstTol.append(rgC_Silh)
-                bNonG2KnotsFound = True
+                rgCs_Post_simplified.append(c)
             else:
-                rgCs_Res_FirstTol.append(rgC_Simplified)
-                rgC_Silh.Dispose()
+                rgCs_Post_simplified.append(rgC_Simplified)
+                c.Dispose()
+        rgCs_PostProcessed = rgCs_Post_simplified
 
-        if bDebug: sEval="fLengths_Totals[-1]"; print(sEval+':',eval(sEval))
-
-        if not bNonG2KnotsFound:
-            if bDebug:
-                print("All curves are uniform at default tolerance, {}.".format(
-                    fDistTol))
-            return rgCs_Res_FirstTol
-
-
-        # ComputeDraftCurve to a different tolerance.
-
-        for pow in range(2, 4+1):
-            fTol_forCDC_WIP = fDistTol / (2**pow)
-            if bDebug: sEval='fTol_forCDC_WIP'; print(sEval+':',eval(sEval))
-
-            silhouettes = rg.Silhouette.ComputeDraftCurve(
-                geometry=rgGeomForSilh,
-                draftAngle=draftAngle,
-                pullDirection=pullDirection,
-                tolerance=fTol_forCDC_WIP,
-                angleToleranceRadians=angleToleranceRadians)
-
-            if not silhouettes:
-                if bDebug: print("Silhouette.ComputeDraftCurve produced no results.")
-                return
-
-            rgCs_Res_WIPTol = []
-            fLengths_Totals.append(0.0)
-            for silh in silhouettes:
-                if silh.Curve is None: continue
-                if silh.SilhouetteType != rg.SilhouetteType.DraftCurve:
-                    if bDebug: sEval='silh.SilhouetteType'; print(sEval+':',eval(sEval))
-                rgC_Silh = silh.Curve
-                fLengths_Totals[-1] += rgC_Silh.GetLength()
-
-                rgC_Simplified = simplifyCurve(
-                    rgC_Silh,
-                    bArcOK=bArcOK,
-                    iDegs=iDegs,
-                    fTol=fDistTol - fTol_forCDC_WIP,
-                    fAngleTol=None,
-                    bDebug=bDebug)
-
-                if rgC_Simplified is None:
-                    for c in rgCs_Res_WIPTol: c.Dispose()
-                    break # to next tolerance.
-
-                rgCs_Res_WIPTol.append(rgC_Simplified)
-                rgC_Silh.Dispose()
-            else:
-                # Success.
-                if bDebug: sEval="fLengths_Totals[-1]"; print(sEval+':',eval(sEval))
-                for c in rgCs_Res_FirstTol: c.Dispose()
-                return rgCs_Res_WIPTol
-
-        if bDebug:
-            sEval="fLengths_Totals[-1]"; print(sEval+':',eval(sEval))
-            sEval="min(fLengths_Totals)"; print(sEval+':',eval(sEval))
-            sEval="max(fLengths_Totals)"; print(sEval+':',eval(sEval))
-
-        # Fail.
-        return rgCs_Res_FirstTol
-
-
-    draftAngle = Rhino.RhinoMath.ToRadians(fDraftAngle)
-    pullDirection = _getDirectionVector(Opts.values['iPullDir'])
-    angleToleranceRadians = Rhino.RhinoMath.ToRadians(fAngleTol)
-
-
-    if bDebug: print("Using V7's Silhouette.ComputeDraftCurve.")
-
-
-    if isinstance(rgGeomForSilh, rg.Brep):
-        rgFs = rgGeomForSilh.Faces
-    elif isinstance(rgGeomForSilh, rg.BrepFace):
-        rgFs = [rgGeomForSilh]
+    if not bSplitNonG2:
+        rgCs_PostProcessed = rgCs_Res_Compute_Filtered
     else:
-        raise ValueError("{} is not supported for this script.".format(rgGeomForSilh.GetType().Name))
+        rgCs_Post_split = split_NurbsCrvs_at_G2_discontinuities(rgCs_PostProcessed, bDebug=bDebug)
+        for c in rgCs_PostProcessed: c.Dispose()
+        rgCs_PostProcessed = rgCs_Post_split
 
-
-
-
-    rgCs_Res = []
-
-    for rgF in rgFs:
-        sc.escape_test()
-        rgCs_Res_perFace = computeDraftCurvesWithSimplify(rgF, bArcOK)
-        if rgCs_Res_perFace:
-            rgCs_Res.extend(rgCs_Res_perFace)
-
-            for c in rgCs_Res_perFace:
-                fDev = computeMaxDistFromFace(rgF, c, fDistTol)
-
-                if fDev > fDistTol:
-                    print("Tolerance is {}, but curve is {} off of face.".format(
-                        fDistTol, fDev))
-
-
-    return rgCs_Res
-
-
-def createSilhouetteCurves_NoDraft_NoSimplify(rgGeomForSilh, **kwargs):
-    """
-    V7+ function due to use of Silhouette.ComputeDraftCurve.
-
-    ComputeDraftCurve is used with Compute since it has been noticed that they
-    sometimes/often? produce different results.
-
-    Parameters:
-        rgGeomForSilh
-        kwargs:
-            iPullDir
-            fDistTol
-            fAngleTol
-            bEcho
-            bDebug
-    """
-
-    if Rhino.RhinoApp.ExeVersion < 7:
-        print("This function requires Rhino 7 or higher.")
-        return
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    iPullDir = getOpt('iPullDir')
-    fDistTol = getOpt('fDistTol')
-    fAngleTol = getOpt('fAngleTol')
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
-
-
-    pullDirection = _getDirectionVector(Opts.values['iPullDir'])
-    angleToleranceRadians = Rhino.RhinoMath.ToRadians(fAngleTol)
-
-
-    if bDebug:
-        sEval='pullDirection'; print(sEval+':',eval(sEval))
-        sEval='fDistTol'; print(sEval+':',eval(sEval))
-        sEval='fAngleTol'; print(sEval+':',eval(sEval))
-        sEval='angleToleranceRadians'; print(sEval+':',eval(sEval))
-
-
-    if isinstance(rgGeomForSilh, rg.Brep):
-        rgFs = rgGeomForSilh.Faces
-    elif isinstance(rgGeomForSilh, rg.BrepFace):
-        rgFs = [rgGeomForSilh]
-    else:
-        raise ValueError("{} is not supported for this script.".format(rgGeomForSilh.GetType().Name))
-
-
-    rgCs_Res_All = []
-
-    for rgF in rgFs:
-        silhouettes = rg.Silhouette.ComputeDraftCurve(
-            geometry=rgF,
-            draftAngle=0.0,
-            pullDirection=pullDirection,
-            tolerance=fDistTol,
-            angleToleranceRadians=angleToleranceRadians)
-
-        if not silhouettes:
-            if bDebug: print("Silhouette.ComputeDraftCurve produced no results.")
-            continue
-
-        rgCs_Res_DraftCompute = []
-        for silh in silhouettes:
-            if silh.Curve is None:
-                continue
-            if silh.SilhouetteType != rg.SilhouetteType.Tangent:
-                sEval="silh.SilhouetteType"; print(sEval+':',eval(sEval))
-                continue
-            rgCs_Res_DraftCompute.append(silh.Curve)
-
-        silhouettes = rg.Silhouette.Compute(
-            geometry=rgF,
-            silhouetteType=rg.SilhouetteType.Tangent,
-            parallelCameraDirection=pullDirection,
-            tolerance=fDistTol,
-            angleToleranceRadians=angleToleranceRadians)
-
-        if not silhouettes:
-            if bDebug: print("Silhouette.Compute produced no results.")
-            continue
-
-        rgCs_Res_NoDraftCompute = []
-        for silh in silhouettes:
-            if silh.Curve is None:
-                continue
-            if silh.SilhouetteType != rg.SilhouetteType.Tangent:
-                continue
-            rgCs_Res_NoDraftCompute.append(silh.Curve)
-
-        if len(rgCs_Res_DraftCompute) != len(rgCs_Res_NoDraftCompute):
-            if bDebug:
-                sEval='len(rgCs_Res_DraftCompute)'; print(sEval+':',eval(sEval))
-                sEval='len(rgCs_Res_NoDraftCompute)'; print(sEval+':',eval(sEval))
-
-            if len(rgCs_Res_DraftCompute) == 0:
-                rgCs_Res_All.extend(rgCs_Res_NoDraftCompute)
-            elif len(rgCs_Res_NoDraftCompute) == 0:
-                rgCs_Res_All.extend(rgCs_Res_DraftCompute)
-            else:
-                #for c in rgCs_Res_DraftCompute: sc.doc.Objects.AddCurve(c)
-                #for c in rgCs_Res_NoDraftCompute: sc.doc.Objects.AddCurve(c)
-                #sc.doc.Views.Redraw(); 1/0
-                print("So adding both sets of curves.")
-                rgCs_Res_All.extend(rgCs_Res_DraftCompute)
-                rgCs_Res_All.extend(rgCs_Res_NoDraftCompute)
-        else:
-            for i in range(len(rgCs_Res_DraftCompute)):
-                cDraft = rgCs_Res_DraftCompute[i]
-                cNoDraft = rgCs_Res_NoDraftCompute[i]
-                fDev_DraftCompute = computeMaxDistFromFace(rgF, cDraft, fDistTol)
-                fDev_NoDraftCompute = computeMaxDistFromFace(rgF, cNoDraft, fDistTol)
-                if bDebug:
-                    sEval='fDev_DraftCompute'; print(sEval+':',eval(sEval))
-                    sEval='fDev_NoDraftCompute'; print(sEval+':',eval(sEval))
-                if fDev_DraftCompute == fDev_NoDraftCompute:
-                    print("Identical curves?")
-                    rgCs_Res_All.append(cNoDraft)
-                elif fDev_DraftCompute > fDev_NoDraftCompute:
-                    rgCs_Res_All.append(cNoDraft)
-                else:
-                    rgCs_Res_All.append(cDraft)
-
-    rgCs_Out = split_NurbsCrvs_at_G2_discontinuities(rgCs_Res_All, bDebug=bDebug)
-    for c in rgCs_Res_All: c.Dispose()
-
-    return rgCs_Out
-
-
-def createSilhouetteCurves_Draft_NoSimplify(rgGeomForSilh, **kwargs):
-    """
-    V7+ function due to use of Silhouette.ComputeDraftCurve.
-
-    Parameters:
-        rgGeomForSilh
-        kwargs:
-            iPullDir
-            fDraftAngle
-            fDistTol
-            fAngleTol
-            bEcho
-            bDebug
-    """
-
-    if Rhino.RhinoApp.ExeVersion < 7:
-        print("This function requires Rhino 7 or higher.")
-        return
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    iPullDir = getOpt('iPullDir')
-    fDraftAngle = getOpt('fDraftAngle')
-    fDistTol = getOpt('fDistTol')
-    fAngleTol = getOpt('fAngleTol')
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
-
-
-    draftAngleRadians = Rhino.RhinoMath.ToRadians(fDraftAngle)
-    pullDirection = _getDirectionVector(Opts.values['iPullDir'])
-    angleToleranceRadians = Rhino.RhinoMath.ToRadians(fAngleTol)
-
-
-    if bDebug:
-        sEval='fDraftAngle'; print(sEval+':',eval(sEval))
-        sEval='draftAngleRadians'; print(sEval+':',eval(sEval))
-        sEval='pullDirection'; print(sEval+':',eval(sEval))
-        sEval='fDistTol'; print(sEval+':',eval(sEval))
-        sEval='fAngleTol'; print(sEval+':',eval(sEval))
-        sEval='angleToleranceRadians'; print(sEval+':',eval(sEval))
-
-
-    if isinstance(rgGeomForSilh, rg.Brep):
-        rgFs = rgGeomForSilh.Faces
-    elif isinstance(rgGeomForSilh, rg.BrepFace):
-        rgFs = [rgGeomForSilh]
-    else:
-        raise ValueError("{} is not supported for this script.".format(rgGeomForSilh.GetType().Name))
-
-
-    rgCs_Res_All = []
-
-    for rgF in rgFs:
-        silhouettes = rg.Silhouette.ComputeDraftCurve(
-            geometry=rgF,
-            draftAngle=draftAngleRadians,
-            pullDirection=pullDirection,
-            tolerance=fDistTol,
-            angleToleranceRadians=angleToleranceRadians)
-
-        if not silhouettes:
-            if bDebug: print("Silhouette.ComputeDraftCurve produced no results.")
-            continue
-
-        for silh in silhouettes:
-            if silh.Curve is None:
-                continue
-            if silh.SilhouetteType != rg.SilhouetteType.DraftCurve:
-                continue
-            rgCs_Res_All.append(silh.Curve)
-
-    rgCs_Out = split_NurbsCrvs_at_G2_discontinuities(rgCs_Res_All, bDebug=bDebug)
-    for c in rgCs_Res_All: c.Dispose()
-
-    return rgCs_Out
+    return rgCs_PostProcessed
 
 
 def processDocObjects(rhBreps, **kwargs):
@@ -1191,11 +1015,16 @@ def processDocObjects(rhBreps, **kwargs):
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
     iPullDir = getOpt('iPullDir')
-    fDraftAngle = getOpt('fDraftAngle')
+    fDraftAngle_Deg = getOpt('fDraftAngle_Deg')
+    bUseDraftComputeFor0 = getOpt('bUseDraftComputeFor0')
     fDistTol = getOpt('fDistTol')
-    fAngleTol = getOpt('fAngleTol')
+    fAngle_Tol_Deg = getOpt('fAngle_Tol_Deg')
     bSimplifyRes = getOpt('bSimplifyRes')
     bArcOK = getOpt('bArcOK')
+    bDeg2 = getOpt('bDeg2')
+    bDeg3 = getOpt('bDeg3')
+    bDeg5 = getOpt('bDeg5')
+    bSplitNonG2 = getOpt('bSplitNonG2')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -1238,34 +1067,22 @@ def processDocObjects(rhBreps, **kwargs):
 
         rdObj_In = rc
 
-        if bSimplifyRes:
-            rgCs_Res = createSilhouetteCurves_Simplify(
-                rdObj_In,
-                iPullDir=iPullDir,
-                fDraftAngle=fDraftAngle,
-                fDistTol=fDistTol,
-                fAngleTol=fAngleTol,
-                bArcOK=bArcOK,
-                bEcho=bEcho,
-                bDebug=bDebug)
-        else:
-            if fDraftAngle == 0.0:
-                rgCs_Res = createSilhouetteCurves_NoDraft_NoSimplify(
-                    rdObj_In,
-                    iPullDir=iPullDir,
-                    fDistTol=fDistTol,
-                    fAngleTol=fAngleTol,
-                    bEcho=bEcho,
-                    bDebug=bDebug)
-            else:
-                rgCs_Res = createSilhouetteCurves_Draft_NoSimplify(
-                    rdObj_In,
-                    iPullDir=iPullDir,
-                    fDraftAngle=fDraftAngle,
-                    fDistTol=fDistTol,
-                    fAngleTol=fAngleTol,
-                    bEcho=bEcho,
-                    bDebug=bDebug)
+        rgCs_Res = createSilhouetteCurves(
+            rdObj_In,
+            iPullDir=iPullDir,
+            fDraftAngle_Deg=fDraftAngle_Deg,
+            bUseDraftComputeFor0=bUseDraftComputeFor0,
+            fDistTol=fDistTol,
+            fAngle_Tol_Deg=fAngle_Tol_Deg,
+            bSimplifyRes=bSimplifyRes,
+            bArcOK=bArcOK,
+            bDeg2=bDeg2,
+            bDeg3=bDeg3,
+            bDeg5=bDeg5,
+            bSplitNonG2=bSplitNonG2,
+            bEcho=bEcho,
+            bDebug=bDebug)
+
 
         if not rgCs_Res:
             continue
@@ -1297,14 +1114,16 @@ def main():
     if objrefs is None: return
 
     iPullDir = Opts.values['iPullDir']
-    fDraftAngle = Opts.values['fDraftAngle']
+    fDraftAngle_Deg = Opts.values['fDraftAngle_Deg']
+    bUseDraftComputeFor0 = Opts.values['bUseDraftComputeFor0']
     fDistTol = Opts.values['fDistTol']
-    fAngleTol = Opts.values['fAngleTol']
+    fAngle_Tol_Deg = Opts.values['fAngle_Tol_Deg']
     bSimplifyRes = Opts.values['bSimplifyRes']
     bArcOK = Opts.values['bArcOK']
     bDeg2 = Opts.values['bDeg2']
     bDeg3 = Opts.values['bDeg3']
     bDeg5 = Opts.values['bDeg5']
+    bSplitNonG2 = Opts.values['bSplitNonG2']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
@@ -1312,7 +1131,11 @@ def main():
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
 
-    gCs_Res, sCrvDescrs = processDocObjects(rhBreps=objrefs)
+    rc = processDocObjects(rhBreps=objrefs)
+
+    if rc is None: return
+
+    gCs_Res, sCrvDescrs = rc
 
     if not gCs_Res:
         if bEcho: print("No resultant curves.")

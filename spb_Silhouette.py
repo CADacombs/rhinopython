@@ -20,11 +20,9 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 220821-22: Refactored main V5&6 from V7 routines into separate functions. Bug fixes.
 240106-09: Removed code that only works in V5 & V6. Added more direction options.
         Modified simplification routine. Refactored.
+        Now skips self-intersecting curves.
+        Pulls curves not on face to the face. The error is not uncommon for ComputeDraftCurve.
         Added option and routine to split output curves at G2 discontinuities.
-
-TODO:
-    Investigate computed curves that are more than input tolerance off of their faces. Replace with new pulled curve?
-        Check for self-intersections? Intersect.Intersection.CurveSelf
 """
 
 import Rhino
@@ -347,6 +345,106 @@ def _areEpsilonEqual(a, b, epsilon):
     return fRelComp < epsilon
 
 
+def doesCurveSelfIntersect(rgC, tolerance):
+    if tolerance is None: tolerance = sc.doc.ModelAbsoluteTolerance
+    rc = rg.Intersect.Intersection.CurveSelf(rgC, tolerance)
+    return bool(rc)
+
+    if rc:
+        events = []
+        for i in xrange(rc.Count):
+            event_type = 1
+            if( rc[i].IsOverlap ): event_type = 2
+            oa = rc[i].OverlapA
+            ob = rc[i].OverlapB
+            element = (event_type, rc[i].PointA, rc[i].PointA2, rc[i].PointB, rc[i].PointB2, oa[0], oa[1], ob[0], ob[1])
+            events.append(element)
+        return events
+
+
+def create_hi_def_pull_to_face(rgFace, rgC_on_face, tolerance_forRef=1e-7, bDebug=False):
+
+    pulled = rgC_on_face.PullToBrepFace(face=rgFace, tolerance=tolerance_forRef)
+    if len(pulled) == 1:
+        return pulled[0]
+    else:
+        pullback = rgFace.Pullback(rgC_on_face, tolerance=tolerance_forRef)
+        pushup = rgFace.Pushup(pullback, tolerance=tolerance_forRef)
+        if bDebug:
+            sEval='pullback.GetType().Name'; print(sEval+':',eval(sEval))
+            sEval='pushup.GetType().Name'; print(sEval+':',eval(sEval))
+#        sc.doc.Objects.AddCurve(rgC_on_face); sc.doc.Views.Redraw()
+#        raise Exception("PullToBrepFace produced {} curves, but should have been 1.".format(
+#            len(pulled)))
+        return pushup
+
+
+def create_normal_def_pull_to_face(rgFace, rgC_on_face, tolerance, bDebug=False):
+
+    pulled = rgC_on_face.PullToBrepFace(face=rgFace, tolerance=tolerance)
+    if len(pulled) == 1:
+        return pulled[0]
+    else:
+        pullback = rgFace.Pullback(rgC_on_face, tolerance=tolerance)
+        pushup = rgFace.Pushup(pullback, tolerance=tolerance)
+        if bDebug:
+            sEval='pullback.GetType().Name'; print(sEval+':',eval(sEval))
+            sEval='pushup.GetType().Name'; print(sEval+':',eval(sEval))
+#        sc.doc.Objects.AddCurve(rgC_on_face); sc.doc.Views.Redraw()
+#        raise Exception("PullToBrepFace produced {} curves, but should have been 1.".format(
+#            len(pulled)))
+        return pushup
+
+
+def isCurveOnFace(rgC_on_face, rgFace, tolerance, bDebug=False):
+
+    hi_def_pull = create_hi_def_pull_to_face(rgFace, rgC_on_face)
+
+    bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
+        rgC_on_face, hi_def_pull, tolerance=0.1*tolerance)[:2]
+    if not bSuccess:
+        # Some results where this occurs:
+        #   Closed curves that are collapse, appearing like an open segment.
+        return
+        sc.doc.Objects.AddCurve(rgC_on_face)
+        sc.doc.Objects.AddCurve(hi_def_pull)
+        sc.doc.Views.Redraw()
+        raise Exception("GetDistancesBetweenCurves failed.")
+
+    hi_def_pull.Dispose()
+
+    # 1e-5 is an additional tolerance helper for when the tolerance is arguably negligibly missed.
+    helper = 1e-5
+
+    if bDebug:
+        if fDistMax > tolerance:
+            missed = fDistMax-tolerance
+            if missed > helper:
+                print("Tolerance was missed by {}.".format(missed))
+                print("Recommended helper to deviation check: {:.0e}".format(missed))
+
+    if fDistMax > (tolerance + helper):
+
+        if bDebug:
+            print("Tolerance is {}, but curve is {} off of face.".format(
+                tolerance, fDistMax))
+
+        #if isinstance(rgFace.UnderlyingSurface(), rg.RevSurface):
+        #    pass
+        #elif isinstance(rgFace.UnderlyingSurface(), rg.NurbsSurface) and rgFace.UnderlyingSurface().IsRational:
+        #    pass
+        #else:
+        #    sc.doc.Objects.AddSurface(rgFace)
+        #    sc.doc.Objects.AddCurve(rgC_on_face)
+        #    sc.doc.Objects.AddCurve(hi_def_pull)
+        #    sc.doc.Views.Redraw()
+        #    1/0
+
+        return False
+
+    return True
+
+
 def isUniformNurbsCurve(nc):
     if not isinstance(nc, rg.NurbsCurve):
         return
@@ -415,81 +513,7 @@ def is_NurbsCrv_internally_G2_continuous(nc, fAngle_Tol_Deg, bDebug=False):
     return True
 
 
-def split_NurbsCrv_at_G2_discontinuities(nc_In, bDebug=False):
-    if not isinstance(nc_In, rg.NurbsCurve):
-        raise ValueError("{} passed to is_NurbsCrv_internally_G2_continuous.".format(nc_In))
-
-    cosAngleTolerance = math.cos(sc.doc.ModelAngleToleranceRadians)
-
-    t0 = nc_In.Domain.T0 # Start parameter of check. Is itself ignored.
-
-    ts_Found = []
-
-    while True:
-        sc.escape_test()
-
-        bFoundG1_discont, t = nc_In.GetNextDiscontinuity(
-            continuityType=rg.Continuity.G1_locus_continuous if nc_In.IsPeriodic else rg.Continuity.G1_continuous,
-            t0=t0,
-            t1=nc_In.Domain.T1,
-            cosAngleTolerance=cosAngleTolerance,
-            curvatureTolerance=Rhino.RhinoMath.SqrtEpsilon)
-
-        if not bFoundG1_discont:
-            break # out of while loop.
-
-        ts_Found.append(t)
-
-        t0 = t
-
-    if len(ts_Found) == 0:
-        return
-
-    split = nc_In.Split(ts_Found)
-
-    if len(split) < 2:
-        s = "Split produced {} curves. Should have been {}.".format(
-            len(split), len(ts_Found)+1)
-        print(s)
-        sc.doc.Objects.AddCurve(nc_In)
-        [sc.doc.Objects.AddCurve(c) for c in split]
-
-        raise Exception(s)
-
-    joined = rg.Curve.JoinCurves(split)
-
-    if len(joined) != 1:
-        raise Exception("JoinCurves produced {} curves. Should have been 1.".format(
-            len(joined)))
-
-    for c in split: c.Dispose()
-
-    return joined
-
-
-def split_NurbsCrvs_at_G2_discontinuities(rgCrvs_In, bDebug=False):
-    """
-    Will return new list with splits and duplicates,
-    so it is up to the calling code to Dispose the curves in the original list.
-    """
-    rgCs_Out = []
-    for c in rgCrvs_In:
-        if not isinstance(c, rg.NurbsCurve):
-            rgCs_Out.append(c.DuplicateCurve())
-            continue
-
-        rc = split_NurbsCrv_at_G2_discontinuities(c, bDebug=bDebug)
-
-        if rc is None:
-            rgCs_Out.append(c.DuplicateCurve())
-            continue
-
-        rgCs_Out.extend(rc)
-
-    return rgCs_Out
-
-
-def rebuild_Bezier(nc_In, iDegs, tolerance, bDebug=False):
+def rebuild_to_Bezier(nc_In, iDegs, tolerance, bDebug=False):
     """
     More strict tolerance used on degree 2 since that Bezier doesn't allow
     tangency matching of both ends when they are not already aligned.
@@ -531,7 +555,7 @@ def rebuild_Bezier(nc_In, iDegs, tolerance, bDebug=False):
         rebuilt.Dispose()
 
 
-def rebuild_MultiSpan(nc_In, iDegs, tolerance, bDebug=False):
+def rebuild_to_MultiSpan(nc_In, iDegs, tolerance, bDebug=False):
     """
     Will not bother rebuilding to degree-2 since multiple spans are divided by
     G1-likely knots.
@@ -749,7 +773,7 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_D
     if isUniformNurbsCurve(nc_In):
         return nc_In.Duplicate()
 
-    rc = rebuild_Bezier(
+    rc = rebuild_to_Bezier(
         nc_In,
         iDegs=iDegs,
         tolerance=fTol,
@@ -762,7 +786,7 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_D
         rc = removeMultiKnots(nc_In, iDegs, fTol, bDebug)
         if rc: return rc[0]
 
-    rc = rebuild_MultiSpan(
+    rc = rebuild_to_MultiSpan(
         nc_In,
         iDegs=iDegs,
         tolerance=fTol,
@@ -774,65 +798,78 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_D
     print("TODO: Split at non-G2 knots.")
 
 
-def create_hi_def_pull_to_face(rgFace, rgC_on_face, tolerance_forRef=1e-7, bDebug=False):
+def split_NurbsCrv_at_G2_discontinuities(nc_In, bDebug=False):
+    if not isinstance(nc_In, rg.NurbsCurve):
+        raise ValueError("{} passed to is_NurbsCrv_internally_G2_continuous.".format(nc_In))
 
-    pulled = rgC_on_face.PullToBrepFace(face=rgFace, tolerance=tolerance_forRef)
-    if len(pulled) == 1:
-        return pulled[0]
-    else:
-        pullback = rgFace.Pullback(rgC_on_face, tolerance=tolerance_forRef)
-        sEval='pullback.GetType().Name'; print(sEval+':',eval(sEval))
-        pushup = rgFace.Pushup(pullback, tolerance=tolerance_forRef)
-        sEval='pushup.GetType().Name'; print(sEval+':',eval(sEval))
-#        sc.doc.Objects.AddCurve(rgC_on_face); sc.doc.Views.Redraw()
-#        raise Exception("PullToBrepFace produced {} curves, but should have been 1.".format(
-#            len(pulled)))
-        return pushup
+    cosAngleTolerance = math.cos(sc.doc.ModelAngleToleranceRadians)
 
+    t0 = nc_In.Domain.T0 # Start parameter of check. Is itself ignored.
 
-def isCurveOnFace(rgC_on_face, rgFace, tolerance, bDebug=False):
+    ts_Found = []
 
-    hi_def_pull = create_hi_def_pull_to_face(rgFace, rgC_on_face)
+    while True:
+        sc.escape_test()
 
-    bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
-        rgC_on_face, hi_def_pull, tolerance=0.1*tolerance)[:2]
-    if not bSuccess:
-        # Some results where this occurs:
-        #   Closed curves that are collapse, appearing like an open segment.
+        bFoundG1_discont, t = nc_In.GetNextDiscontinuity(
+            continuityType=rg.Continuity.G1_locus_continuous if nc_In.IsPeriodic else rg.Continuity.G1_continuous,
+            t0=t0,
+            t1=nc_In.Domain.T1,
+            cosAngleTolerance=cosAngleTolerance,
+            curvatureTolerance=Rhino.RhinoMath.SqrtEpsilon)
+
+        if not bFoundG1_discont:
+            break # out of while loop.
+
+        ts_Found.append(t)
+
+        t0 = t
+
+    if len(ts_Found) == 0:
         return
-        sc.doc.Objects.AddCurve(rgC_on_face)
-        sc.doc.Objects.AddCurve(hi_def_pull)
-        sc.doc.Views.Redraw()
-        raise Exception("GetDistancesBetweenCurves failed.")
 
-    # 1e-5 is an additional tolerance helper for when the tolerance is arguably negligibly missed.
-    helper = 1e-5
-    if fDistMax > tolerance:
-        missed = fDistMax-tolerance
-        if missed > helper:
-            print("Tolerance was missed by {}.".format(missed))
-            print("Recommended helper to deviation check: {:.0e}".format(missed))
-    if fDistMax > (tolerance + helper):
+    split = nc_In.Split(ts_Found)
 
-        if bDebug:
-            print("Tolerance is {}, but curve is {} off of face.".format(
-                tolerance, fDistMax))
+    if len(split) < 2:
+        s = "Split produced {} curves. Should have been {}.".format(
+            len(split), len(ts_Found)+1)
+        print(s)
+        sc.doc.Objects.AddCurve(nc_In)
+        [sc.doc.Objects.AddCurve(c) for c in split]
 
-        if isinstance(rgFace.UnderlyingSurface(), rg.RevSurface):
-            pass
-        elif isinstance(rgFace.UnderlyingSurface(), rg.NurbsSurface) and rgFace.UnderlyingSurface().IsRational:
-            pass
-        else:
-            sc.doc.Objects.AddSurface(rgFace)
-            sc.doc.Objects.AddCurve(rgC_on_face)
-            sc.doc.Objects.AddCurve(hi_def_pull)
-            sc.doc.Views.Redraw()
-            1/0
+        raise Exception(s)
+
+    joined = rg.Curve.JoinCurves(split)
+
+    if len(joined) != 1:
+        raise Exception("JoinCurves produced {} curves. Should have been 1.".format(
+            len(joined)))
+
+    for c in split: c.Dispose()
+
+    return joined
 
 
-    hi_def_pull.Dispose()
+def split_NurbsCrvs_at_G2_discontinuities(rgCrvs_In, bDebug=False):
+    """
+    Will return new list with splits and duplicates,
+    so it is up to the calling code to Dispose the curves in the original list.
+    """
+    rgCs_Out = []
+    for c in rgCrvs_In:
+        if not isinstance(c, rg.NurbsCurve):
+            rgCs_Out.append(c.DuplicateCurve())
+            continue
 
-    return fDistMax
+        rc = split_NurbsCrv_at_G2_discontinuities(c, bDebug=bDebug)
+
+        if rc is None:
+            rgCs_Out.append(c.DuplicateCurve())
+            continue
+
+        rgCs_Out.extend(rc)
+
+    return rgCs_Out
 
 
 def createSilhouetteCurves(rgGeomForSilh, **kwargs):
@@ -927,7 +964,9 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
 
 
     rgCs_Res_Compute_Filtered = []
-    fLengths_Totals = [0.0]
+    #fLengths_Totals = [0.0]
+
+    Rhino.RhinoApp.SetCommandPrompt("Collecting filtered silhouette curves ...")
 
     for rgF in rgFs:
         if bUseDraftCompute:
@@ -957,17 +996,22 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
                 continue
 
             fLength = silh.Curve.GetLength()
-            if fLength < fDistTol:
-                print("Curve with length of {} skipped.".format(formatDistance(fLength)))
+            if fLength < tol_ForCompute_or_CDC:
+                if bDebug: print("Curve with length of {} skipped.".format(formatDistance(fLength)))
+                continue
+            #fLengths_Totals[-1] += fLength
+            #if bDebug: sEval="fLengths_Totals[-1]"; print(sEval+':',eval(sEval))
+
+            if doesCurveSelfIntersect(silh.Curve, tol_ForCompute_or_CDC):
+                if bDebug: print("Self-intersecting curve skipped.")
                 continue
 
-            if not isCurveOnFace(silh.Curve, rgF, tol_ForCompute_or_CDC, bDebug=bDebug):
-                continue
-
-            fLengths_Totals[-1] += silh.Curve.GetLength()
-            if bDebug: sEval="fLengths_Totals[-1]"; print(sEval+':',eval(sEval))
-
-            rgCs_Res_Compute_Filtered.append(silh.Curve)
+            if isCurveOnFace(silh.Curve, rgF, tol_ForCompute_or_CDC, bDebug=bDebug):
+                rgCs_Res_Compute_Filtered.append(silh.Curve)
+            else:
+                new_pull = create_normal_def_pull_to_face(rgF, silh.Curve, tol_ForCompute_or_CDC, bDebug=bDebug)
+                silh.Curve.Dispose()
+                rgCs_Res_Compute_Filtered.append(new_pull)
 
 
     if not bSimplifyRes and not bSplitNonG2:
@@ -977,6 +1021,7 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
     if not bSimplifyRes:
         rgCs_PostProcessed = rgCs_Res_Compute_Filtered
     else:
+        Rhino.RhinoApp.SetCommandPrompt("Simplifying ...")
         rgCs_Post_simplified = []
         for c in rgCs_Res_Compute_Filtered:
             rgC_Simplified = simplifyCurve(
@@ -997,6 +1042,7 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
     if not bSplitNonG2:
         rgCs_PostProcessed = rgCs_Res_Compute_Filtered
     else:
+        Rhino.RhinoApp.SetCommandPrompt("Splitting ...")
         rgCs_Post_split = split_NurbsCrvs_at_G2_discontinuities(rgCs_PostProcessed, bDebug=bDebug)
         for c in rgCs_PostProcessed: c.Dispose()
         rgCs_PostProcessed = rgCs_Post_split

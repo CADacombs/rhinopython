@@ -18,7 +18,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210515: Now by default, will try to rebuild both degrees 3 and 5 within tolerance.
         Now, supports sub-selected BrepFaces as input.
 220821-22: Refactored main V5&6 from V7 routines into separate functions. Bug fixes.
-240106-09: Removed code that only works in V5 & V6. Added more direction options.
+240106-10: Removed code that only works in V5 & V6. Added more direction options.
         Modified simplification routine. Refactored.
         Now skips self-intersecting curves.
         Pulls curves not on face to the face. The error is not uncommon for ComputeDraftCurve.
@@ -81,7 +81,7 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fDistTol'; keys.append(key)
-    values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
+    values[key] = 0.5 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(
         values[key], setLowerLimit=True, limit=1e-6)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
@@ -349,17 +349,6 @@ def doesCurveSelfIntersect(rgC, tolerance):
     if tolerance is None: tolerance = sc.doc.ModelAbsoluteTolerance
     rc = rg.Intersect.Intersection.CurveSelf(rgC, tolerance)
     return bool(rc)
-
-    if rc:
-        events = []
-        for i in xrange(rc.Count):
-            event_type = 1
-            if( rc[i].IsOverlap ): event_type = 2
-            oa = rc[i].OverlapA
-            ob = rc[i].OverlapB
-            element = (event_type, rc[i].PointA, rc[i].PointA2, rc[i].PointB, rc[i].PointB2, oa[0], oa[1], ob[0], ob[1])
-            events.append(element)
-        return events
 
 
 def create_hi_def_pull_to_face(rgFace, rgC_on_face, tolerance_forRef=1e-7, bDebug=False):
@@ -1028,7 +1017,7 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
                 c,
                 bArcOK=bArcOK,
                 iDegs=iDegs,
-                fTol=max((fDistTol-tolerance, 1e-6)),
+                fTol=tol_ForCompute_or_CDC,
                 fAngle_Tol_Deg=None,
                 bDebug=bDebug)
 

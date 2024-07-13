@@ -71,7 +71,10 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Instead, left clicks will cycle through distance and angle signs.
         Replaced adding DocObjects for pending geometry with DrawConduit until results are accepted.
         Now supports periodic curves.
-231126: Bug fixes: One for handling DuplicateCurve simplified output.  One for tapered line output versus brep method.
+231126: Bug fixes: One for handling DuplicateCurve simplified output.  One for
+        tapered line output versus brep method.
+240711: Bug fix to correctly extract Greville points of input with mixed curve
+        types and/or NurbsCurve degrees.
 
 TODO: (Maybe) For AlignEndDirs, adjust tapered line curves.
 """
@@ -800,34 +803,41 @@ def _getGrevilleParametersWithinDomain(rgCrv_In, bDebug=False):
     return ts
 
 
-def _getParametersForLines(rgCrv_PathProfile, bAtGrevilles, bAtKnots, iEqualDivisionCt=None):
-
-    nc_PathProfile = rgCrv_PathProfile.ToNurbsCurve()
+def _getParametersForLines(rgCrv_Path_Full, bAtGrevilles, bAtKnots, iEqualDivisionCt=None):
 
     ts = []
 
     if bAtGrevilles:
-        ts.extend(_getGrevilleParametersWithinDomain(nc_PathProfile))
+        # Do not use NurbsCurve of full path in case the input is a
+        # PolyCurve containing mixed curve types and/or NurbsCurve degrees.
+        rgCs_Path_Segs = rgCrv_Path_Full.DuplicateSegments() # Various rg.Curve types.
+        ncs_Path_Segs = [c.ToNurbsCurve() for c in rgCs_Path_Segs]
+        for c in ncs_Path_Segs:
+            ts.extend(_getGrevilleParametersWithinDomain(c))
+            c.Dispose()
 
-    if iEqualDivisionCt:
-        rc = nc_PathProfile.DivideByCount(
-                segmentCount=iEqualDivisionCt,
-                includeEnds=True)
-        if rc: ts.extend(rc)
-        if nc_PathProfile.IsClosed:
-            ts.append(nc_PathProfile.Domain.T1)
+    if iEqualDivisionCt or bAtKnots:
+        nc_Path_Full = rgCrv_Path_Full.ToNurbsCurve()
 
-    if bAtKnots:
-        rc = set(nc_PathProfile.Knots)
-        if rc: ts.extend(rc)
+        if iEqualDivisionCt:
+            rc = nc_Path_Full.DivideByCount(
+                    segmentCount=iEqualDivisionCt,
+                    includeEnds=True)
+            if rc: ts.extend(rc)
+            if nc_Path_Full.IsClosed:
+                ts.append(nc_Path_Full.Domain.T1)
+
+        if bAtKnots:
+            rc = set(nc_Path_Full.Knots)
+            if rc: ts.extend(rc)
+
+        nc_Path_Full.Dispose()
 
     if ts is None:
         print("No parameters were obtained.")
         return
 
     ts = sorted(set(ts)) # Remove duplicates and sort.
-
-    nc_PathProfile.Dispose()
 
     return ts
 
@@ -1149,7 +1159,14 @@ def _createGeometryForProfile(rgC_Profile_Prepared, Lc_ToArray, plane_Proj, fAng
             for rgLc in rgLineCrvs_Arrayed_PathSeg_GrevsOnly:
                 pts_AtEndsOf_Lcs_Arrayed.append(rgLc.PointAtEnd)
             nc_OppOfPath = rgCrv1_Path_1Seg.DuplicateCurve()
-            nc_OppOfPath.SetGrevillePoints(pts_AtEndsOf_Lcs_Arrayed)
+            if not nc_OppOfPath.SetGrevillePoints(pts_AtEndsOf_Lcs_Arrayed):
+                pass
+#                sEval = "len(nc_OppOfPath.GrevillePoints())"; print("{}: {}".format(sEval, eval(sEval)))
+#                sEval = "len(nc_OppOfPath.GrevillePoints(all=True))"; print("{}: {}".format(sEval, eval(sEval)))
+#                sEval = "len(nc_OppOfPath.GrevillePoints(all=False))"; print("{}: {}".format(sEval, eval(sEval)))
+#                sEval = "len(rgLineCrvs_Arrayed_PathSeg_GrevsOnly)"; print("{}: {}".format(sEval, eval(sEval)))
+#                for Lc in rgLineCrvs_Arrayed_PathSeg_GrevsOnly:
+#                    sc.doc.Objects.AddCurve(Lc)
             return nc_OppOfPath
         nc_OppOfPath = createTaperEndCrv(nc_Path_seg, Lcs_Arrayed__GrevsOnly_PathSeg)
 

@@ -17,7 +17,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 220821: Modified an option default value.
 230720: Now passes fTol to a method instead of ModelAbsoluteTolerance.
 231106: Improved selection routine for faces.
-240712-13: Refactored and modified behavior of simplification routines.
+240712-15: Refactored and modified behavior of simplification routines.
 
 TODO:
     Determine solution for when a loose projected curve doesn't lie within
@@ -119,7 +119,7 @@ class Opts:
     riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'bTryOnlyUniformCubicForNonlinear'; keys.append(key)
+    key = 'bOnlyLinesAndCubicNurbs'; keys.append(key)
     values[key] = False
     names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
@@ -235,8 +235,8 @@ def getInput(rdObjs_toHighlight, sPrompt, rdGeomFilter):
             Opts.riAddOpts['fTol'](go)
             Opts.riAddOpts['bPostProcess'](go)
             if Opts.values['bPostProcess']:
-                Opts.riAddOpts['bTryOnlyUniformCubicForNonlinear'](go)
-                if not Opts.values['bTryOnlyUniformCubicForNonlinear']:
+                Opts.riAddOpts['bOnlyLinesAndCubicNurbs'](go)
+                if not Opts.values['bOnlyLinesAndCubicNurbs']:
                     Opts.riAddOpts['bTryGetArcs'](go)
                     Opts.riAddOpts['bAcceptRational'](go)
                     Opts.riAddOpts['bTryRebuildOthersUniform'](go)
@@ -402,9 +402,29 @@ def projectCurve_Loose(rgC0, rgB, vectDir, bProjectCrvSegs=True, fTol=None, bDeb
     return rgCs_Proj_Joined_ThisC0
 
 
+def tryConvertNurbsToLines(crvs_toMod, tol):
+    """
+    crvs_toMod is modified.
+    Returns: None
+    """
+
+    for i, c in enumerate(crvs_toMod):
+        if isinstance(c, rg.NurbsCurve):
+            if not c.IsClosed:
+                if c.IsLinear(tol):
+                    crvs_toMod[i] = rg.LineCurve(
+                        c.PointAtStart,
+                        c.PointAtEnd)
+                    c.Dispose()
+
+
 def projectCrvToGeom(crv_In, rgBs_1Face, rgPlanes, vectDir, tolerance):
+    """
+    Returns list(list(rg.Curve))
+    """
+
     rgCs_Proj_ThisSeg = []
-        
+
     rgPlanes_ = rgPlanes # For debugging.
 
     for rgB, rgPlane in zip(rgBs_1Face, rgPlanes_):
@@ -422,7 +442,7 @@ def projectCrvToGeom(crv_In, rgBs_1Face, rgPlanes, vectDir, tolerance):
 
         WipList = []
 
-        for rgC in rgCs_Proj_ThisSeg_1F:
+        for i, rgC in enumerate(rgCs_Proj_ThisSeg_1F):
             if rgC.GetLength() > tolerance:
                 WipList.append(rgC)
             else:
@@ -430,9 +450,27 @@ def projectCrvToGeom(crv_In, rgBs_1Face, rgPlanes, vectDir, tolerance):
                 print("Short curve created at {} tolerance ignored.".format(
                     formatDistance(tolerance)))
 
+            if crv_In.IsPeriodic:
+                if isinstance(rgC, rg.NurbsCurve):
+                    WipList.append(rgC)
+                else:
+                    WipList.append(rgC.ToNurbsCurve())
+                    rgC.Dispose()
+            elif isinstance(rgC, rg.PolyCurve):
+                rgC.RemoveNesting()
+                rc = rgC.Explode()
+                if not rc:
+                    raise Exception("{} resulted from rg.PolyCurve.Explode.".format(rc))
+                WipList.extend(rc)
+                rgC.Dispose()
+
+
         rgCs_Proj_ThisSeg_1F = WipList
 
         if not rgCs_Proj_ThisSeg_1F: continue
+
+        tryConvertNurbsToLines(rgCs_Proj_ThisSeg_1F, 1e-6)
+
 
         #            # Temp for debug. ############################
         #            rgCs_Proj_ThisSeg.extend(rgCs_Proj_ThisSeg_1F)
@@ -521,66 +559,7 @@ def projectCrvToGeom(crv_In, rgBs_1Face, rgPlanes, vectDir, tolerance):
         rgC.RemoveShortSegments(tolerance)
 
     return rgCs_Proj_ThisSeg
-
-
-def convertPolyCrvsToNurbs(rgCrvs_toMod):
-    """
-    rgCrvs_toMod is modified.
-    Returns: None
-    """
-    for i, c in enumerate(rgCrvs_toMod):
-        if isinstance(c, rg.PolyCurve):
-            rgCrvs_toMod[i] = c.ToNurbsCurve()
-            c.Dispose()
-
-
-def explodePolyCrvs(rgCrvs_In):
-    """
-    A PolyCurve from a projection may result when a start/end of a closed curve
-    crosses over a face, but the entire curve wasn't projected to the face.
-    """
-    proj_NoPCs = []
-    for proj in rgCrvs_In:
-        if isinstance(proj, rg.PolyCurve):
-            proj.RemoveNesting()
-            fromExplode = proj.Explode()
-            proj_NoPCs.extend(fromExplode)
-            proj.Dispose()
-        else:
-            proj_NoPCs.append(proj)
-
-    return proj_NoPCs[:]
-
-
-def tryConvertNurbsToLines(rgCrvs_toMod, tol):
-    """
-    rgCrvs_toMod is modified.
-    Returns: None
-    """
-    for i, c in enumerate(rgCrvs_toMod):
-        if isinstance(c, rg.NurbsCurve):
-            if not c.IsClosed:
-                if c.IsLinear(tol):
-                    rgCrvs_toMod[i] = rg.LineCurve(
-                        c.PointAtStart,
-                        c.PointAtEnd)
-                    c.Dispose()
-
-
-def areAllCrvsUniformNonrationalCubic_or_Lines(rgCrvs):
-    for c in rgCrvs:
-        if isinstance(c, rg.LineCurve):
-            continue
-        if not isinstance(c, (rg.NurbsCurve)):
-            # Is Arc, Polyline?, PolyCurve?
-            return False
-        if c.IsRational:
-            return False
-        if not c.Degree == 3:
-            return False
-        if not isUniformNurbsCurve(c):
-            return False
-    return True
+    return [[_] for _ in rgCs_Proj_ThisSeg]
 
 
 def isUniformNurbsCurve(nc):
@@ -618,6 +597,22 @@ def isUniformNurbsCurve(nc):
     return True
 
 
+def are_all_crvs_lines_or_uniformNonrationalCubic(rgCrvs):
+    for c in rgCrvs:
+        if isinstance(c, rg.LineCurve):
+            continue
+        if not isinstance(c, (rg.NurbsCurve)):
+            # Is Arc, Polyline?, PolyCurve?
+            return False
+        if c.IsRational:
+            return False
+        if not c.Degree == 3:
+            return False
+        if not isUniformNurbsCurve(c):
+            return False
+    return True
+
+
 def rebuildUniformNonrationalCubic(rgCrv, tolerance, bDebug=False):
 
     # Try rebuilding as a Bezier.
@@ -636,6 +631,7 @@ def rebuildUniformNonrationalCubic(rgCrv, tolerance, bDebug=False):
 
 
     iCt_MaxCp = round(rgCrv.GetLength() / (100.0 * sc.doc.ModelAbsoluteTolerance))
+    if bDebug: sEval='iCt_MaxCp';  print("{}: {}".format(sEval, eval(sEval)))
 
 
     # Try rebuilding at maximum allowed control point count.
@@ -699,7 +695,13 @@ def rebuildUniformNonrationalCubic(rgCrv, tolerance, bDebug=False):
     return rebuilt_LastSuccess
 
 
-def processCrv_to_only_uniformNonRationalCubic_or_line(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped, bDebug=False):
+def reportCrvTypes(rgCrvs):
+    sTypes = [c.GetType().Name for c in rgCrvs]
+    for sType in set(sTypes):
+        print("[{}] {}".format(sTypes.count(sType), sType))
+
+
+def processCrv_to_only_lines_and_cubicNurbs(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped, bDebug=False):
 
     projs_FullTol = projectCrvToGeom_wrapped(c_toProj, tolerance=fTol_Proj_Total)
     if not projs_FullTol:
@@ -709,14 +711,7 @@ def processCrv_to_only_uniformNonRationalCubic_or_line(c_toProj, fTol_Proj_Total
         print('-'*20)
         reportCrvTypes(projs_FullTol)
 
-    if c_toProj.IsPeriodic:
-        convertPolyCrvsToNurbs(projs_FullTol)
-    else:
-        projs_FullTol = explodePolyCrvs(projs_FullTol)
-
-    tryConvertNurbsToLines(projs_FullTol, 1e-6)
-
-    if areAllCrvsUniformNonrationalCubic_or_Lines(projs_FullTol):
+    if are_all_crvs_lines_or_uniformNonrationalCubic(projs_FullTol):
         return projs_FullTol
 
     # Project to a different tolerance and rebuild.
@@ -725,20 +720,16 @@ def processCrv_to_only_uniformNonRationalCubic_or_line(c_toProj, fTol_Proj_Total
 
         projs_atTrialTol = projectCrvToGeom_wrapped(c_toProj, tolerance=fTol_Proj_WIP)
 
-        if c_toProj.IsPeriodic:
-            convertPolyCrvsToNurbs(projs_atTrialTol)
-        else:
-            projs_atTrialTol = explodePolyCrvs(projs_atTrialTol)
-
-        if areAllCrvsUniformNonrationalCubic_or_Lines(projs_atTrialTol):
+        if are_all_crvs_lines_or_uniformNonrationalCubic(projs_atTrialTol):
             return projs_atTrialTol
 
         for i, proj in enumerate(projs_atTrialTol):
-            if areAllCrvsUniformNonrationalCubic_or_Lines([proj]):
+            if are_all_crvs_lines_or_uniformNonrationalCubic([proj]):
                 continue
             rebuilt = rebuildUniformNonrationalCubic(
                 proj,
-                tolerance=fTol_Proj_Total-fTol_Proj_WIP)
+                tolerance=fTol_Proj_Total-fTol_Proj_WIP, 
+                bDebug=bDebug)
 
             if rebuilt:
                 projs_atTrialTol[i] = rebuilt
@@ -900,15 +891,8 @@ def processCrv_per_arguments(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped
         print('-'*20)
         reportCrvTypes(projs_FullTol)
 
-    tryConvertNurbsToLines(projs_FullTol, fTol_Proj_Total)
-
     if bTryGetArcs:
         tryConvertNurbsToArcs(projs_FullTol, fTol_Proj_Total)
-
-    if c_toProj.IsPeriodic:
-        convertPolyCrvsToNurbs(projs_FullTol)
-    else:
-        projs_FullTol = explodePolyCrvs(projs_FullTol)
 
     if areAllCurvesSimplified(projs_FullTol, bTryRebuildOthersUniform):
         return projs_FullTol
@@ -919,15 +903,8 @@ def processCrv_per_arguments(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped
 
         projs_atTrialTol = projectCrvToGeom_wrapped(c_toProj, tolerance=fTol_Proj_WIP)
 
-        tryConvertNurbsToLines(projs_atTrialTol, fTol_Proj_Total-fTol_Proj_WIP)
-
         if bTryGetArcs:
             tryConvertNurbsToArcs(projs_atTrialTol, fTol_Proj_Total-fTol_Proj_WIP)
-
-        if c_toProj.IsPeriodic:
-            convertPolyCrvsToNurbs(projs_atTrialTol)
-        else:
-            projs_atTrialTol = explodePolyCrvs(projs_atTrialTol)
 
         if areAllCurvesSimplified(projs_atTrialTol, bTryRebuildOthersUniform):
             for proj in projs_FullTol: proj.Dispose()
@@ -976,7 +953,7 @@ def projectCurve_Tight(rgC0, rgBs_1Face, rgPlanes, vectDir, **kwargs):
         bProjectCrvSegs
         fTol
         bPostProcess
-        bTryOnlyUniformCubicForNonlinear
+        bOnlyLinesAndCubicNurbs
         bTryGetArcs
         bAcceptRational
         bTryRebuildOthersUniform
@@ -993,7 +970,7 @@ def projectCurve_Tight(rgC0, rgBs_1Face, rgPlanes, vectDir, **kwargs):
     bProjectCrvSegs = getOpt('bProjectCrvSegs')
     fTol = getOpt('fTol')
     bPostProcess = getOpt('bPostProcess')
-    bTryOnlyUniformCubicForNonlinear = getOpt('bTryOnlyUniformCubicForNonlinear')
+    bOnlyLinesAndCubicNurbs = getOpt('bOnlyLinesAndCubicNurbs')
     bTryGetArcs = getOpt('bTryGetArcs')
     bAcceptRational = getOpt('bAcceptRational')
     bTryRebuildOthersUniform = getOpt('bTryRebuildOthersUniform')
@@ -1093,12 +1070,6 @@ def projectCurve_Tight(rgC0, rgBs_1Face, rgPlanes, vectDir, **kwargs):
                         c.Dispose()
 
 
-    def reportCrvTypes(rgCrvs):
-        sTypes = [c.GetType().Name for c in rgCrvs]
-        for sType in set(sTypes):
-            print("[{}] {}".format(sTypes.count(sType), sType))
-
-
     def getJoints(rgCrvs_In):
         # Use JoinCurves to quickly obtain joint locations.
 
@@ -1181,9 +1152,9 @@ def projectCurve_Tight(rgC0, rgBs_1Face, rgPlanes, vectDir, **kwargs):
         def projectCrvToGeom_wrapped(crv_In, tolerance):
             return projectCrvToGeom(crv_In, rgBs_1Face, rgPlanes, vectDir, tolerance)
 
-        if bTryOnlyUniformCubicForNonlinear:
+        if bOnlyLinesAndCubicNurbs:
             for i, c_toProj in enumerate(cs_toProj):
-                projected_segs = processCrv_to_only_uniformNonRationalCubic_or_line(
+                projected_segs = processCrv_to_only_lines_and_cubicNurbs(
                     c_toProj,
                     fTol_Proj_Total,
                     projectCrvToGeom_wrapped,
@@ -1245,7 +1216,7 @@ def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
     bLoose = getOpt('bLoose')
     fTol = getOpt('fTol')
     bPostProcess = getOpt('bPostProcess')
-    bTryOnlyUniformCubicForNonlinear = getOpt('bTryOnlyUniformCubicForNonlinear')
+    bOnlyLinesAndCubicNurbs = getOpt('bOnlyLinesAndCubicNurbs')
     bTryGetArcs = getOpt('bTryGetArcs')
     bAcceptRational = getOpt('bAcceptRational')
     bTryRebuildOthersUniform = getOpt('bTryRebuildOthersUniform')
@@ -1298,7 +1269,7 @@ def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
                 bProjectCrvSegs=bProjectCrvSegs,
                 fTol=fTol,
                 bPostProcess=bPostProcess,
-                bTryOnlyUniformCubicForNonlinear=bTryOnlyUniformCubicForNonlinear,
+                bOnlyLinesAndCubicNurbs=bOnlyLinesAndCubicNurbs,
                 bTryGetArcs=bTryGetArcs,
                 bAcceptRational=bAcceptRational,
                 bTryRebuildOthersUniform=bTryRebuildOthersUniform,

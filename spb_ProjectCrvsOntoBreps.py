@@ -7,6 +7,9 @@ to the TryGetPlane plane, then split at the intersections with the monoface brep
 With AttemptRebuild enabled, curve will be projected at half the tolerance,
 and a rebuild (to uniform) of the projected curve will be attempted at half tolerance.
 If not successful, the projection at full tolerance will be used.
+
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums, https://discourse.mcneel.com/
 """
 
 from __future__ import absolute_import, division, print_function, unicode_literals
@@ -662,8 +665,6 @@ def rebuildUniformNonrationalCubic(rgCrv, tolerance, bDebug=False):
         sc.escape_test()
 
 
-        # Degree 3.
-
         rebuilt = rgCrv.Rebuild(
             pointCount=iCt_Cp_Try,
             degree=3,
@@ -794,7 +795,7 @@ def areAllCurvesSimplified(rgCrvs, bTryRebuildOthersUniform):
     return True
 
 
-def rebuild(nc, tolerance):
+def rebuild(nc, tolerance, bDebug=False):
 
     # Try rebuilding as a Bezier.
     for iDeg in 2, 3, 5:
@@ -929,7 +930,8 @@ def processCrv_per_arguments(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped
                 # Rebuild to complement of projection tolerance.
                 rebuilt = rebuild(
                     proj,
-                    tolerance=fTol_Proj_Total-fTol_Proj_WIP)
+                    tolerance=fTol_Proj_Total-fTol_Proj_WIP,
+                    bDebug=bDebug)
                 if rebuilt:
                     potentials.append(rebuilt)
                     continue

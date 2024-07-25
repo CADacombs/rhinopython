@@ -2,8 +2,8 @@
 This script will create draft curves silhouettes as obtained via _DraftAngleAnalysis,
 except with curve simplification options and a more convenient execution.
 
-Send any questions, comments, or script development service needs to @spb on the McNeel Forums:
-https://discourse.mcneel.com/
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums, https://discourse.mcneel.com/
 """
 
 from __future__ import absolute_import, division, print_function, unicode_literals
@@ -23,6 +23,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Now skips self-intersecting curves.
         Pulls curves not on face to the face. The error is not uncommon for ComputeDraftCurve.
         Added option and routine to split output curves at G2 discontinuities.
+240725: Bug fix in finding G2 discontinuities.
+        Bug fix in removing knots.
 """
 
 import Rhino
@@ -71,6 +73,7 @@ class Opts():
 
     key = 'fDraftAngle_Deg'; keys.append(key)
     values[key] = 0.0
+    names[key] = 'DraftAngle'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -82,14 +85,13 @@ class Opts():
 
     key = 'fDistTol'; keys.append(key)
     values[key] = 0.5 * sc.doc.ModelAbsoluteTolerance
-    riOpts[key] = ri.Custom.OptionDouble(
-        values[key], setLowerLimit=True, limit=1e-6)
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
     key = 'fAngle_Tol_Deg'; keys.append(key)
     values[key] = 0.5 * sc.doc.ModelAngleToleranceDegrees
-    riOpts[key] = ri.Custom.OptionDouble(
-        values[key], setLowerLimit=True, limit=1e-6)
+    names[key] = 'AngleTol'
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bSimplifyRes'; keys.append(key)
@@ -180,6 +182,22 @@ class Opts():
     def setValue(cls, key, idxList=None):
 
         if key == 'fDraftAngle_Deg':
+            cls.values[key] = cls.riOpts[key].CurrentValue
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+            return
+
+        if key == 'fDistTol':
+            if cls.riOpts[key].CurrentValue < 1e-6:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+
+            cls.values[key] = cls.riOpts[key].CurrentValue
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+            return
+
+        if key == 'fAngle_Tol_Deg':
+            if cls.riOpts[key].CurrentValue < 1e-6:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+
             cls.values[key] = cls.riOpts[key].CurrentValue
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
             return
@@ -479,24 +497,16 @@ def is_NurbsCrv_internally_G2_continuous(nc, fAngle_Tol_Deg, bDebug=False):
     if nc.Degree >= 3 and isUniformNurbsCurve(nc):
         return True
 
-    bFoundG2_discont, t = nc.GetNextDiscontinuity(
+    cosAngleTolerance = math.cos(math.radians(fAngle_Tol_Deg))
+
+    bFoundG1_discont, t = nc.GetNextDiscontinuity(
         continuityType=rg.Continuity.G2_locus_continuous if nc.IsPeriodic else rg.Continuity.G2_continuous,
         t0=nc.Domain.T0,
-        t1=nc.Domain.T1)
-    if bDebug: sEval='bFoundG2_discont'; print(sEval+':',eval(sEval))
-    if bFoundG2_discont:
-        return False
-
-    # Testing G1 separately to apply a custom tolerance.
-    # If the discontinuity type is G2 instead, is the previous check necessary?
-    bFoundG1_discont, t = nc.GetNextDiscontinuity(
-        continuityType=rg.Continuity.G1_locus_continuous if nc.IsPeriodic else rg.Continuity.G1_continuous,
-        t0=nc.Domain.T0,
         t1=nc.Domain.T1,
-        cosAngleTolerance=math.cos(sc.doc.ModelAngleToleranceRadians),
-        curvatureTolerance=Rhino.RhinoMath.SqrtEpsilon)
+        cosAngleTolerance=cosAngleTolerance,
+        curvatureTolerance=Rhino.RhinoMath.UnsetValue) # Value for curvatureTolerance doesn't seem to have an effect for finding G2 discontinuities.
     if bFoundG1_discont:
-        print(t)
+        if bDebug: print("First G2 discontinuity found at {}.".format(t))
         return False
 
     return True
@@ -670,37 +680,40 @@ def removeMultiKnots(nc_In, iDegs, tolerance, bDebug):
 
     if bDebug: print("removeMultiKnots:".format(tolerance))
 
+    #iDegs = range(2, 7+1)
+
     for iDeg in iDegs:
         if iDeg < nc_In.Degree: continue
 
-        nc_WIP = nc_In.DuplicateCurve()
+        for minimumMultiplicity in range(1, iDeg-2+1):
+            nc_WIP = nc_In.DuplicateCurve()
 
-        if iDeg > nc_In.Degree:
-            nc_WIP.IncreaseDegree(iDeg)
-
-        for minimumMultiplicity in range(1, nc_WIP.Degree-2+1):
+            if iDeg > nc_In.Degree:
+                nc_WIP.IncreaseDegree(iDeg)
 
             iCt_KnotsRemoved = nc_WIP.Knots.RemoveMultipleKnots(
                 minimumMultiplicity=minimumMultiplicity,
-                maximumMultiplicity=nc_WIP.Degree+1,
+                maximumMultiplicity=iDeg+1,
                 tolerance=1.0)
             if not iCt_KnotsRemoved:
                 if bDebug: print("RemoveMultipleKnots failed to remove any knots.")
+                nc_WIP.Dispose()
                 continue # to next minimumMultiplicity.
 
             bSuccess, fDev = rg.Curve.GetDistancesBetweenCurves(
                 nc_WIP, nc_In, tolerance=0.1*tolerance)[:2]
             if not bSuccess:
+                nc_WIP.Dispose()
                 continue # to next minimumMultiplicity.
 
             if bDebug: sEval='fDev'; print(sEval+':',eval(sEval))
             if fDev > tolerance:
+                nc_WIP.Dispose()
                 continue # to next minimumMultiplicity.
 
             _tangentAngleDifference(nc_In, nc_WIP, bDebug)
             return nc_WIP, fDev
 
-        nc_WIP.Dispose()
 
 
 def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_Deg=None, bDebug=False):
@@ -719,7 +732,7 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_D
     fTol_Min = 1e-6
 
     if fTol is None:
-        fTol = fTol_Min
+        fTol = max((fTol_Min, 0.1*sc.doc.ModelAbsoluteTolerance))
 
     if fAngle_Tol_Deg is None:
         fAngle_Tol_Deg = sc.doc.ModelAngleToleranceDegrees
@@ -767,13 +780,14 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_D
         iDegs=iDegs,
         tolerance=fTol,
         bDebug=bDebug)
-
-    if rc is not None:
+    if rc:
         return rc[0]
 
-    if is_NurbsCrv_internally_G2_continuous(nc_In, fAngle_Tol_Deg, bDebug):
-        rc = removeMultiKnots(nc_In, iDegs, fTol, bDebug)
-        if rc: return rc[0]
+    rc = removeMultiKnots(nc_In, iDegs, fTol, bDebug)
+    if rc: return rc[0]
+    #if is_NurbsCrv_internally_G2_continuous(nc_In, fAngle_Tol_Deg, bDebug):
+    #    rc = removeMultiKnots(nc_In, iDegs, fTol, bDebug)
+    #    if rc: return rc[0]
 
     rc = rebuild_to_MultiSpan(
         nc_In,
@@ -784,14 +798,12 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_D
     if rc:
         return rc[0]
 
-    print("TODO: Split at non-G2 knots.")
 
-
-def split_NurbsCrv_at_G2_discontinuities(nc_In, bDebug=False):
+def split_NurbsCrv_at_G2_discontinuities(nc_In, angleToleranceRadians, bDebug=False):
     if not isinstance(nc_In, rg.NurbsCurve):
-        raise ValueError("{} passed to is_NurbsCrv_internally_G2_continuous.".format(nc_In))
+        raise ValueError("{} passed to split_NurbsCrv_at_G2_discontinuities.".format(nc_In))
 
-    cosAngleTolerance = math.cos(sc.doc.ModelAngleToleranceRadians)
+    cosAngleTolerance = math.cos(angleToleranceRadians)
 
     t0 = nc_In.Domain.T0 # Start parameter of check. Is itself ignored.
 
@@ -801,11 +813,11 @@ def split_NurbsCrv_at_G2_discontinuities(nc_In, bDebug=False):
         sc.escape_test()
 
         bFoundG1_discont, t = nc_In.GetNextDiscontinuity(
-            continuityType=rg.Continuity.G1_locus_continuous if nc_In.IsPeriodic else rg.Continuity.G1_continuous,
+            continuityType=rg.Continuity.G2_locus_continuous if nc_In.IsPeriodic else rg.Continuity.G2_continuous,
             t0=t0,
             t1=nc_In.Domain.T1,
             cosAngleTolerance=cosAngleTolerance,
-            curvatureTolerance=Rhino.RhinoMath.SqrtEpsilon)
+            curvatureTolerance=Rhino.RhinoMath.UnsetValue) # Value for curvatureTolerance doesn't seem to have an effect for finding G2 discontinuities.
 
         if not bFoundG1_discont:
             break # out of while loop.
@@ -839,10 +851,10 @@ def split_NurbsCrv_at_G2_discontinuities(nc_In, bDebug=False):
     return joined
 
 
-def split_NurbsCrvs_at_G2_discontinuities(rgCrvs_In, bDebug=False):
+def split_NurbsCrvs_at_G2_discontinuities(rgCrvs_In, angleToleranceRadians, bDebug=False):
     """
-    Will return new list with splits and duplicates,
-    so it is up to the calling code to Dispose the curves in the original list.
+    Return: list(Curves) with splits and duplicates,
+            It is up to the calling code to Dispose the curves in the original list.
     """
     rgCs_Out = []
     for c in rgCrvs_In:
@@ -850,7 +862,7 @@ def split_NurbsCrvs_at_G2_discontinuities(rgCrvs_In, bDebug=False):
             rgCs_Out.append(c.DuplicateCurve())
             continue
 
-        rc = split_NurbsCrv_at_G2_discontinuities(c, bDebug=bDebug)
+        rc = split_NurbsCrv_at_G2_discontinuities(c, angleToleranceRadians, bDebug=bDebug)
 
         if rc is None:
             rgCs_Out.append(c.DuplicateCurve())
@@ -903,10 +915,10 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
     bDebug = getOpt('bDebug')
 
     # Prepare variables to be passed to Compute or ComputeDraftCurves.
-    draftAngleRadians = Rhino.RhinoMath.ToRadians(fDraftAngle_Deg)
+    draftAngleRadians = math.radians(fDraftAngle_Deg)
     pullDirection = _getDirectionVector(Opts.values['iPullDir'])
     tol_ForCompute_or_CDC = 0.5*fDistTol if bSimplifyRes else fDistTol
-    angleToleranceRadians = Rhino.RhinoMath.ToRadians(fAngle_Tol_Deg)
+    angleToleranceRadians = math.radians(fAngle_Tol_Deg)
 
 
     iDegs = []
@@ -952,7 +964,7 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
 
 
 
-    rgCs_Res_Compute_Filtered = []
+    rgCs_WIP = []
     #fLengths_Totals = [0.0]
 
     Rhino.RhinoApp.SetCommandPrompt("Collecting filtered silhouette curves ...")
@@ -996,29 +1008,27 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
                 continue
 
             if isCurveOnFace(silh.Curve, rgF, tol_ForCompute_or_CDC, bDebug=bDebug):
-                rgCs_Res_Compute_Filtered.append(silh.Curve)
+                rgCs_WIP.append(silh.Curve)
             else:
                 new_pull = create_normal_def_pull_to_face(rgF, silh.Curve, tol_ForCompute_or_CDC, bDebug=bDebug)
                 silh.Curve.Dispose()
-                rgCs_Res_Compute_Filtered.append(new_pull)
+                rgCs_WIP.append(new_pull)
 
 
     if not bSimplifyRes and not bSplitNonG2:
-        return rgCs_Res_Compute_Filtered
+        return rgCs_WIP
 
 
-    if not bSimplifyRes:
-        rgCs_PostProcessed = rgCs_Res_Compute_Filtered
-    else:
+    if bSimplifyRes:
         Rhino.RhinoApp.SetCommandPrompt("Simplifying ...")
         rgCs_Post_simplified = []
-        for c in rgCs_Res_Compute_Filtered:
+        for c in rgCs_WIP:
             rgC_Simplified = simplifyCurve(
                 c,
                 bArcOK=bArcOK,
                 iDegs=iDegs,
                 fTol=tol_ForCompute_or_CDC,
-                fAngle_Tol_Deg=None,
+                fAngle_Tol_Deg=fAngle_Tol_Deg,
                 bDebug=bDebug)
 
             if rgC_Simplified is None:
@@ -1026,17 +1036,21 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
             else:
                 rgCs_Post_simplified.append(rgC_Simplified)
                 c.Dispose()
-        rgCs_PostProcessed = rgCs_Post_simplified
+        rgCs_WIP = rgCs_Post_simplified
 
-    if not bSplitNonG2:
-        rgCs_PostProcessed = rgCs_Res_Compute_Filtered
-    else:
+
+    if bSplitNonG2:
         Rhino.RhinoApp.SetCommandPrompt("Splitting ...")
-        rgCs_Post_split = split_NurbsCrvs_at_G2_discontinuities(rgCs_PostProcessed, bDebug=bDebug)
-        for c in rgCs_PostProcessed: c.Dispose()
-        rgCs_PostProcessed = rgCs_Post_split
+        rgCs_Post_split = split_NurbsCrvs_at_G2_discontinuities(
+            rgCs_WIP,
+            angleToleranceRadians,
+            bDebug=bDebug,
+            )
+        for c in rgCs_WIP: c.Dispose()
+        rgCs_WIP = rgCs_Post_split
 
-    return rgCs_PostProcessed
+
+    return rgCs_WIP
 
 
 def processDocObjects(rhBreps, **kwargs):

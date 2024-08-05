@@ -1,12 +1,14 @@
 """
-This script wraps _Rotate3D with the axis of rotation inferred from a
-post-selected object.
+This script wraps _Rotate3D with the additional option of inferring the rotation axis
+from a post-selected object, e.g., linear curve, arc curve, cylinder.
 """
 
 #! python3
 
 """
 240731-0801: Created.
+240805: All options of _Rotate3D are now available, therefore this script can be used
+        in place of that command.
 """
 
 import Rhino
@@ -117,6 +119,10 @@ class Opts:
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
+class MyGlobals:
+    line_Axis = None
+
+
 def getAxisFromArc(arc):
     xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, arc.Plane)
     line_Axis = rg.Line(
@@ -160,20 +166,10 @@ def getAxisFromFace(face: rg.BrepFace, fFaceTol: float):
         return rg.Line(torus.Plane.Origin, torus.Plane.Normal)
 
 
-def getInput():
+def getInput_ObjForRotAxis():
     """
     Get object with optional input.
     """
-
-    go = ri.Custom.GetObject()
-
-    go.SetCommandPrompt("Select object for axis of rotation")
-
-    go.GeometryFilter = (
-        rd.ObjectType.Curve
-        |
-        rd.ObjectType.Surface
-    )
 
     def customGeomFilter(rdObj, geom, compIdx):
         # print(rdObj, geom, compIdx.ComponentIndexType, compIdx.Index
@@ -187,30 +183,19 @@ def getInput():
                 Opts.values['fLineTol'],
                 Opts.values['fArcTol'])
             rgC_Dup.Dispose()
+            MyGlobals.line_Axis = line_Axis
             return bool(line_Axis)
         elif isinstance(geom, rg.BrepFace):
             line_Axis = getAxisFromFace(
                 geom,
                 Opts.values['fFaceTol']
             )
+            MyGlobals.line_Axis = line_Axis
             return bool(line_Axis)
         else:
             print(f"{geom = }")
 
         return False
-
-    go.SetCustomGeometryFilter(customGeomFilter)
-
-    go.AcceptNumber(True, acceptZero=True)
-
-    go.AlreadySelectedObjectSelect = True
-    go.DeselectAllBeforePostSelect = (
-        False  # So objects won't be deselected on repeats of While loop.
-    )
-    go.EnableClearObjectsOnEntry(False)  # Keep objects in go on repeats of While loop.
-    go.EnableUnselectObjectsOnExit(False)
-
-    bPreselectedObjsChecked = False
 
     idxs_Opt = {}
 
@@ -218,6 +203,31 @@ def getInput():
         idxs_Opt[key] = Opts.addOption(go, key)
 
     while True:
+
+        go = ri.Custom.GetObject()
+
+        go.SetCommandPrompt("Select object for rotation axis")
+
+        go.GeometryFilter = (
+            rd.ObjectType.Curve
+            |
+            rd.ObjectType.Surface
+        )
+
+        go.SetCustomGeometryFilter(customGeomFilter)
+
+        go.OneByOnePostSelect = True
+
+        go.AcceptNumber(True, acceptZero=True)
+
+        go.AlreadySelectedObjectSelect = True
+        go.DeselectAllBeforePostSelect = (
+            False  # So objects won't be deselected on repeats of While loop.
+        )
+        go.EnableClearObjectsOnEntry(False)  # Keep objects in go on repeats of While loop.
+        go.EnableUnselectObjectsOnExit(False)
+
+
         go.ClearCommandOptions()
         idxs_Opt.clear()
 
@@ -228,21 +238,30 @@ def getInput():
 
         res = go.Get()
 
-        # Use bPreselectedObjsChecked so that only objects before the
-        # first call to go.GetMultiple is considered.
-        if not bPreselectedObjsChecked and go.ObjectsWerePreselected:
-            bPreselectedObjsChecked = True
-            go.EnablePreSelect(False, True)
-            continue
-
         if res == ri.GetResult.Cancel:
             go.Dispose()
             return
 
         if res == ri.GetResult.Object:
-            objref = go.Object(0)
             go.Dispose()
-            return objref
+            sc.doc.Objects.UnselectAll()
+            sc.doc.Views.Redraw()
+
+            if MyGlobals.line_Axis:
+                return MyGlobals.line_Axis
+
+            print("Cannot derive rotation axis from that object.")
+
+            continue
+
+        #     objref = go.Object(0)
+        #     go.Dispose()
+        #     return objref
+
+        # if res == ri.GetResult.Object:
+        #     objref = go.Object(0)
+        #     go.Dispose()
+        #     return objref
 
         # An option was selected or a number was entered.
         if res == ri.GetResult.Number:
@@ -275,7 +294,7 @@ def getAxisFromObjRef(objref_Axis: rd.ObjRef, fLineTol: float, fArcTol: float, f
             if line_Axis is None:
                 raise Exception("Cannot obtain reference axis from face.")
         else:
-            raise Exception("Not implemented axis extraction from {} yet.".format(srf_In))
+            raise Exception(f"Axis extraction from {face_In} not implemented yet.")
 
     return line_Axis
 
@@ -288,9 +307,76 @@ def main():
         filter=rd.ObjectType.AnyObject)
     if res != Rhino.Commands.Result.Success: return
 
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
 
-    objref_Axis = getInput()
-    if objref_Axis is None:
+
+    gp = ri.Custom.GetPoint()
+
+    gp.SetCommandPrompt("Start of rotation axis")
+
+    gp.AcceptNumber(False, acceptZero=False)
+
+    idxs_Opt = {}
+
+    idxs_Opt['SurfaceNormal'] = gp.AddOption('SurfaceNormal')
+    idxs_Opt['DeriveFromObject'] = gp.AddOption('DeriveFromObject')
+
+    res = gp.Get()
+
+    if res == ri.GetResult.Cancel:
+        gp.Dispose()
+        return
+
+    if res == ri.GetResult.Point:
+        pt = gp.Point()
+        gp.Dispose()
+
+        sc.doc.Objects.UnselectAll()
+
+        for o in objrefs_ToRotate:
+            sc.doc.Objects.Select(o)
+
+        Rhino.RhinoApp.RunScript(
+            script="_Rotate3D {}".format(
+                pt,
+            ),
+            echo=bDebug,
+        )
+
+        sc.doc.Views.Redraw()
+
+        return
+
+
+    if gp.Option().Index == idxs_Opt['SurfaceNormal']:
+        gp.Dispose()
+
+        sc.doc.Objects.UnselectAll()
+
+        for o in objrefs_ToRotate:
+            sc.doc.Objects.Select(o)
+
+        Rhino.RhinoApp.RunScript(
+            script="_Rotate3D _SurfaceNormal",
+            echo=bDebug,
+        )
+
+        sc.doc.Views.Redraw()
+
+        return
+
+
+    if gp.Option().Index == idxs_Opt['DeriveFromObject']:
+        pass
+
+    gp.Dispose()
+
+    # sc.doc.Objects.UnselectAll()
+
+
+    line_Axis = getInput_ObjForRotAxis()
+    if line_Axis is None:
         return
 
     fLineTol = Opts.values['fLineTol']
@@ -299,11 +385,11 @@ def main():
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
-    line_Axis = getAxisFromObjRef(
-        objref_Axis,
-        fLineTol,
-        fArcTol,
-        fFaceTol)
+    # line_Axis = getAxisFromObjRef(
+    #     objref_Axis,
+    #     fLineTol,
+    #     fArcTol,
+    #     fFaceTol)
 
     sc.doc.Objects.UnselectAll()
 

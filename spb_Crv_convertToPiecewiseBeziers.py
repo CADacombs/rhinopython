@@ -15,8 +15,15 @@ a non-domain matched version.
 
 from __future__ import absolute_import, division, print_function, unicode_literals
 
+#! python 2
+
 """
 240107: Created.
+240116: Bug fix.
+240813: Raised tolerance threshold before parameter matching.
+240814: Now can output PolyCurves or individual Bezier (single-spanned) NurbsCurves.
+
+TODO: Add option for resultant curve to be a PolyCurve instead of a NurbsCurve.
 """
 
 import Rhino
@@ -36,12 +43,23 @@ class Opts():
     stickyKeys = {}
 
 
-    key = 'bReplace_NotAdd'
+    key = 'bExplode'; keys.append(key)
     values[key] = True
-    names[key] = 'Action'
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Add', 'Replace')
+    # names[key] = 'ExplodeToBeziers'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
+
+    key = 'bNurbs_NotPoly'; keys.append(key)
+    values[key] = True
+    names[key] = 'Curve'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Poly', 'Nurbs')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bDeleteInput'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
     key = 'bEcho'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
@@ -123,7 +141,10 @@ def getInput():
 
         idxs_Opt.clear()
 
-        addOption('bReplace_NotAdd')
+        addOption('bExplode')
+        if not Opts.values['bExplode']:
+            addOption('bNurbs_NotPoly')
+        addOption('bDeleteInput')
         addOption('bEcho')
         addOption('bDebug')
 
@@ -157,7 +178,7 @@ def formatDistance(fDistance, iPrecision=15):
     return "{:.{}g}".format(fDistance, iPrecision)
 
 
-def createNurbsCrv(rgCrv_In, bDebug=False):
+def createCrvs(rgCrv_In, bExplode, bNurbs_NotPoly, bDebug=False):
     """
     Returns on success: rg.NurbsCurve, None
     Returns on fail: None, str(Log)
@@ -165,6 +186,8 @@ def createNurbsCrv(rgCrv_In, bDebug=False):
 
     if isinstance(rgCrv_In, rg.PolyCurve):
         rgC_WIP = rgCrv_In.CleanUp()
+        if rgC_WIP is None:
+            rgC_WIP = rgCrv_In.DuplicateCurve()
     else:
         rgC_WIP = rgCrv_In.DuplicateCurve()
 
@@ -206,7 +229,7 @@ def createNurbsCrv(rgCrv_In, bDebug=False):
 
     # nc_WIP is now a multi-span NurbsCurve.
 
-    ncs_Beziers = [bc.ToNurbsCurve() for bc in rg.BezierCurve.CreateBeziers(rgC_WIP)]
+    ncs_Beziers = [bc.ToNurbsCurve() for bc in rg.BezierCurve.CreateBeziers(nc_WIP)]
 
 
     for i in range(1, len(ncs_Beziers)):
@@ -258,6 +281,16 @@ def createNurbsCrv(rgCrv_In, bDebug=False):
                 print("Domains already match within {} (machine epsilon).".format(
                     formatDistance(2**-52)))
             continue
+        if abs(m - 1.0) <= 2**-51:
+            if bDebug:
+                print("Domains already match within {}.".format(
+                    formatDistance(2**-51)))
+            continue
+        if abs(m - 1.0) <= 2**-50:
+            if bDebug:
+                print("Domains already match within {}.".format(
+                    formatDistance(2**-50)))
+            continue
         #if abs(m - 1.0) <= Rhino.RhinoMath.ZeroTolerance:
         #    if bDebug:
         #        print("Domains already match within {}.".format(
@@ -272,6 +305,8 @@ def createNurbsCrv(rgCrv_In, bDebug=False):
         nc_M.Domain = rg.Interval(0.0, length_Domain_M_Out)
         domain_M_Post = nc_M.Domain
 
+    if bExplode:
+        return ncs_Beziers, None
 
     pcs = rg.Curve.JoinCurves(ncs_Beziers, joinTolerance=1e-6, preserveDirection=True)
 
@@ -280,49 +315,77 @@ def createNurbsCrv(rgCrv_In, bDebug=False):
 
     pc_Res = pcs[0]
 
+    if not bNurbs_NotPoly:
+        return [pc_Res], None
+
     nc_Out = pc_Res.ToNurbsCurve()
     pc_Res.Dispose()
 
-    return nc_Out, None
+    return [nc_Out], None
 
 
-def processCurveObject(rhCrv_In, bReplace_NotAdd, bEcho=True, bDebug=False):
+def processCurveObject(rhCrv_In, bExplode, bNurbs_NotPoly, bDeleteInput, bEcho=True, bDebug=False):
     """
     """
 
     rdCrv_In = rs.coercerhinoobject(rhCrv_In) # IsDocumentControlled.
     rgCrv_In = rdCrv_In.Geometry # IsDocumentControlled.
 
-    nc_Res, sLog = createNurbsCrv(
+    cs_Res, sLog = createCrvs(
         rgCrv_In,
+        bExplode=bExplode,
+        bNurbs_NotPoly=bNurbs_NotPoly,
         bDebug=bDebug,
         )
-    if nc_Res is None:
-        return nc_Res, sLog
+    if not cs_Res:
+        return None, sLog
 
-    if bReplace_NotAdd:
-        gOut = rdCrv_In.Id
-        if not sc.doc.Objects.Replace(objectId=gOut, curve=nc_Res):
-            sOut = "Replace failed."
-            if bEcho: print(sOut)
-            return None, sOut
-        sOut = "Curve was modified"
+    gOuts = []
+    sOuts = []
+
+    bAllAddSuccess = True
+
+    if bDeleteInput:
+        if len(cs_Res) == 1:
+            if not sc.doc.Objects.Replace(objectId=rdCrv_In.Id, curve=cs_Res[0]):
+                sOut = "Replace failed."
+                if bEcho: print(sOut)
+                return None, sOut
+            sOuts.append("Curve was replaced")
+        else:
+            for c in cs_Res:
+                gOut = sc.doc.Objects.AddCurve(c)
+                if gOut != gOut.Empty:
+                    gOuts.append(gOut)
+                    sOuts.append("Curve was added.")
+                else:
+                    bAllAddSuccess = False
+                    sOuts.append("AddCurve failed.")
+            if bAllAddSuccess:
+                sc.doc.Objects.Delete(rdCrv_In)
+                # sOut = "Curve was replaced."
     else:
-        gOut = sc.doc.Objects.AddCurve(nc_Res)
-        if gOut == gOut.Empty:
-            sOut = "AddCurve failed."
-            if bEcho: print(sOut)
-            return None, sOut
-        sOut = "Curve was added"
+        # bDeleteInput == False
+        for c in cs_Res:
+            gOut = sc.doc.Objects.AddCurve(c)
+            if gOut != gOut.Empty:
+                gOuts.append(gOut)
+                sOuts.append("Curve was added.")
+            else:
+                bAllAddSuccess = False
+                sOuts.append("AddCurve failed.")
 
-    if sc.doc.Objects.Select(gOut):
-        sOut += " and is selected."
-    else:
-        sOut += " but could not be selected."
+    if not bAllAddSuccess:
+        return gOuts, sOuts
 
-    if bEcho: print(sOut)
+    # if sc.doc.Objects.Select(gOut):
+    #     sOut += " and is selected."
+    # else:
+    #     sOut += " but could not be selected."
 
-    return gOut, sOut
+    # if bEcho: print(sOut)
+
+    return gOuts, sOuts
 
 
 def main():
@@ -330,7 +393,9 @@ def main():
     objrefs = getInput()
     if objrefs is None: return
 
-    bReplace_NotAdd = Opts.values['bReplace_NotAdd']
+    bExplode = Opts.values['bExplode']
+    bNurbs_NotPoly = Opts.values['bNurbs_NotPoly']
+    bDeleteInput = Opts.values['bDeleteInput']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
@@ -338,25 +403,30 @@ def main():
 
     sc.doc.Objects.UnselectAll()
 
-    gCrvs_Mod = []
+    gCrvs_Res = []
     sLogs = []
 
     for objref in objrefs:
         rc = processCurveObject(
             objref,
-            bReplace_NotAdd=bReplace_NotAdd,
+            bExplode=bExplode,
+            bNurbs_NotPoly=bNurbs_NotPoly,
+            bDeleteInput=bDeleteInput,
             bEcho=bEcho if len(objrefs) == 1 else False,
             bDebug=bDebug,
             )
         if rc is None: continue
-        gCrvs_Mod.append(rc[0])
-        sLogs.append(rc[1])
+        gCrvs_Res.extend(rc[0])
+        sLogs.extend(rc[1])
 
     sc.doc.Views.RedrawEnabled = True
 
-    if bEcho and (len(objrefs) > 1):
-        for sLog in set(sLogs):
-            print("{} of {}".format(sLogs.count(sLog), sLog))
+    if bEcho and sLogs:
+        if len(sLogs) == 1:
+            print(sLogs[0])
+        else:
+            for sLog in set(sLogs):
+                print("[{}] {}".format(sLogs.count(sLog), sLog))
 
 
 if __name__ == '__main__': main()

@@ -1,11 +1,11 @@
 """
 This script is an alternative to _Fin.
 
-Routine SPB
+Loose
     Calculates translated Greville points.
     Has options to specify an angle from normal, constant or variable.
 
-Routine RC
+Not Loose
     Uses RhinoCommon's OffsetNormalToSurface method and is more similar to _Fin.
 
 Both methods creates a loft between the curve on surface and the offset curve.
@@ -18,6 +18,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 ...
 230419-20: Added use of OffsetNormalToSurface.  Refactored.
 230423-25: Various major changes.  Added AlignEndDirs option.  Now uses DrawConduit for preview.
+230925: Changed the click behavior when angle is not variable and not 0, 90, 180, 270.
+240816: Modified simplification of input curve routine.
 
 TODO:
     ? Replace _curveWithSpansCompletelyOnTheFace with a routine that instead trims curve to the face.
@@ -47,10 +49,9 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'bRC_NotSPB'; keys.append(key)
-    values[key] = False
-    names[key] = 'Routine'
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'SPB', 'RC')
+    key = 'bLoose'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bAlignEndDirs'; keys.append(key)
@@ -105,7 +106,7 @@ class Opts():
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'fTargetTol'; keys.append(key)
+    key = 'fSimplifyCrvTol'; keys.append(key)
     values[key] = sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
@@ -115,9 +116,10 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iLoftType'; keys.append(key)
-    listValues[key] = Enum.GetNames(rg.LoftType) # All items must be strings.
-    values[key] = 0
+    key = 'bDeg3InLoftDir_Not1'; keys.append(key)
+    values[key] = False
+    names[key] = 'DegInLoftDir'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], '1', '3')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bAddFinEndCrv'; keys.append(key)
@@ -206,7 +208,7 @@ class Opts():
     @classmethod
     def setValue(cls, key, idxList=None):
 
-        if key == 'fTargetTol':
+        if key == 'fSimplifyCrvTol':
             if cls.riOpts[key].CurrentValue < 0:
                 cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
 
@@ -229,20 +231,25 @@ def _addCommonOptions(go):
 
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
-    addOption('bRC_NotSPB')
+    addOption('bLoose')
     addOption('bAlignEndDirs')
     addOption('bExplodePolyCrv')
     addOption('bSplitAtPolyKnots')
     addOption('bSimplifyCrv')
-    if not Opts.values['bRC_NotSPB']:
+    if Opts.values['bSimplifyCrv']:
+        addOption('fSimplifyCrvTol')
+    Opts.names['fAngle_Start_Deg'] = 'AngleFromNormal'
+    if Opts.values['bLoose']:
+        if Opts.values['bVariableAngle']:
+            Opts.names['fAngle_Start_Deg'] = 'StartAngle'
         addOption('fAngle_Start_Deg')
         addOption('bVariableAngle')
         if Opts.values['bVariableAngle']:
             addOption('fAngle_End_Deg')
             addOption('bAngleChangePerCrvParam_NotLength')
     addOption('fDistance')
-    addOption('fTargetTol')
     addOption('bAddSrf')
+    addOption('bDeg3InLoftDir_Not1')
     addOption('bAddFinEndCrv')
     addOption('bAddLines')
     if Opts.values['bAddLines']:
@@ -299,19 +306,19 @@ def _getInput_Curve():
 
             return objref_CrvOnFace
 
-        bDefaultsForDir_NotAngle = (
-            Opts.values['bRC_NotSPB']
+        bNumberIsForDistDir = (
+            not Opts.values['bLoose']
             or
             (not Opts.values['bVariableAngle'] and
-                Opts.values['fAngle_Start_Deg'] in (0.0, 180.0))
+                Opts.values['fAngle_Start_Deg'] in (0.0, 90.0, 180.0, 270.0))
             or
-            (not Opts.values['bVariableAngle'] and
-                Opts.values['fAngle_Start_Deg'] in (0.0, 180.0) and
+            (Opts.values['bVariableAngle'] and
+                Opts.values['fAngle_Start_Deg'] in (0.0, 90.0, 180.0, 270.0) and
                 Opts.values['fAngle_End_Deg'] == Opts.values['fAngle_Start_Deg'])
             )
 
         if res == ri.GetResult.Number:
-            if bDefaultsForDir_NotAngle:
+            if bNumberIsForDistDir:
                 key = 'fDistance'
             else:
                 key = 'fAngle_Start_Deg'
@@ -320,9 +327,6 @@ def _getInput_Curve():
             continue
 
         # An option was selected.
-
-        if 'iLoftType' in idxs_Opt:
-            Opts.values['iLoftType'] = go.Option().CurrentListOptionIndex
 
         for key in idxs_Opt:
             if go.Option().Index == idxs_Opt[key]:
@@ -378,20 +382,20 @@ def _getInput_Face():
             return objref_Face
 
 
-        bDefaultsForDir_NotAngle = (
-            Opts.values['bRC_NotSPB']
+        bNumberIsForDistDir = (
+            not Opts.values['bLoose']
             or
             (not Opts.values['bVariableAngle'] and
-                Opts.values['fAngle_Start_Deg'] in (0.0, 180.0))
+                Opts.values['fAngle_Start_Deg'] in (0.0, 90.0, 180.0, 270.0))
             or
-            (not Opts.values['bVariableAngle'] and
-                Opts.values['fAngle_Start_Deg'] in (0.0, 180.0) and
+            (Opts.values['bVariableAngle'] and
+                Opts.values['fAngle_Start_Deg'] in (0.0, 90.0, 180.0, 270.0) and
                 Opts.values['fAngle_End_Deg'] == Opts.values['fAngle_Start_Deg'])
             )
 
 
         if res == ri.GetResult.Number:
-            if bDefaultsForDir_NotAngle:
+            if bNumberIsForDistDir:
                 key = 'fDistance'
             else:
                 key = 'fAngle_Start_Deg'
@@ -400,15 +404,6 @@ def _getInput_Face():
             continue
 
         # An option was selected.
-
-        if Opts.values['bAddSrf'] and not Opts.values['bLoose'] and Opts.values['bUseSectionLines']:
-            if (
-                Opts.values['bLoft_NotSweep'] and
-                go.OptionIndex() == idxs_Opt['iLoftType']
-            ):
-                Opts.values['iLoftType'] = go.Option().CurrentListOptionIndex
-            elif Opts.riOpts['fTargetTol'].CurrentValue <= Rhino.RhinoMath.ZeroTolerance:
-                Opts.riOpts['fTargetTol'].CurrentValue = Opts.riOpts['fTargetTol'].InitialValue
 
         for key in idxs_Opt:
             if go.Option().Index == idxs_Opt[key]:
@@ -428,21 +423,23 @@ def _getInput_Click():
 
     go = ri.Custom.GetPoint()
 
-    bDefaultsForDir_NotAngle = (
-        Opts.values['bRC_NotSPB']
+    bDefaultsForClickDirFlipOnly = (
+        not Opts.values['bLoose']
         or
         (not Opts.values['bVariableAngle'] and
-            Opts.values['fAngle_Start_Deg'] in (0.0, 180.0))
+            Opts.values['fAngle_Start_Deg'] in (0.0, 90.0, 180.0, 270.0))
         or
-        (not Opts.values['bVariableAngle'] and
-            Opts.values['fAngle_Start_Deg'] in (0.0, 180.0) and
+        (Opts.values['bVariableAngle'] and
+            Opts.values['fAngle_Start_Deg'] in (0.0, 90.0, 180.0, 270.0) and
             Opts.values['fAngle_End_Deg'] == Opts.values['fAngle_Start_Deg'])
         )
 
-    if bDefaultsForDir_NotAngle:
+    if bDefaultsForClickDirFlipOnly:
         go.SetCommandPrompt("Left click to flip direction")
     else:
-        go.SetCommandPrompt("Left click to flip angle")
+        go.SetCommandPrompt("Left click to cycle the 4 angle and direction flips")
+
+    go.SetCommandPromptDefault("Accept result")
 
     go.AcceptNumber(True, acceptZero=True)
     go.AcceptNothing(True)
@@ -452,9 +449,10 @@ def _getInput_Click():
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
     key = 'FlipDir'; idxs_Opt[key] = go.AddOption(key)
-    if not bDefaultsForDir_NotAngle and Opts.values['bVariableAngle']:
+    if not bDefaultsForClickDirFlipOnly:
         key = 'FlipAngle'; idxs_Opt[key] = go.AddOption(key)
-        key = 'SwapAngles'; idxs_Opt[key] = go.AddOption(key)
+        if Opts.values['bVariableAngle']:
+            key = 'SwapAngles'; idxs_Opt[key] = go.AddOption(key)
 
     idxs_Opt.update(_addCommonOptions(go))
 
@@ -469,36 +467,67 @@ def _getInput_Click():
         return False
 
     if res == ri.GetResult.Point:
-        if bDefaultsForDir_NotAngle:
+        if Opts.values['bDebug']:
+            sEval = "bDefaultsForClickDirFlipOnly"; print("{}: {}".format(sEval, eval(sEval)))
+
+        if bDefaultsForClickDirFlipOnly:
             Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
             Opts.setValue('fDistance')
-            #if Opts.riOpts['fAngle_Start_Deg'].CurrentValue == 0.0:
-            #    Opts.riOpts['fAngle_Start_Deg'].CurrentValue = 180.0
-            #elif Opts.riOpts['fAngle_Start_Deg'].CurrentValue < 0.0:
-            #    Opts.riOpts['fAngle_Start_Deg'].CurrentValue = (
-            #            -180.0 + Opts.riOpts['fAngle_Start_Deg'].CurrentValue) % 180.0
-            #else:
-            #    Opts.riOpts['fAngle_Start_Deg'].CurrentValue = (
-            #            180.0 - Opts.riOpts['fAngle_Start_Deg'].CurrentValue) % 180.0
-            
-            #if Opts.riOpts['fAngle_End_Deg'].CurrentValue == 0.0:
-            #    Opts.riOpts['fAngle_End_Deg'].CurrentValue = 180.0
-            #elif Opts.riOpts['fAngle_End_Deg'].CurrentValue < 0.0:
-            #    Opts.riOpts['fAngle_End_Deg'].CurrentValue = (
-            #            -180.0 + Opts.riOpts['fAngle_End_Deg'].CurrentValue) % 180.0
-            #else:
-            #    Opts.riOpts['fAngle_End_Deg'].CurrentValue = (
-            #            180.0 - Opts.riOpts['fAngle_End_Deg'].CurrentValue) % 180.0
-        else:
+            go.Dispose()
+            return True
+
+        if Opts.values['bDebug']:
+            sEval = "Opts.values['fDistance']"; print("{}: {}".format(sEval, eval(sEval)))
+            sEval = "Opts.values['fAngle_Start_Deg']"; print("{}: {}".format(sEval, eval(sEval)))
+            sEval = "Opts.values['fAngle_End_Deg']"; print("{}: {}".format(sEval, eval(sEval)))
+
+        if (
+            Opts.riOpts['fDistance'].CurrentValue > 0.0 and
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue > 0.0
+        ):
+            #print("+D +A")
             Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
             Opts.riOpts['fAngle_End_Deg'].CurrentValue = -Opts.riOpts['fAngle_End_Deg'].CurrentValue
             Opts.setValue('fAngle_Start_Deg')
             Opts.setValue('fAngle_End_Deg')
+        elif (
+            Opts.riOpts['fDistance'].CurrentValue < 0.0 and
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue > 0.0
+        ):
+            #print("-D +A Good")
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
+            Opts.riOpts['fAngle_End_Deg'].CurrentValue = -Opts.riOpts['fAngle_End_Deg'].CurrentValue
+            Opts.setValue('fAngle_Start_Deg')
+            Opts.setValue('fAngle_End_Deg')
+        elif (
+            Opts.riOpts['fDistance'].CurrentValue < 0.0 and
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue < 0.0
+        ):
+            #print("-D -A Good")
+            Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
+            Opts.riOpts['fAngle_End_Deg'].CurrentValue = -Opts.riOpts['fAngle_End_Deg'].CurrentValue
+            Opts.setValue('fDistance')
+            Opts.setValue('fAngle_Start_Deg')
+            Opts.setValue('fAngle_End_Deg')
+        elif (
+            Opts.riOpts['fDistance'].CurrentValue > 0.0 and
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue < 0.0
+        ):
+            #print("+D -A")
+            Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
+            Opts.riOpts['fAngle_End_Deg'].CurrentValue = -Opts.riOpts['fAngle_End_Deg'].CurrentValue
+            Opts.setValue('fDistance')
+            Opts.setValue('fAngle_Start_Deg')
+            Opts.setValue('fAngle_End_Deg')
+        else:
+            raise Exception("What happened?")
         go.Dispose()
         return True
 
     if res == ri.GetResult.Number:
-        if bDefaultsForDir_NotAngle:
+        if bDefaultsForClickDirFlipOnly:
             key = 'fDistance'
         else:
             key = 'fAngle_Start_Deg'
@@ -509,7 +538,7 @@ def _getInput_Click():
 
     # An option was selected.
 
-    if Opts.values['bVariableAngle'] and go.OptionIndex() == idxs_Opt['SwapAngles']:
+    if Opts.values['bVariableAngle'] and 'SwapAngles' in idxs_Opt and go.OptionIndex() == idxs_Opt['SwapAngles']:
         Opts.riOpts['fAngle_Start_Deg'].CurrentValue, Opts.riOpts['fAngle_End_Deg'].CurrentValue = (
                 Opts.riOpts['fAngle_End_Deg'].CurrentValue, Opts.riOpts['fAngle_Start_Deg'].CurrentValue)
         Opts.setValue('fAngle_Start_Deg')
@@ -517,7 +546,7 @@ def _getInput_Click():
         go.Dispose()
         return True
 
-    if not bDefaultsForDir_NotAngle and 'FlipAngle' in idxs_Opt and go.OptionIndex() == idxs_Opt['FlipAngle']:
+    if not bDefaultsForClickDirFlipOnly and 'FlipAngle' in idxs_Opt and go.OptionIndex() == idxs_Opt['FlipAngle']:
         #Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
         #Opts.setValue('fDistance')
         Opts.riOpts['fAngle_Start_Deg'].CurrentValue = -Opts.riOpts['fAngle_Start_Deg'].CurrentValue
@@ -552,9 +581,6 @@ def _getInput_Click():
     #    Opts.setValue('fAngle_End_Deg')
         go.Dispose()
         return True
-
-    if 'iLoftType' in idxs_Opt:
-        Opts.values['iLoftType'] = go.Option().CurrentListOptionIndex
 
     for key in idxs_Opt:
         if go.Option().Index == idxs_Opt[key]:
@@ -643,7 +669,7 @@ def _createArrayedLines(rgCrv, rgSrf, fDistance, fAngle_Start_Deg, fAngle_End_De
     return rgLines_Arrayed
 
 
-def _crvWithSpansCompletelyOnFace(rgCrv, rgFace, t_Crv_Pick, fTargetTol, bDebug=False):
+def _crvWithSpansCompletelyOnFace(rgCrv, rgFace, t_Crv_Pick, fTol, bDebug=False):
     """
     Only process spans of the curve whose spans start and ends are on the Face.
     """
@@ -655,7 +681,7 @@ def _crvWithSpansCompletelyOnFace(rgCrv, rgFace, t_Crv_Pick, fTargetTol, bDebug=
         if not bSuccess: continue
         pt_OnFace = rgFace.PointAt(u,v)
         dist = pt_OnFace.DistanceTo(pt_OnCrv)
-        if dist > fTargetTol:
+        if dist > fTol:
             if bDebug:
                 sEval='dist'; print(sEval+': ',eval(sEval))
                 print("PointAtStart not on underlying surface.")
@@ -667,7 +693,7 @@ def _crvWithSpansCompletelyOnFace(rgCrv, rgFace, t_Crv_Pick, fTargetTol, bDebug=
         if not bSuccess: continue
         pt_OnFace = rgFace.PointAt(u,v)
         dist = pt_OnFace.DistanceTo(pt_OnCrv)
-        if dist > fTargetTol:
+        if dist > fTol:
             if bDebug:
                 #sc.doc.Objects.AddPoint(pt_OnFace)
                 sEval='dist'; print(sEval+': ',eval(sEval))
@@ -763,31 +789,168 @@ def _matchCrvEndDirs(nc_ToMod, nc_Ref):
     return True
 
 
-def _rebuildCrv(rgCrv_In, tol):
+def _tangentAngleDifference(cA, cB, bDebug=False):
+    tanDiffAtStart = rg.Vector3d.VectorAngle(cA.TangentAtStart, cB.TangentAtStart)
+    tanDiffAtEnd = rg.Vector3d.VectorAngle(cA.TangentAtEnd, cB.TangentAtEnd)
+    if bDebug:
+        sEval='Rhino.RhinoMath.ToDegrees(tanDiffAtStart)'; print(sEval+':',eval(sEval))
+        sEval='Rhino.RhinoMath.ToDegrees(tanDiffAtEnd)'; print(sEval+':',eval(sEval))
 
-    for exponent in xrange(9):
-        sc.escape_test()
 
-        spanCount = 2**exponent
+def _rebuild_to_Bezier(nc_In, iDegs, fTol, bDebug=False):
+    """
+    More strict fTol used on degree 2 since that Bezier doesn't allow
+    tangency matching of both ends when they are not already aligned.
 
-        pointCount = spanCount + 3
+    Returns on success: rg.NurbsCurve, float(deviation)
+    Returns on fail: None
+    """
+    if bDebug: print("rebuild_Bezier with fTol={}:".format(fTol))
 
-        nc_WIP = rgCrv_In.Rebuild(
-            pointCount,
-            degree=3,
+    for iDeg in iDegs:
+        pointCount = iDeg + 1
+
+        rebuilt = nc_In.Rebuild(
+            pointCount=pointCount,
+            degree=iDeg,
             preserveTangents=True)
 
-        nc_WIP.Domain = rgCrv_In.Domain
+        bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
+            nc_In, rebuilt, tolerance=0.1*fTol)[:2]
 
-        dev = _getDistancesBetweenCurves(rgCrv_In, nc_WIP)
-        if dev > tol:
-            nc_WIP.Dispose()
-            continue
+        if bSuccess:
+            if iDeg==2:
+                if fDistMax < 1e-6:
+                    if bDebug:
+                        print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
+                            fDistMax, iDeg, pointCount))
+                        _tangentAngleDifference(nc_In, rebuilt, bDebug)
+                    return rebuilt, fDistMax
+            elif fDistMax <= fTol:
+                if bDebug:
+                    print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
+                        fDistMax, iDeg, pointCount))
+                    _tangentAngleDifference(nc_In, rebuilt, bDebug)
+                return rebuilt, fDistMax
 
-        return nc_WIP
+        if bDebug:
+            print("Rebuild requires {}  Deg:{}  PtCt:{}".format(
+                fDistMax, iDeg, pointCount))
+        rebuilt.Dispose()
 
 
-def _simplifyCrvForLoft(rgCrv_In, fTargetTol, bDebug=False):
+def _rebuild_to_MultiSpan(nc_In, iDegs, fTol, bDebug=False):
+    """
+    Will not bother rebuilding to degree-2 since multiple spans are divided by
+    G1-likely knots.
+    """
+    if bDebug: print("rebuild_MultiSpan with fTol={}:".format(fTol))
+
+    iCt_MaxSpans = nc_In.SpanCount
+
+    #iCt_MaxCp = int(round(nc.GetLength() / (100.0 * sc.doc.ModelAbsoluteTolerance)))
+    #if bDebug: sEval='iCt_MaxCp'; print(sEval+':',eval(sEval))
+
+
+    # Rebuild at maximum control point count.
+    #pointCount = iCt_MaxCp
+
+    iDegs_ForRebuildSearch = []
+    rebuilts_LastSuccess = [] # per iDeg.
+    fDevs = [] # per iDeg.
+
+    for iDeg in iDegs:
+
+        if iDeg < 3: continue
+
+        pointCount = iDeg + iCt_MaxSpans
+
+        rebuilt = nc_In.Rebuild(
+            pointCount=pointCount,
+            degree=iDeg,
+            preserveTangents=True)
+
+        bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
+            nc_In, rebuilt, tolerance=0.1*fTol)[:2]
+
+        if bSuccess and fDistMax <= fTol:
+            iDegs_ForRebuildSearch.append(iDeg)
+            rebuilts_LastSuccess.append(rebuilt)
+            fDevs.append(fDistMax)
+            if bDebug:
+                print("Rebuilt within {}  Deg:{}  PtCt:{}".format(
+                    fTol, iDeg, pointCount))
+        else:
+            rebuilt.Dispose()
+
+
+    if not iDegs_ForRebuildSearch:
+        if bDebug:
+            print("Not rebuilt within {} at max. span ct. of {}, so quitting rebuilding.".format(
+                fTol, iCt_MaxSpans))
+        return
+
+
+    if bDebug: print("Binary search.")
+
+    for i, iDeg in enumerate(iDegs_ForRebuildSearch):
+
+        iCt_MaxCp = iDeg + iCt_MaxSpans
+
+        iCts_Cps_Tried = [iDeg + 1, iCt_MaxCp]
+
+        iCt_Cp_Try = (iCt_MaxCp + iDeg + 1) // 2
+
+        while iCt_Cp_Try not in iCts_Cps_Tried:
+            sc.escape_test()
+
+            rebuilt = nc_In.Rebuild(
+                pointCount=iCt_Cp_Try,
+                degree=iDeg,
+                preserveTangents=True)
+
+            bSuccess, fDistMax = rg.Curve.GetDistancesBetweenCurves(
+                nc_In, rebuilt, tolerance=0.1*fTol)[:2]
+
+            if bDebug:
+                print("Degree:{}  CPtCt:{}  fDistMax:{}  WithinTol:{}".format(
+                    iDeg,
+                    iCt_Cp_Try,
+                    fDistMax if bSuccess else bSuccess,
+                    fDistMax <= fTol if bSuccess else bSuccess
+                    ))
+
+
+            iCts_Cps_Tried.append(iCt_Cp_Try)
+            iCts_Cps_Tried.sort()
+
+            if bSuccess and fDistMax <= fTol:
+                rebuilts_LastSuccess[i].Dispose()
+                rebuilts_LastSuccess[i] = rebuilt
+                fDevs[i] = fDistMax
+                # Bisect left.
+                iCt_Cp_Try = (
+                    (iCt_Cp_Try +
+                        iCts_Cps_Tried[iCts_Cps_Tried.index(iCt_Cp_Try)-1]) // 2)
+            else:
+                rebuilt.Dispose()
+                # Bisect right.
+                iCt_Cp_Try = (
+                    (iCt_Cp_Try +
+                        iCts_Cps_Tried[iCts_Cps_Tried.index(iCt_Cp_Try)+1]) // 2)
+
+    if len(rebuilts_LastSuccess) == 1:
+        _tangentAngleDifference(nc_In, rebuilts_LastSuccess[0], bDebug)
+        return rebuilts_LastSuccess[0], fDevs[0]
+
+    # TODO: Change the winner to that with minimum deviation instead of least CPs?
+    iCts_Pts = [nc_In.Points.Count for nc_In in rebuilts_LastSuccess]
+    idx_Winner = iCts_Pts.index(min(iCts_Pts))
+    _tangentAngleDifference(nc_In, rebuilts_LastSuccess[idx_Winner], bDebug)
+    return rebuilts_LastSuccess[idx_Winner], fDevs[idx_Winner]
+
+
+def _simplifyCrv(rgCrv_In, fTol, bDebug=False):
     """
     Output a degree-3 curve with only simple internal knots.
     Only output degree-3 for similar limation of _Loft and RC's Loft.
@@ -800,64 +963,71 @@ def _simplifyCrvForLoft(rgCrv_In, fTargetTol, bDebug=False):
 
     nc_WIP = rgCrv_In.ToNurbsCurve()
 
-    if nc_WIP.Degree == 3 and nc_WIP.SpanCount == 1:
-        if bDebug: print("Rail curve has only 1 span.")
+    if nc_WIP.SpanCount == 1:
+        if bDebug: print("Curve has only 1 span.")
         return nc_WIP
 
-    def knotMultiplicityList(knots):
-        """Returns a list."""
-        i = 0
-        iMulties = []
-        fKnotTs_Unique = []
-        while True:
-            knot = knots[i]
-            fKnotTs_Unique.append(knot)
-            iMulti = knots.KnotMultiplicity(index=i)
-            iMulties.append(iMulti)
-            #print("{} at {:.4f}".format(iMulti, knot),
-            i += iMulti
-            if i >= knots.Count:
-                break
-        return iMulties
+
+    rc = _rebuild_to_Bezier(
+        rgCrv_In,
+        iDegs=(2,3,5),
+        fTol=fTol,
+        bDebug=bDebug)
+    if rc:
+        return rc[0]
+
+    rc = _rebuild_to_MultiSpan(
+        rgCrv_In,
+        iDegs=(3,5),
+        fTol=fTol,
+        bDebug=bDebug)
+    if rc:
+        return rc[0]
+
+    #def knotMultiplicityList(knots):
+    #    """Returns a list."""
+    #    i = 0
+    #    iMulties = []
+    #    fKnotTs_Unique = []
+    #    while True:
+    #        knot = knots[i]
+    #        fKnotTs_Unique.append(knot)
+    #        iMulti = knots.KnotMultiplicity(index=i)
+    #        iMulties.append(iMulti)
+    #        #print("{} at {:.4f}".format(iMulti, knot),
+    #        i += iMulti
+    #        if i >= knots.Count:
+    #            break
+    #    return iMulties
 
 
-    if nc_WIP.Degree < 3:
-        nc_WIP.IncreaseDegree(3)
-        if nc_WIP.SpanCount == 1:
-            return nc_WIP
-    elif nc_WIP.Degree == 3:
-        if (nc_WIP.Knots.KnotStyle in (
-            rg.KnotStyle.QuasiUniform,
-            rg.KnotStyle.Uniform)
-        ):
-            return nc_WIP
+    if (nc_WIP.Knots.KnotStyle in (
+        rg.KnotStyle.QuasiUniform,
+        rg.KnotStyle.Uniform)
+    ):
+        return nc_WIP
 
-        # Non-uniform but only simple internal knots is disabled for now.
-        #ms = knotMultiplicityList(nc_WIP.Knots)
-        #if not(nc_WIP.IsClosed and nc_WIP.IsPeriodic):
-        #    ms = ms[1:-1]
-        #if all([m == 1 for m in ms]):
-        #    return nc_WIP
+    # Non-uniform but only simple internal knots is disabled for now.
+    #ms = knotMultiplicityList(nc_WIP.Knots)
+    #if not(nc_WIP.IsClosed and nc_WIP.IsPeriodic):
+    #    ms = ms[1:-1]
+    #if all([m == 1 for m in ms]):
+    #    return nc_WIP
 
-    fTol_Rail = 0.1 * fTargetTol # Smaller tolerance in case starting curve is not exactly on surface.
+    if nc_WIP.IsPeriodic:
+        nc_WIP.Knots.CreatePeriodicKnots(knotSpacing=1.0) # Modifies existing Knots.
+    else:
+        nc_WIP.Knots.CreateUniformKnots(knotSpacing=1.0) # Modifies existing Knots.
 
-    if nc_WIP.Degree == 3:
+    nc_WIP.Domain = rgCrv_In.Domain
 
-        if nc_WIP.IsPeriodic:
-            nc_WIP.Knots.CreatePeriodicKnots(knotSpacing=1.0) # Modifies existing Knots.
-        else:
-            nc_WIP.Knots.CreateUniformKnots(knotSpacing=1.0) # Modifies existing Knots.
-
-        nc_WIP.Domain = rgCrv_In.Domain
-
-        dev = _getDistancesBetweenCurves(rgCrv_In, nc_WIP)
-        if dev <= fTol_Rail:
-            return nc_WIP
-        if bDebug: print("'MakeUniform' routine result is not within {}.".format(fTol_Rail))
+    dev = _getDistancesBetweenCurves(rgCrv_In, nc_WIP)
+    if dev <= fTol:
+        return nc_WIP
+    if bDebug: print("'MakeUniform' routine result is {} (not within {}).".format(
+        dev, fTol))
 
     nc_WIP.Dispose()
-
-    return _rebuildCrv(rgCrv_In, fTol_Rail)
 
 
 def _splitNurbsCrvsAtPolyKnots(ncs):
@@ -891,7 +1061,7 @@ def _splitNurbsCrvsAtPolyKnots(ncs):
     return ncs_Out
 
 
-def _prepareCrvToFin(rgCrv_In, bSimplifyCrv, bExplodePolyCrv, bSplitAtPolyKnots, bMakeDeformable, fTargetTol, bDebug=False):
+def _prepareCrvToFin(rgCrv_In, bSimplifyCrv, bExplodePolyCrv, bSplitAtPolyKnots, bMakeDeformable, fTol, bDebug=False):
     if bExplodePolyCrv and isinstance(rgCrv_In, rg.PolyCurve):
         ncs_WIP = [_.ToNurbsCurve() for _ in rgCrv_In.Explode()]
     else:
@@ -899,7 +1069,7 @@ def _prepareCrvToFin(rgCrv_In, bSimplifyCrv, bExplodePolyCrv, bSplitAtPolyKnots,
 
     if bSimplifyCrv:
         for i in range(len(ncs_WIP)):
-            rc = _simplifyCrvForLoft(ncs_WIP[i], fTargetTol, bDebug)
+            rc = _simplifyCrv(ncs_WIP[i], fTol, bDebug)
             if rc:
                 ncs_WIP[i].Dispose()
                 ncs_WIP[i] = rc
@@ -972,6 +1142,13 @@ def _createGeometryInteractively():
     """
     """
 
+    sk_conduit = 'conduit({})'.format(__file__) # StickyKey
+    if (sk_conduit in sc.sticky) and sc.sticky[sk_conduit]:
+        conduit = sc.sticky[sk_conduit]
+        conduit.Enabled = False
+        sc.doc.Views.Redraw()
+
+
     objref_CrvToFin = _getInput_Curve()
     if objref_CrvToFin is None: return
 
@@ -996,7 +1173,7 @@ def _createGeometryInteractively():
         rgF_In = objref_Face.Face()
 
 
-    bRC_NotSPB = Opts.values['bRC_NotSPB']
+    bLoose = Opts.values['bLoose']
     bAlignEndDirs = Opts.values['bAlignEndDirs']
     bExplodePolyCrv = Opts.values['bExplodePolyCrv']
     bSplitAtPolyKnots = Opts.values['bSplitAtPolyKnots']
@@ -1005,9 +1182,9 @@ def _createGeometryInteractively():
     fAngle_End_Deg = Opts.values['fAngle_End_Deg'] if Opts.values['bVariableAngle'] else None
     bAngleChangePerCrvParam_NotLength = Opts.values['bAngleChangePerCrvParam_NotLength']
     fDistance = Opts.values['fDistance']
-    fTargetTol = Opts.values['fTargetTol']
+    fSimplifyCrvTol = Opts.values['fSimplifyCrvTol']
     bAddSrf = Opts.values['bAddSrf']
-    iLoftType = Opts.values['iLoftType']
+    bDeg3InLoftDir_Not1 = Opts.values['bDeg3InLoftDir_Not1']
     bAddFinEndCrv = Opts.values['bAddFinEndCrv']
     bAddLines = Opts.values['bAddLines']
     bAtGrevilles = Opts.values['bAtGrevilles']
@@ -1026,7 +1203,7 @@ def _createGeometryInteractively():
 
 
     rgC_In_TrimmedToFace = _crvWithSpansCompletelyOnFace(
-        rgC_In, rgF_In, t_Crv0_Pick, fTargetTol, bDebug)
+        rgC_In, rgF_In, t_Crv0_Pick, sc.doc.ModelAbsoluteTolerance, bDebug)
     if rgC_In_TrimmedToFace is None: return
 
 
@@ -1035,11 +1212,7 @@ def _createGeometryInteractively():
         bVariableAngle = Opts.values['bVariableAngle'] = sc.sticky[Opts.stickyKeys['bVariableAngle']] = False
 
 
-    sk_conduit = 'conduit({})'.format(__file__) # StickyKey
-    if (sk_conduit in sc.sticky) and sc.sticky[sk_conduit]:
-        conduit = sc.sticky[sk_conduit]
-        conduit.Enabled = False
-    else:
+    if not ((sk_conduit in sc.sticky) and sc.sticky[sk_conduit]):
         conduit = DrawConduit()
         sc.sticky[sk_conduit] = conduit
 
@@ -1057,8 +1230,8 @@ def _createGeometryInteractively():
             bExplodePolyCrv,
             bSplitAtPolyKnots,
             bMakeDeformable,
-            fTargetTol,
-            bDebug)
+            fTol=fSimplifyCrvTol,
+            bDebug=bDebug)
 
         rgBs_FromLoft = []
         rgBs_JoinedLofts = []
@@ -1068,11 +1241,13 @@ def _createGeometryInteractively():
 
         for nc_FinStart in ncs_ToFin:
 
-            if bRC_NotSPB:
+            if not bLoose:
                 # Most similar to _Fin _Direction=Normal.
                 nc_FinEnd = nc_FinStart.OffsetNormalToSurface(
-                    surface=rgF_In, height=fDistance)
+                    surface=rgF_In,
+                    height=fDistance)
             else:
+                # Loose
                 rc = _createArrayedLines(
                     rgCrv=nc_FinStart,
                     rgSrf=rgF_In,
@@ -1093,7 +1268,7 @@ def _createGeometryInteractively():
                 #sc.doc.Views.Redraw()
 
                 # Create curve at other end of fin.
-                print(len(nc_FinStart.GrevillePoints(False)))
+                #print(len(nc_FinStart.GrevillePoints(False)))
                 #1/0
                 nc_FinEnd = nc_FinStart.Duplicate()
                 nc_FinEnd.SetGrevillePoints(pts_Arrayed)
@@ -1114,7 +1289,7 @@ def _createGeometryInteractively():
                     curves=[nc_FinStart, nc_FinEnd],
                     start=rg.Point3d.Unset,
                     end=rg.Point3d.Unset,
-                    loftType=rg.LoftType.Straight,
+                    loftType=rg.LoftType.Normal if bDeg3InLoftDir_Not1 else rg.LoftType.Straight,
                     closed=False)
                 rgBs_FromLoft.extend(rc)
 
@@ -1151,7 +1326,7 @@ def _createGeometryInteractively():
         if rgBs_FromLoft:
             rgBs_JoinedLofts = rg.Brep.JoinBreps(
                 rgBs_FromLoft,
-                tolerance=4.0*fTargetTol)
+                tolerance=2.0*sc.doc.ModelAbsoluteTolerance)
             for _ in rgBs_FromLoft: _.Dispose()
 
 
@@ -1194,7 +1369,7 @@ def _createGeometryInteractively():
 
 
 
-        bRC_NotSPB = Opts.values['bRC_NotSPB']
+        bLoose = Opts.values['bLoose']
         bAlignEndDirs = Opts.values['bAlignEndDirs']
         bExplodePolyCrv = Opts.values['bExplodePolyCrv']
         bSplitAtPolyKnots = Opts.values['bSplitAtPolyKnots']
@@ -1203,9 +1378,9 @@ def _createGeometryInteractively():
         fAngle_End_Deg = Opts.values['fAngle_End_Deg'] if Opts.values['bVariableAngle'] else None
         bAngleChangePerCrvParam_NotLength = Opts.values['bAngleChangePerCrvParam_NotLength']
         fDistance = Opts.values['fDistance']
-        fTargetTol = Opts.values['fTargetTol']
+        fSimplifyCrvTol = Opts.values['fSimplifyCrvTol']
         bAddSrf = Opts.values['bAddSrf']
-        iLoftType = Opts.values['iLoftType']
+        bDeg3InLoftDir_Not1 = Opts.values['bDeg3InLoftDir_Not1']
         bAddFinEndCrv = Opts.values['bAddFinEndCrv']
         bAddLines = Opts.values['bAddLines']
         bAtGrevilles = Opts.values['bAtGrevilles']

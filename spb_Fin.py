@@ -1,14 +1,6 @@
 """
 This script is an alternative to _Fin.
 
-Loose
-    Calculates translated Greville points.
-    Has options to specify an angle from normal, constant or variable.
-
-Not Loose
-    Uses RhinoCommon's OffsetNormalToSurface method and is more similar to _Fin.
-
-Both methods creates a loft between the curve on surface and the offset curve.
 """
 
 from __future__ import absolute_import, division, print_function, unicode_literals
@@ -20,9 +12,12 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 230423-25: Various major changes.  Added AlignEndDirs option.  Now uses DrawConduit for preview.
 230925: Changed the click behavior when angle is not variable and not 0, 90, 180, 270.
 240816: Modified simplification of input curve routine.
+        Removed use of OffsetNormalToSurface since it provides the same solution as SPB's routine.
+        Added BothDirs option.
+        WIP: Checking _createArrayedLines for extraneous direction and angle flipping when VariableAngle is toggled.
 
 TODO:
-    ? Replace _curveWithSpansCompletelyOnTheFace with a routine that instead trims curve to the face.
+    ? Replace curveWithSpansCompletelyOnFace with a routine that instead trims curve to the face.
     Check accuracy of offset curve and add knots until within tolerance.
 """
 
@@ -122,6 +117,11 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], '1', '3')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
+    key = 'bBothDirs'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
     key = 'bAddFinEndCrv'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
@@ -129,6 +129,7 @@ class Opts():
 
     key = 'bAddLines'; keys.append(key)
     values[key] = False
+    names[key] = 'AddCrossLines'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -231,7 +232,7 @@ def _addCommonOptions(go):
 
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
-    addOption('bLoose')
+    #addOption('bLoose')
     addOption('bAlignEndDirs')
     addOption('bExplodePolyCrv')
     addOption('bSplitAtPolyKnots')
@@ -240,18 +241,20 @@ def _addCommonOptions(go):
         addOption('fSimplifyCrvTol')
     Opts.names['fAngle_Start_Deg'] = 'AngleFromNormal'
     if Opts.values['bLoose']:
+        addOption('bVariableAngle')
         if Opts.values['bVariableAngle']:
             Opts.names['fAngle_Start_Deg'] = 'StartAngle'
         addOption('fAngle_Start_Deg')
-        addOption('bVariableAngle')
         if Opts.values['bVariableAngle']:
             addOption('fAngle_End_Deg')
             addOption('bAngleChangePerCrvParam_NotLength')
     addOption('fDistance')
     addOption('bAddSrf')
-    addOption('bDeg3InLoftDir_Not1')
-    addOption('bAddFinEndCrv')
-    addOption('bAddLines')
+    if Opts.values['bAddSrf']:
+        addOption('bDeg3InLoftDir_Not1')
+        addOption('bBothDirs')
+    #addOption('bAddFinEndCrv')
+    #addOption('bAddLines')
     if Opts.values['bAddLines']:
         addOption('bAtGrevilles')
         addOption('bAtKnots')
@@ -501,7 +504,7 @@ def _getInput_Click():
             Opts.setValue('fAngle_End_Deg')
         elif (
             Opts.riOpts['fDistance'].CurrentValue < 0.0 and
-            Opts.riOpts['fAngle_Start_Deg'].CurrentValue < 0.0
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue <= 0.0
         ):
             #print("-D -A Good")
             Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
@@ -512,7 +515,7 @@ def _getInput_Click():
             Opts.setValue('fAngle_End_Deg')
         elif (
             Opts.riOpts['fDistance'].CurrentValue > 0.0 and
-            Opts.riOpts['fAngle_Start_Deg'].CurrentValue < 0.0
+            Opts.riOpts['fAngle_Start_Deg'].CurrentValue <= 0.0
         ):
             #print("+D -A")
             Opts.riOpts['fDistance'].CurrentValue = -Opts.riOpts['fDistance'].CurrentValue
@@ -654,6 +657,10 @@ def _createArrayedLines(rgCrv, rgSrf, fDistance, fAngle_Start_Deg, fAngle_End_De
                     fAngle_Start_Deg * (1.0 - length_to_t/length_Full) +
                     fAngle_End_Deg * length_to_t/length_Full)
 
+        #sEval='angle_Const_Rad'; print(sEval+':',eval(sEval))
+        #sEval='angle_Var_Rad'; print(sEval+':',eval(sEval))
+
+
         xform_Rotation = rg.Transform.Rotation(
                 angleRadians=angle_Const_Rad if angle_Var_Rad is None else angle_Var_Rad,
                 rotationAxis=frame.ZAxis,
@@ -669,7 +676,7 @@ def _createArrayedLines(rgCrv, rgSrf, fDistance, fAngle_Start_Deg, fAngle_End_De
     return rgLines_Arrayed
 
 
-def _crvWithSpansCompletelyOnFace(rgCrv, rgFace, t_Crv_Pick, fTol, bDebug=False):
+def _curveWithSpansCompletelyOnFace(rgCrv, rgFace, t_Crv_Pick, fTol, bDebug=False):
     """
     Only process spans of the curve whose spans start and ends are on the Face.
     """
@@ -1185,6 +1192,7 @@ def _createGeometryInteractively():
     fSimplifyCrvTol = Opts.values['fSimplifyCrvTol']
     bAddSrf = Opts.values['bAddSrf']
     bDeg3InLoftDir_Not1 = Opts.values['bDeg3InLoftDir_Not1']
+    bBothDirs = Opts.values['bBothDirs']
     bAddFinEndCrv = Opts.values['bAddFinEndCrv']
     bAddLines = Opts.values['bAddLines']
     bAtGrevilles = Opts.values['bAtGrevilles']
@@ -1194,6 +1202,9 @@ def _createGeometryInteractively():
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
+    #sEval='fDistance'; print(sEval+':',eval(sEval))
+    #sEval='fAngle_Start_Deg'; print(sEval+':',eval(sEval))
+    #sEval='fAngle_End_Deg'; print(sEval+':',eval(sEval))
 
     rgC_In, t_Crv0_Pick = objref_CrvToFin.CurveParameter()
 
@@ -1202,7 +1213,7 @@ def _createGeometryInteractively():
         rgC_In.RemoveNesting()
 
 
-    rgC_In_TrimmedToFace = _crvWithSpansCompletelyOnFace(
+    rgC_In_TrimmedToFace = _curveWithSpansCompletelyOnFace(
         rgC_In, rgF_In, t_Crv0_Pick, sc.doc.ModelAbsoluteTolerance, bDebug)
     if rgC_In_TrimmedToFace is None: return
 
@@ -1232,6 +1243,9 @@ def _createGeometryInteractively():
             bMakeDeformable,
             fTol=fSimplifyCrvTol,
             bDebug=bDebug)
+
+        #for nc in ncs_ToFin:
+        #    sc.doc.Objects.AddCurve(nc)
 
         rgBs_FromLoft = []
         rgBs_JoinedLofts = []
@@ -1285,13 +1299,26 @@ def _createGeometryInteractively():
             ncs_FinEnd.append(nc_FinEnd)
 
             if bAddSrf:
-                rc = rg.Brep.CreateFromLoft(
+                breps_Loft = rg.Brep.CreateFromLoft(
                     curves=[nc_FinStart, nc_FinEnd],
                     start=rg.Point3d.Unset,
                     end=rg.Point3d.Unset,
                     loftType=rg.LoftType.Normal if bDeg3InLoftDir_Not1 else rg.LoftType.Straight,
                     closed=False)
-                rgBs_FromLoft.extend(rc)
+                def extendOtherDir(breps):
+                    for i, brep in enumerate(breps):
+                        # Changing U is loft direction.
+                        ns = brep.Surfaces[0]
+                        interval = ns.Domain(0)
+                        interval.Reverse()
+                        if not ns.Extend(direction=0, interval=interval):
+                            continue
+                        ns = brep.Surfaces[0]
+                        breps[i] = ns.ToBrep()
+                if breps_Loft and bBothDirs:
+                    breps_Loft = list(breps_Loft)
+                    extendOtherDir(breps_Loft)
+                rgBs_FromLoft.extend(breps_Loft)
 
 
             # Lines out are independent of offset method.
@@ -1381,6 +1408,7 @@ def _createGeometryInteractively():
         fSimplifyCrvTol = Opts.values['fSimplifyCrvTol']
         bAddSrf = Opts.values['bAddSrf']
         bDeg3InLoftDir_Not1 = Opts.values['bDeg3InLoftDir_Not1']
+        bBothDirs = Opts.values['bBothDirs']
         bAddFinEndCrv = Opts.values['bAddFinEndCrv']
         bAddLines = Opts.values['bAddLines']
         bAtGrevilles = Opts.values['bAtGrevilles']
@@ -1389,6 +1417,10 @@ def _createGeometryInteractively():
         iDivisionCt = Opts.values['iDivisionCt']
         bEcho = Opts.values['bEcho']
         bDebug = Opts.values['bDebug']
+
+        #sEval='fDistance'; print(sEval+':',eval(sEval))
+        #sEval='fAngle_Start_Deg'; print(sEval+':',eval(sEval))
+        #sEval='fAngle_End_Deg'; print(sEval+':',eval(sEval))
 
 
 def main():

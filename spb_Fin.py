@@ -21,7 +21,6 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 240816,18: Modified simplification of input curve routine.
         Removed use of OffsetNormalToSurface since it provides the same solution as SPB's routine.
         Added BothDirs option.
-        WIP: Checking _createArrayedLines for extraneous direction and angle flipping when VariableAngle is toggled.
 
 TODO:
     Review and modify or delete bSplitAtPolyKnots.
@@ -234,7 +233,7 @@ def _addCommonOptions(go):
     if Opts.values['bLoose']:
         addOption('bAlignEndDirs')
     addOption('bExplodePolyCrv')
-    addOption('bSplitAtPolyKnots')
+    #addOption('bSplitAtPolyKnots')
     addOption('bSimplifyCrv')
     if Opts.values['bSimplifyCrv']:
         addOption('fSimplifyCrvTol')
@@ -646,9 +645,9 @@ def _createArrayedLines(rgCrv, rgSrf, fDistance, fAngle_Start_Deg, fAngle_End_De
                     fAngle_End_Deg * length_to_t/length_Full)
             angles_per_param.append(angle_Var_Rad)
 
-    sEval='angles_per_param[:2]'; print(sEval+':',eval(sEval))
-    sEval='angles_per_param[-2:]'; print(sEval+':',eval(sEval))
-    sEval='angles_per_param'; print(sEval+':',eval(sEval))
+    #sEval='angles_per_param[:2]'; print(sEval+':',eval(sEval))
+    #sEval='angles_per_param[-2:]'; print(sEval+':',eval(sEval))
+    #sEval='angles_per_param'; print(sEval+':',eval(sEval))
 
     for iT, t in enumerate(ts):
         pt_Start = rgNurbsCrv_rgCrv0.PointAt(t)
@@ -987,7 +986,7 @@ def _rebuild_to_MultiSpan(nc_In, iDegs, fTol, bDebug=False):
     return rebuilt_Winner, fDev_Winner
 
 
-def _simplifyCrv(rgCrv_In, fTol, bDebug=False):
+def _simplifyCrv(rgCrv_In, fTol, bEcho=True, bDebug=False):
     """
     Output a degree-3 curve with only simple internal knots.
     Only output degree-3 for similar limation of _Loft and RC's Loft.
@@ -1066,6 +1065,9 @@ def _simplifyCrv(rgCrv_In, fTol, bDebug=False):
 
     nc_WIP.Dispose()
 
+    if bEcho:
+        print("Curve could not be simplified within {} deviation.".format(fTol))
+
 
 def _splitNurbsCrvsAtPolyKnots(ncs):
     ncs_Out = []
@@ -1098,22 +1100,46 @@ def _splitNurbsCrvsAtPolyKnots(ncs):
     return ncs_Out
 
 
-def _prepareCrvToFin(rgCrv_In, bSimplifyCrv, bExplodePolyCrv, bSplitAtPolyKnots, bMakeDeformable, fTol, bDebug=False):
+def updateList(list_, func, **kwargs):
+    """
+    Only replace items in list when the result from function is not None.
+    Otherwise, copy old item into new list.
+    When replaced, the old item is Disposed.
+
+    Returns: bool indicating whether the list has been updated.
+    """
+
+    bUpdated = False
+
+    for i, item in enumerate(list_):
+
+        rc = func(item, **kwargs)
+        if rc is not None:
+            list_[i].Dispose()
+            list_[i] = rc
+            bUpdated = True
+
+    return bUpdated
+
+
+def _prepareCrvToFin(rgCrv_In, bSimplifyCrv, bExplodePolyCrv, bSplitAtPolyKnots, bMakeDeformable, fTol, bEcho=True, bDebug=False):
+
     if bExplodePolyCrv and isinstance(rgCrv_In, rg.PolyCurve):
         ncs_WIP = [_.ToNurbsCurve() for _ in rgCrv_In.Explode()]
     else:
         ncs_WIP = [rgCrv_In.ToNurbsCurve()]
 
     if bSimplifyCrv:
-        for i in range(len(ncs_WIP)):
-            rc = _simplifyCrv(ncs_WIP[i], fTol, bDebug)
-            if rc:
-                ncs_WIP[i].Dispose()
-                ncs_WIP[i] = rc
-    elif bSplitAtPolyKnots:
-        rc = _splitNurbsCrvsAtPolyKnots(ncs_WIP)
-        for _ in ncs_WIP: _.Dispose()
-        ncs_WIP = rc
+        bSimplified = updateList(ncs_WIP, _simplifyCrv, fTol=fTol, bEcho=bEcho, bDebug=bDebug)
+    #elif bSplitAtPolyKnots:
+    #    for i in range(len(ncs_WIP)):
+    #        rc = _splitNurbsCrvAtPolyKnots(ncs_WIP[i], fTol, bDebug)
+    #        if rc:
+    #            ncs_WIP[i].Dispose()
+    #            ncs_WIP[i] = rc
+    #    rc = _splitNurbsCrvAtPolyKnots(ncs_WIP)
+    #    for _ in ncs_WIP: _.Dispose()
+    #    ncs_WIP = rc
 
     if bMakeDeformable:
         for i in range(len(ncs_WIP)):
@@ -1260,137 +1286,147 @@ def _createGeometryInteractively():
     while True:
         sc.escape_test()
 
-        bMakeDeformable = bAlignEndDirs or (fAngle_End_Deg and fAngle_End_Deg != fAngle_Start_Deg)
-
-
-        ncs_FinStart = _prepareCrvToFin(
-            rgC_In_TrimmedToFace,
-            bSimplifyCrv,
-            bExplodePolyCrv,
-            bSplitAtPolyKnots,
-            bMakeDeformable,
-            fTol=fSimplifyCrvTol,
-            bDebug=bDebug)
-
-        #for nc in ncs_FinStart:
-        #    sc.doc.Objects.AddCurve(nc)
-
         rgBs_FromLoft = []
         rgBs_JoinedLofts = []
         ncs_FinEnd = []
         rgLs_ForOut = []
 
-
-        if bLoose:
-            for nc_FinStart in ncs_FinStart:
-                rc = _createArrayedLines(
-                    rgCrv=nc_FinStart,
-                    rgSrf=rgF_In,
-                    fDistance=fDistance,
-                    fAngle_Start_Deg=fAngle_Start_Deg,
-                    fAngle_End_Deg=fAngle_End_Deg,
-                    rgCrv_Full=rgC_In_TrimmedToFace,
-                    bAngleChangePerCrvParam_NotLength=bAngleChangePerCrvParam_NotLength,
-                    bAtGrevilles=True,
-                    bAtKnots=False,
-                    bAtEqualDivisions=False,
-                    iDivisionCt=iDivisionCt)
-                if not rc: continue
-                rgLs_GrevillesOnly = rc
-
-                pts_Arrayed = [line.To for line in rgLs_GrevillesOnly]
-                #for pt in pts_Arrayed: sc.doc.Objects.AddPoint(pt)
-                #sc.doc.Views.Redraw()
-
-                # Create curve at other end of fin.
-                #print(len(nc_FinStart.GrevillePoints(False)))
-                #1/0
-                nc_FinEnd = nc_FinStart.Duplicate()
-                nc_FinEnd.SetGrevillePoints(pts_Arrayed)
-
-                if (
-                    not nc_FinEnd.IsPeriodic and
-                    bAlignEndDirs and
-                    not _matchCrvEndDirs(nc_FinEnd, nc_FinStart)
-                ):
-                    if bEcho: print("Alignment of end tangent failed.")
-                    nc_WIP.Dispose()
-                    continue
-
-                ncs_FinEnd.append(nc_FinEnd)
-
-                breps_Loft = rg.Brep.CreateFromLoft(
-                    curves=[nc_FinStart, nc_FinEnd],
-                    start=rg.Point3d.Unset,
-                    end=rg.Point3d.Unset,
-                    loftType=rg.LoftType.Normal if bDeg3InLoftDir_Not1 else rg.LoftType.Straight,
-                    closed=False)
-                def extendOtherDir(breps):
-                    for i, brep in enumerate(breps):
-                        # Changing U is loft direction.
-                        ns = brep.Surfaces[0]
-                        interval = ns.Domain(0)
-                        interval.Reverse()
-                        if not ns.Extend(direction=0, interval=interval):
-                            continue
-                        ns = brep.Surfaces[0]
-                        breps[i] = ns.ToBrep()
-                if breps_Loft and bBothDirs:
-                    breps_Loft = list(breps_Loft)
-                    extendOtherDir(breps_Loft)
-                rgBs_FromLoft.extend(breps_Loft)
-
-
-                nc_FinStart.Dispose()
-
-            if rgBs_JoinedLofts:
-                for rgB in rgBs_JoinedLofts: rgB.Dispose()
-                rgBs_JoinedLofts = None
-            gBs_Out = []
-            if rgBs_FromLoft:
-                rgBs_JoinedLofts = rg.Brep.JoinBreps(
-                    rgBs_FromLoft,
-                    tolerance=2.0*sc.doc.ModelAbsoluteTolerance)
-                for _ in rgBs_FromLoft: _.Dispose()
-
-
-            conduit.breps = rgBs_JoinedLofts
-            conduit.crvs = []
-            conduit.lines = []
-
+        if not bLoose and not (bAddCrv or bAtGrevilles or bAtKnots or bAtEqualDivisions):
+            print("No output has been enabled. Pick some.")
         else:
-            # Not Loose
-            for nc_FinStart in ncs_FinStart:
-                rc = _createArrayedLines(
-                    rgCrv=nc_FinStart,
-                    rgSrf=rgF_In,
-                    fDistance=fDistance,
-                    fAngle_Start_Deg=fAngle_Start_Deg,
-                    fAngle_End_Deg=fAngle_End_Deg,
-                    rgCrv_Full=rgC_In_TrimmedToFace,
-                    bAngleChangePerCrvParam_NotLength=bAngleChangePerCrvParam_NotLength,
-                    bAtGrevilles=not (bAtKnots or bAtEqualDivisions),
-                    bAtKnots=bAtKnots,
-                    bAtEqualDivisions=bAtEqualDivisions,
-                    iDivisionCt=iDivisionCt)
-                if rc:
-                    rgLs_ForOut.extend(rc)
+            bMakeDeformable = (
+                (bLoose and bAlignEndDirs)
+                or
+                (fAngle_End_Deg
+                 and
+                 (fAngle_End_Deg != fAngle_Start_Deg))
+                )
 
-            conduit.breps = []
-            conduit.crvs = ncs_FinStart if bAddCrv else []
-            conduit.lines = rgLs_ForOut
+            ncs_FinStart = _prepareCrvToFin(
+                rgC_In_TrimmedToFace,
+                bSimplifyCrv,
+                bExplodePolyCrv,
+                bSplitAtPolyKnots,
+                bMakeDeformable,
+                fTol=fSimplifyCrvTol,
+                bEcho=bEcho,
+                bDebug=bDebug)
 
-        conduit.Enabled = True
+            #for nc in ncs_FinStart:
+            #    sc.doc.Objects.AddCurve(nc)
 
-        sc.doc.Views.Redraw()
 
-        if bEcho:
-            sOut = []
-            if len(rgBs_JoinedLofts) > 1: sOut.append(("{} brep(s)".format(len(rgBs_JoinedLofts))))
-            if len(ncs_FinStart) > 1: sOut.append("{} fin start curves".format(len(ncs_FinEnd)))
-            if rgLs_ForOut: sOut.append("{} lines".format(len(rgLs_ForOut)))
-            if sOut:
-                print("Calculated {}.".format(", ".join(sOut)))
+            if bLoose:
+                for nc_FinStart in ncs_FinStart:
+                    rc = _createArrayedLines(
+                        rgCrv=nc_FinStart,
+                        rgSrf=rgF_In,
+                        fDistance=fDistance,
+                        fAngle_Start_Deg=fAngle_Start_Deg,
+                        fAngle_End_Deg=fAngle_End_Deg,
+                        rgCrv_Full=rgC_In_TrimmedToFace,
+                        bAngleChangePerCrvParam_NotLength=bAngleChangePerCrvParam_NotLength,
+                        bAtGrevilles=True,
+                        bAtKnots=False,
+                        bAtEqualDivisions=False,
+                        iDivisionCt=iDivisionCt)
+                    if not rc: continue
+                    rgLs_GrevillesOnly = rc
+
+                    pts_Arrayed = [line.To for line in rgLs_GrevillesOnly]
+                    #for pt in pts_Arrayed: sc.doc.Objects.AddPoint(pt)
+                    #sc.doc.Views.Redraw()
+
+                    # Create curve at other end of fin.
+                    #print(len(nc_FinStart.GrevillePoints(False)))
+                    #1/0
+                    nc_FinEnd = nc_FinStart.Duplicate()
+                    nc_FinEnd.SetGrevillePoints(pts_Arrayed)
+
+                    if (
+                        not nc_FinEnd.IsPeriodic and
+                        bAlignEndDirs and
+                        not _matchCrvEndDirs(nc_FinEnd, nc_FinStart)
+                    ):
+                        if bEcho: print("Alignment of end tangent failed.")
+                        nc_WIP.Dispose()
+                        continue
+
+                    ncs_FinEnd.append(nc_FinEnd)
+
+                    breps_Loft = rg.Brep.CreateFromLoft(
+                        curves=[nc_FinStart, nc_FinEnd],
+                        start=rg.Point3d.Unset,
+                        end=rg.Point3d.Unset,
+                        loftType=rg.LoftType.Normal if bDeg3InLoftDir_Not1 else rg.LoftType.Straight,
+                        closed=False)
+                    def extendOtherDir(breps):
+                        for i, brep in enumerate(breps):
+                            # Changing U is loft direction.
+                            ns = brep.Surfaces[0]
+                            interval = ns.Domain(0)
+                            interval.Reverse()
+                            if not ns.Extend(direction=0, interval=interval):
+                                continue
+                            ns = brep.Surfaces[0]
+                            breps[i] = ns.ToBrep()
+                    if breps_Loft and bBothDirs:
+                        breps_Loft = list(breps_Loft)
+                        extendOtherDir(breps_Loft)
+                    rgBs_FromLoft.extend(breps_Loft)
+
+
+                    nc_FinStart.Dispose()
+
+                if rgBs_JoinedLofts:
+                    for rgB in rgBs_JoinedLofts: rgB.Dispose()
+                    rgBs_JoinedLofts = None
+                gBs_Out = []
+                if rgBs_FromLoft:
+                    rgBs_JoinedLofts = rg.Brep.JoinBreps(
+                        rgBs_FromLoft,
+                        tolerance=2.0*sc.doc.ModelAbsoluteTolerance)
+                    for _ in rgBs_FromLoft: _.Dispose()
+
+
+                conduit.breps = rgBs_JoinedLofts
+                conduit.crvs = []
+                conduit.lines = []
+
+            else:
+                # Not Loose.
+                if bAtGrevilles or bAtKnots or bAtEqualDivisions:
+                    for nc_FinStart in ncs_FinStart:
+                        rc = _createArrayedLines(
+                            rgCrv=nc_FinStart,
+                            rgSrf=rgF_In,
+                            fDistance=fDistance,
+                            fAngle_Start_Deg=fAngle_Start_Deg,
+                            fAngle_End_Deg=fAngle_End_Deg,
+                            rgCrv_Full=rgC_In_TrimmedToFace,
+                            bAngleChangePerCrvParam_NotLength=bAngleChangePerCrvParam_NotLength,
+                            bAtGrevilles=bAtGrevilles,
+                            bAtKnots=bAtKnots,
+                            bAtEqualDivisions=bAtEqualDivisions,
+                            iDivisionCt=iDivisionCt)
+                        if rc:
+                            rgLs_ForOut.extend(rc)
+
+                conduit.breps = []
+                conduit.crvs = ncs_FinStart if bAddCrv else []
+                conduit.lines = rgLs_ForOut
+
+            conduit.Enabled = True
+
+            sc.doc.Views.Redraw()
+
+            if bEcho:
+                sOut = []
+                if len(rgBs_JoinedLofts) > 1: sOut.append(("{} brep(s)".format(len(rgBs_JoinedLofts))))
+                if len(ncs_FinStart) > 1: sOut.append("{} fin start curves".format(len(ncs_FinEnd)))
+                if rgLs_ForOut: sOut.append("{} lines".format(len(rgLs_ForOut)))
+                if sOut:
+                    print("Calculated {}.".format(", ".join(sOut)))
 
 
         rc = _getInput_Click()

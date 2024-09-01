@@ -9,6 +9,7 @@ from a post-selected object, e.g., linear curve, arc curve, cylinder.
 240731-0801: Created.
 240805: All options of _Rotate3D are now available, therefore this script can be used
         in place of that command.
+240901: Bug fix related to behavior of GetObject.CustomGeometryFilter.
 """
 
 import Rhino
@@ -119,10 +120,6 @@ class Opts:
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-class MyGlobals:
-    line_Axis = None
-
-
 def getAxisFromArc(arc):
     xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, arc.Plane)
     line_Axis = rg.Line(
@@ -151,6 +148,16 @@ def getAxisFromCrv(crv: rg.Curve, fLineTol: float, fArcTol: float):
         return getAxisFromArc(arc)
 
 
+def isLineOrArc(crv: rg.Curve, fLineTol: float, fArcTol: float):
+    if isinstance(crv, (rg.LineCurve, rg.ArcCurve)):
+        return True
+
+    if crv.IsLinear(tolerance=fLineTol):
+        return True
+
+    return crv.IsArc(tolerance=fArcTol)
+
+
 def getAxisFromFace(face: rg.BrepFace, fFaceTol: float):
     bSuccess, cone = face.TryGetCone(tolerance=fFaceTol)
     if bSuccess:
@@ -177,20 +184,12 @@ def getInput_ObjForRotAxis():
         rgC: rg.Curve
 
         if isinstance(geom, rg.Curve):
-            rgC_Dup = geom.DuplicateCurve()
-            line_Axis = getAxisFromCrv(
-                rgC_Dup,
-                Opts.values['fLineTol'],
-                Opts.values['fArcTol'])
-            rgC_Dup.Dispose()
-            MyGlobals.line_Axis = line_Axis
-            return bool(line_Axis)
+            return isLineOrArc(geom, Opts.values['fLineTol'], Opts.values['fArcTol'])
         elif isinstance(geom, rg.BrepFace):
             line_Axis = getAxisFromFace(
                 geom,
                 Opts.values['fFaceTol']
             )
-            MyGlobals.line_Axis = line_Axis
             return bool(line_Axis)
         else:
             print(f"{geom = }")
@@ -243,25 +242,9 @@ def getInput_ObjForRotAxis():
             return
 
         if res == ri.GetResult.Object:
+            objref = go.Object(0)
             go.Dispose()
-            sc.doc.Objects.UnselectAll()
-            sc.doc.Views.Redraw()
-
-            if MyGlobals.line_Axis:
-                return MyGlobals.line_Axis
-
-            print("Cannot derive rotation axis from that object.")
-
-            continue
-
-        #     objref = go.Object(0)
-        #     go.Dispose()
-        #     return objref
-
-        # if res == ri.GetResult.Object:
-        #     objref = go.Object(0)
-        #     go.Dispose()
-        #     return objref
+            return objref
 
         # An option was selected or a number was entered.
         if res == ri.GetResult.Number:
@@ -277,11 +260,13 @@ def getInput_ObjForRotAxis():
 
 
 def getAxisFromObjRef(objref_Axis: rd.ObjRef, fLineTol: float, fArcTol: float, fFaceTol: float):
+
     crv_In = objref_Axis.Curve()
+
     if crv_In:
-        rgC_Dup = crv_In.DuplicateCurve()
-        line_Axis = getAxisFromCrv(rgC_Dup, fLineTol, fArcTol)
-        rgC_Dup.Dispose()
+        # rgC_Dup = crv_In.DuplicateCurve()
+        line_Axis = getAxisFromCrv(crv_In, fLineTol, fArcTol)
+        # rgC_Dup.Dispose()
         if line_Axis is None:
             raise Exception("Cannot obtain Line or Arc from reference curve.")
     else:
@@ -367,16 +352,19 @@ def main():
         return
 
 
-    if gp.Option().Index == idxs_Opt['DeriveFromObject']:
-        pass
+    # if gp.Option().Index == idxs_Opt['DeriveFromObject']:
+    #     pass
 
     gp.Dispose()
 
-    # sc.doc.Objects.UnselectAll()
+
+    # DeriveFromObject
+
+    sc.doc.Objects.UnselectAll()
 
 
-    line_Axis = getInput_ObjForRotAxis()
-    if line_Axis is None:
+    objref_Axis = getInput_ObjForRotAxis()
+    if objref_Axis is None:
         return
 
     fLineTol = Opts.values['fLineTol']
@@ -385,11 +373,11 @@ def main():
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
-    # line_Axis = getAxisFromObjRef(
-    #     objref_Axis,
-    #     fLineTol,
-    #     fArcTol,
-    #     fFaceTol)
+    line_Axis = getAxisFromObjRef(
+        objref_Axis,
+        fLineTol,
+        fArcTol,
+        fFaceTol)
 
     sc.doc.Objects.UnselectAll()
 

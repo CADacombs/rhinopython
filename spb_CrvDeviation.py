@@ -21,9 +21,13 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Curve.GetDistancesBetweenCurves sometimes fails or produces erroneous results.
         Curves from curve set A are not selectable for set B even though they previously were removed anyway.
 ...
-240903-09: Added optional 2 curve input routine. Removed some functions. Refactored.
+240903-10:  Added optional 2 curve input routine. Removed some functions. Refactored.
+            Add display conduit similar to _CrvDeviation for when Mode=Abs.
+            Trialing a UX different than _CrvDeviation for when Mode=Abs,
+            that gives the user the option to skip leaving marks.
 
 TODO:
+    Clean code in spb_GDBCs_1Way that eliminates false positives at curve ends.
 """
 
 import Rhino
@@ -31,6 +35,8 @@ import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
+
+from System.Drawing import Color
 
 
 class Opts():
@@ -50,7 +56,7 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bExplodeCrvs'; keys.append(key)
-    values[key] = True
+    values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -66,8 +72,8 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Any', 'OnlyPerp')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fDist_max_min_to_regard'; keys.append(key)
-    names[key] = 'MaxMinDistToRegard'
+    key = 'fDist_max_to_regard'; keys.append(key)
+    names[key] = 'MaxDistToRegard'
     values[key] = 200.0 * sc.doc.ModelAbsoluteTolerance
     #if sc.doc.ModelUnitSystem == Rhino.UnitSystem.Inches:
     #    values[key] = 0.125
@@ -111,6 +117,11 @@ class Opts():
 
     key = 'bMarkMin'; keys.append(key)
     values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bVerifyAddMarks'; keys.append(key)
+    values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -204,9 +215,9 @@ class Opts():
             cls.values[key] = cls.riOpts[key].CurrentValue
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
-            if (cls.values[key] > 0.0) and (cls.values[key] > cls.values['fDist_max_min_to_regard']):
-                cls.values['fDist_max_min_to_regard'] = cls.riOpts['fDist_max_min_to_regard'].CurrentValue = cls.values[key]
-                sc.sticky[cls.stickyKeys['fDist_max_min_to_regard']] = cls.values['fDist_max_min_to_regard']
+            if (cls.values[key] > 0.0) and (cls.values[key] > cls.values['fDist_max_to_regard']):
+                cls.values['fDist_max_to_regard'] = cls.riOpts['fDist_max_to_regard'].CurrentValue = cls.values[key]
+                sc.sticky[cls.stickyKeys['fDist_max_to_regard']] = cls.values['fDist_max_to_regard']
             return
 
         if key == 'fLwrLimit':
@@ -258,7 +269,7 @@ def _addCommonOptions(go):
     addOption('bExplodeCrvs')
     addOption('fLocAlongCrvTol')
     addOption('bOnlyPerp')
-    addOption('fDist_max_min_to_regard')
+    addOption('fDist_max_to_regard')
     addOption('bLimitMode')
     if Opts.values['bLimitMode']:
         addOption('fUprLimit')
@@ -266,6 +277,8 @@ def _addCommonOptions(go):
     else:
         addOption('bMarkMax')
         addOption('bMarkMin')
+        if Opts.values['bMarkMax'] or Opts.values['bMarkMin']:
+            addOption('bVerifyAddMarks')
     if (Opts.values['bLimitMode'] or Opts.values['bMarkMax'] or Opts.values['bMarkMin']):
         if not Opts.values['bAddLine'] and not Opts.values['bAddDot']:
             Opts.riOpts['bAddLine'].CurrentValue = True
@@ -552,19 +565,14 @@ def isMaxClosestDistBtwn2CrvsWithinTol(rgCrv_A, rgCrv_B, tolerance):
     return max(fDevs)
 
 
-def spb_GDBCs_1Way(curveA, curveB, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False):
+def spb_GDBCs_1Way(curve_TestPts, curve_ClosestPt, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False):
     """
-    Alternative to Curve.GetDistancesBetweenCurves for more .
-
-    curveA is divided per segmentLength to obtain some testPoints for ClosestPoint.
-    End points of segments of curveA are also added.
-
-    curveB is the object of ClosestPoint.
+    Alternative to Curve.GetDistancesBetweenCurves for more accuracy.
 
     Parameters:
-        curveA: rg.Curve
-        curveB: rg.Curve
-        segmentLength: float : Division length of curveA to obtain some testPoints for ClosestPoint.
+        curve_TestPts: rg.Curve that will be divided to obtain the testPoints for ClosestPoint.
+        curve_ClosestPt: rg.Curve that is the object of the ClosestPoint call.
+        segmentLength: float : Division length of curve_TestPts to obtain some testPoints for ClosestPoint.
         bDebug: bool
 
     Returns:
@@ -581,13 +589,10 @@ def spb_GDBCs_1Way(curveA, curveB, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False
     segmentLength = 1000.0 * fLocAlongCrvTol
 
     if bDebug:
-        sEval = "curveA.Domain.T0"; print(sEval, '=', eval(sEval))
-        sEval = "curveA.Domain.T1"; print(sEval, '=', eval(sEval))
+        sEval = "curve_TestPts.Domain.T0"; print(sEval, '=', eval(sEval))
+        sEval = "curve_ClosestPt.Domain.T1"; print(sEval, '=', eval(sEval))
         sEval = "segmentLength"; print(sEval, '=', eval(sEval))
 
-
-    Rhino.RhinoApp.SetCommandPrompt("Working ... Segment lengths: {}".format(segmentLength))
-    Rhino.RhinoApp.Wait()
 
     def generate_list_of_curve_parameters_for_ClosestPoint(curve, segmentLength):
         if bDebug: print("generate_list_of_curve_parameters_for_ClosestPoint")
@@ -636,7 +641,7 @@ def spb_GDBCs_1Way(curveA, curveB, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False
         return ts_Out
 
 
-    ts_A_FullCrv = generate_list_of_curve_parameters_for_ClosestPoint(curveA, segmentLength)
+    ts_A_FullCrv = generate_list_of_curve_parameters_for_ClosestPoint(curve_TestPts, segmentLength)
 
     if bDebug:
         sEval = "len(ts_A_FullCrv)"; print(sEval, '=', eval(sEval))
@@ -707,8 +712,8 @@ def spb_GDBCs_1Way(curveA, curveB, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False
 
     ts_B, dists_per_ts_A = calc_parameters_and_distances(
         ts_A_FullCrv,
-        curveA,
-        curveB,
+        curve_TestPts,
+        curve_ClosestPt,
         bOnlyPerp=bOnlyPerp)
     if bDebug:
         sEval = "len(dists_per_ts_A)"; print(sEval, '=', eval(sEval))
@@ -766,11 +771,6 @@ def spb_GDBCs_1Way(curveA, curveB, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False
             if segmentLength < (fLocAlongCrvTol - 1e-6):
                 break
 
-            Rhino.RhinoApp.Wait()
-            #Rhino.RhinoApp.CommandPrompt = "Working ... Segment length: {}".format(segmentLength)
-            Rhino.RhinoApp.SetCommandPrompt("Working ... Segment length: {}".format(segmentLength))
-            #Rhino.RhinoApp.Wait()
-
             if bDebug: sEval = "segmentLength"; print(sEval, '=', eval(sEval))
 
 
@@ -804,7 +804,7 @@ def spb_GDBCs_1Way(curveA, curveB, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False
             ts_B_WIP, dists_per_ts_A_WIP = calc_parameters_and_distances(
                 ts_A_WIP,
                 cA_WIP,
-                curveB,
+                curve_ClosestPt,
                 bOnlyPerp=bOnlyPerp)
 
             # Get winning distance.
@@ -827,7 +827,7 @@ def spb_GDBCs_1Way(curveA, curveB, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False
 
     rc = findMoreAccurateWinner(
         ts_A_In=ts_A_FullCrv,
-        curveA=curveA,
+        curveA=curve_TestPts,
         idx_Winner_In=idx_MaxDist,
         segmentLength_In=segmentLength,
         fLocAlongCrvTol=fLocAlongCrvTol,
@@ -839,13 +839,63 @@ def spb_GDBCs_1Way(curveA, curveB, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False
     if dist_Min > 0.0:
         rc = findMoreAccurateWinner(
             ts_A_In=ts_A_FullCrv,
-            curveA=curveA,
+            curveA=curve_TestPts,
             idx_Winner_In=idx_MinDist,
             segmentLength_In=segmentLength,
             fLocAlongCrvTol=fLocAlongCrvTol,
             bFindMax_NotMin=False)
 
         dist_Min, t_A_MinDist, t_B_MinDist = rc
+
+
+    if (
+        dist_Max is not None and
+        dist_Max > 1e-6 and
+        ((t_A_MaxDist - curve_TestPts.Domain.T0) <= 1e-6)
+        or
+        ((t_A_MaxDist - curve_TestPts.Domain.T1) <= 1e-6)
+        ):
+        v_dist = curve_TestPts.PointAt(t_A_MaxDist) - curve_ClosestPt.PointAt(t_B_MaxDist)
+
+        if v_dist.IsTiny():
+            pass
+        else:
+            rads_90degs = Rhino.RhinoMath.ToRadians(90.0)
+
+            v_tan_A = curve_TestPts.TangentAt(t_A_MaxDist)
+
+            angle_between = rg.Vector3d.VectorAngle(v_tan_A, v_dist)
+            angle_from90 = abs(rads_90degs - angle_between)
+
+            if angle_from90 > Rhino.RhinoMath.ToRadians(22.5):
+                dist_Max = None
+                t_A_MaxDist = None
+                t_B_MaxDist = None
+
+
+    if (
+        dist_Min is not None and
+        dist_Min > 1e-6 and
+        ((t_A_MinDist - curve_TestPts.Domain.T0) <= 1e-6) or
+        ((t_A_MinDist - curve_TestPts.Domain.T1) <= 1e-6)
+        ):
+        v_dist = curve_TestPts.PointAt(t_A_MinDist) - curve_ClosestPt.PointAt(t_B_MinDist)
+
+        if v_dist.IsTiny():
+            pass
+        else:
+            rads_90degs = Rhino.RhinoMath.ToRadians(90.0)
+
+            v_tan_A = curve_TestPts.TangentAt(t_A_MinDist)
+
+            angle_between = rg.Vector3d.VectorAngle(v_tan_A, v_dist)
+            angle_from90 = abs(rads_90degs - angle_between)
+
+            if angle_from90 > Rhino.RhinoMath.ToRadians(22.5):
+                dist_Min = None
+                t_A_MinDist = None
+                t_B_MinDist = None
+
 
 
     return (
@@ -881,19 +931,19 @@ def spb_GDBCs_BothWays(curveA, curveB, fLocAlongCrvTol=None, bOnlyPerp=True, bDe
 
     Rhino.RhinoApp.Wait()
     rc = spb_GDBCs_1Way(
-        curveA,
-        curveB,
-        fLocAlongCrvTol,
+        curve_TestPts=curveA,
+        curve_ClosestPt=curveB,
+        fLocAlongCrvTol=fLocAlongCrvTol,
         bOnlyPerp=bOnlyPerp,
         bDebug=bDebug)
     (
         bSuccess_onB,
-        dist_Max_onB_from_pt_on_A,
-        tA_MaxDist_onB_from_pt_on_A,
-        tB_MaxDist_onB_from_pt_on_A,
-        dist_Min_onB_from_pt_on_A,
-        tA_MinDist_onB_from_pt_on_A,
-        tB_MinDist_onB_from_pt_on_A,
+        dist_Max_ClosestPt_on_B,
+        tA_MaxDist_ClosestPt_on_B,
+        tB_MaxDist_ClosestPt_on_B,
+        dist_Min_ClosestPt_on_B,
+        tA_MinDist_ClosestPt_on_B,
+        tB_MinDist_ClosestPt_on_B,
        ) = rc
     if bDebug: sEval = "rc"; print(sEval, '=', eval(sEval))
 
@@ -901,19 +951,19 @@ def spb_GDBCs_BothWays(curveA, curveB, fLocAlongCrvTol=None, bOnlyPerp=True, bDe
 
     # Notice that curveA and curveB are reversed.
     rc = spb_GDBCs_1Way(
-        curveB,
-        curveA,
-        fLocAlongCrvTol,
+        curve_TestPts=curveB,
+        curve_ClosestPt=curveA,
+        fLocAlongCrvTol=fLocAlongCrvTol,
         bOnlyPerp=bOnlyPerp,
         bDebug=bDebug)
     (
         bSuccess_onA,
-        dist_Max_onA_from_pt_on_B,
-        tB_MaxDist_onA_from_pt_on_B,
-        tA_MaxDist_onA_from_pt_on_B,
-        dist_Min_onA_from_pt_on_B,
-        tB_MinDist_onA_from_pt_on_B,
-        tA_MinDist_onA_from_pt_on_B,
+        dist_Max_ClosestPt_on_A,
+        tB_MaxDist_ClosestPt_on_A,
+        tA_MaxDist_ClosestPt_on_A,
+        dist_Min_ClosestPt_on_A,
+        tB_MinDist_ClosestPt_on_A,
+        tA_MinDist_ClosestPt_on_A,
        ) = rc
     if bDebug: sEval = "rc"; print(sEval, '=', eval(sEval))
 
@@ -922,47 +972,53 @@ def spb_GDBCs_BothWays(curveA, curveB, fLocAlongCrvTol=None, bOnlyPerp=True, bDe
         return
 
     if not bSuccess_onA and bSuccess_onB:
-        dist_Max = dist_Max_onA_from_pt_on_B
-        tA_Max_Out = tA_MaxDist_onA_from_pt_on_B
-        tB_Max_Out = tB_MaxDist_onA_from_pt_on_B
+        dist_Max = dist_Max_ClosestPt_on_B
+        tA_Max_Out = tA_MaxDist_ClosestPt_on_B
+        tB_Max_Out = tB_MaxDist_ClosestPt_on_B
+        dist_Min = dist_Min_ClosestPt_on_B
+        tA_Min_Out = tA_MinDist_ClosestPt_on_B
+        tB_Min_Out = tB_MinDist_ClosestPt_on_B
         #sc.doc.Objects.AddCurve(curveA)
         #sc.doc.Objects.AddCurve(curveB)
         #sc.doc.Views.Redraw()
         #raise Exception("not bSuccess_onA and bSuccess_onB")
 
     elif bSuccess_onA and not bSuccess_onB:
-        dist_Max = dist_Max_onB_from_pt_on_A
-        tA_Max_Out = tA_MaxDist_onB_from_pt_on_A
-        tB_Max_Out = tB_MaxDist_onB_from_pt_on_A
+        dist_Max = dist_Max_ClosestPt_on_A
+        tA_Max_Out = tA_MaxDist_ClosestPt_on_A
+        tB_Max_Out = tB_MaxDist_ClosestPt_on_A
+        dist_Min = dist_Min_ClosestPt_on_A
+        tA_Min_Out = tA_MinDist_ClosestPt_on_A
+        tB_Min_Out = tB_MinDist_ClosestPt_on_A
         #sc.doc.Objects.AddCurve(curveA)
         #sc.doc.Objects.AddCurve(curveB)
         #sc.doc.Views.Redraw()
         #raise Exception("bSuccess_onA and not bSuccess_onB")
 
     else:
-        if dist_Max_onB_from_pt_on_A > dist_Max_onA_from_pt_on_B:
-            dist_Max = dist_Max_onB_from_pt_on_A
-            tA_Max_Out = tA_MaxDist_onB_from_pt_on_A
-            tB_Max_Out = tB_MaxDist_onB_from_pt_on_A
+        if dist_Max_ClosestPt_on_B > dist_Max_ClosestPt_on_A:
+            dist_Max = dist_Max_ClosestPt_on_B
+            tA_Max_Out = tA_MaxDist_ClosestPt_on_B
+            tB_Max_Out = tB_MaxDist_ClosestPt_on_B
             #ptA_Max = curveA.PointAt(tA_MaxDist_onB_from_pt_on_A)
             #ptB_Max = curveB.PointAt(tB_MaxDist_onB_from_pt_on_A)
         else:
-            dist_Max = dist_Max_onA_from_pt_on_B
-            tA_Max_Out = tA_MaxDist_onA_from_pt_on_B
-            tB_Max_Out = tB_MaxDist_onA_from_pt_on_B
+            dist_Max = dist_Max_ClosestPt_on_A
+            tA_Max_Out = tA_MaxDist_ClosestPt_on_A
+            tB_Max_Out = tB_MaxDist_ClosestPt_on_A
             #ptA_Max = curveA.PointAt(tA_MaxDist_onA_from_pt_on_B)
             #ptB_Max = curveB.PointAt(tB_MaxDist_onA_from_pt_on_B)
 
-        if dist_Min_onB_from_pt_on_A < dist_Min_onA_from_pt_on_B:
-            dist_Min = dist_Min_onB_from_pt_on_A
-            tA_Min_Out = tA_MinDist_onB_from_pt_on_A
-            tB_Min_Out = tB_MinDist_onB_from_pt_on_A
+        if dist_Min_ClosestPt_on_B < dist_Min_ClosestPt_on_A:
+            dist_Min = dist_Min_ClosestPt_on_B
+            tA_Min_Out = tA_MinDist_ClosestPt_on_B
+            tB_Min_Out = tB_MinDist_ClosestPt_on_B
             #ptA_Min = curveA.PointAt(tA_MinDist_onB_from_pt_on_A)
             #ptB_Min = curveB.PointAt(tB_MinDist_onB_from_pt_on_A)
         else:
-            dist_Min = dist_Min_onA_from_pt_on_B
-            tA_Min_Out = tA_MinDist_onA_from_pt_on_B
-            tB_Min_Out = tB_MinDist_onA_from_pt_on_B
+            dist_Min = dist_Min_ClosestPt_on_A
+            tA_Min_Out = tA_MinDist_ClosestPt_on_A
+            tB_Min_Out = tB_MinDist_ClosestPt_on_A
             #ptA_Min = curveA.PointAt(tA_MinDist_onA_from_pt_on_B)
             #ptB_Min = curveB.PointAt(tB_MinDist_onA_from_pt_on_B)
 
@@ -991,15 +1047,6 @@ def spb_GDBCs_BothWays(curveA, curveB, fLocAlongCrvTol=None, bOnlyPerp=True, bDe
         tB_Min_Out
         )
 
-    #return (
-    #    dist_Max,
-    #    ptA_Max,
-    #    ptB_Max,
-    #    dist_Min,
-    #    ptA_Min,
-    #    ptB_Min
-    #    )
-
 
 def getDevsBtwn2Sets(rgCrvs_SetA, rgCrvs_SetB, **kwargs):
     """
@@ -1020,7 +1067,7 @@ def getDevsBtwn2Sets(rgCrvs_SetA, rgCrvs_SetB, **kwargs):
     bExplodeCrvs = getOpt('bExplodeCrvs')
     fLocAlongCrvTol = getOpt('fLocAlongCrvTol')
     bOnlyPerp = getOpt('bOnlyPerp')
-    fDist_max_min_to_regard = getOpt('fDist_max_min_to_regard')
+    fDist_max_to_regard = getOpt('fDist_max_to_regard')
     bDebug = getOpt('bDebug')
 
 
@@ -1080,8 +1127,13 @@ def getDevsBtwn2Sets(rgCrvs_SetA, rgCrvs_SetB, **kwargs):
                 rgCs_B[i] = cB.ToNurbsCurve()
 
 
-    for cA in rgCs_A:
-        for cB in rgCs_B:
+    for i_cA, cA in enumerate(rgCs_A):
+        Rhino.RhinoApp.Wait()
+        Rhino.RhinoApp.SetCommandPrompt(
+            "Working ... Curve A {} of {} on each of {} Curve Bs".format(
+                i_cA, len(rgCs_A), len(rgCs_B)))
+
+        for i_cB, cB in enumerate(rgCs_B):
             sc.escape_test()
 
             rc = spb_GDBCs_BothWays(
@@ -1104,33 +1156,33 @@ def getDevsBtwn2Sets(rgCrvs_SetA, rgCrvs_SetB, **kwargs):
                 tB_Min
                ) = rc
 
-            #(
-            #    fDist_Max,
-            #    ptA_Max,
-            #    ptB_Max,
-            #    fDist_Min,
-            #    ptA_Min,
-            #    ptB_Min
-            #   ) = rc
+            if fDist_Min is not None:
+                if (
+                    fDist_max_to_regard and
+                    fDist_Min > fDist_max_to_regard
+                    ):
+                        if bDebug: print("Skipped distance {}.".format(fDist_Min))
+                else:
+                    ptA_Min = None if tA_Min is None else cA.PointAt(tA_Min)
+                    ptB_Min = None if tB_Min is None else cB.PointAt(tB_Min)
+    
+                    fDists_Min.append(fDist_Min)
+                    ptsA_Min.append(ptA_Min)
+                    ptsB_Min.append(ptB_Min)
 
-
-            if fDist_max_min_to_regard and fDist_Min > fDist_max_min_to_regard:
-                if bDebug: print("Skipped distance {}.".format(fDist_Max))
-                continue
-
-
-            ptA_Max = cA.PointAt(tA_Max)
-            ptB_Max = cB.PointAt(tB_Max)
-            ptA_Min = cA.PointAt(tA_Min)
-            ptB_Min = cB.PointAt(tB_Min)
-
-
-            fDists_Max.append(fDist_Max)
-            ptsA_Max.append(ptA_Max)
-            ptsB_Max.append(ptB_Max)
-            fDists_Min.append(fDist_Min)
-            ptsA_Min.append(ptA_Min)
-            ptsB_Min.append(ptB_Min)
+            if fDist_Max is not None:
+                if (
+                    fDist_max_to_regard and
+                    fDist_Max > fDist_max_to_regard
+                    ):
+                        if bDebug: print("Skipped distance {}.".format(fDist_Max))
+                else:
+                    ptA_Max = None if tA_Max is None else cA.PointAt(tA_Max)
+                    ptB_Max = None if tB_Max is None else cB.PointAt(tB_Max)
+    
+                    fDists_Max.append(fDist_Max)
+                    ptsA_Max.append(ptA_Max)
+                    ptsB_Max.append(ptB_Max)
 
 
     return (
@@ -1143,10 +1195,102 @@ def getDevsBtwn2Sets(rgCrvs_SetA, rgCrvs_SetB, **kwargs):
         )
 
 
+class DrawConduit(Rhino.Display.DisplayConduit):
+
+    def __init__(self):
+        self.lines = []
+        self.line_colors = []
+        self.dots = []
+        self.dot_colors = []
+        displayMode = Rhino.RhinoDoc.ActiveDoc.Views.ActiveView.ActiveViewport.DisplayMode
+        self.crv_thk = displayMode.DisplayAttributes.CurveThickness + 1
+
+    def CalculateBoundingBox(self, calculateBoundingBoxEventArgs):
+        for line in self.lines:
+            bbox = line.GetBoundingBox(accurate=False)
+            calculateBoundingBoxEventArgs.IncludeBoundingBox(bbox)
+
+        for dot in self.dots:
+            bbox = dot.GetBoundingBox(accurate=False)
+            calculateBoundingBoxEventArgs.IncludeBoundingBox(bbox)
+
+    def PreDrawObjects(self, drawEventArgs):
+
+        for i, line in enumerate(self.lines):
+            drawEventArgs.Display.DrawLine(
+                line=line,
+                color=self.line_colors[i],
+                thickness=self.crv_thk)
+
+        for i, dot in enumerate(self.dots):
+            drawEventArgs.Display.DrawDot(
+                worldPosition=dot.Point,
+                text=dot.Text,
+                dotColor=self.dot_colors[i],
+                textColor=Color.White if self.dot_colors[i] == Color.Red else Color.Black)
+
+            # TODO: Why doesn't this work?
+            #drawEventArgs.Display.DrawDot(
+            #    dot=dot,
+            #    fillColor=self.dot_colors[i],
+            #    dotColor=self.dot_colors[i],
+            #    textColor=Color.White,
+            #    borderColor=self.dot_colors[i])
+
+
 def _addTextDot(text, pt, iDotFontHt, attrib):
     rgDot = rg.TextDot(text, pt)
     rgDot.FontHeight = iDotFontHt
     sc.doc.Objects.AddTextDot(rgDot, attrib)
+
+
+def _addPreview(conduit, fDists_Max, ptsA_Max, ptsB_Max, fDists_Min, ptsA_Min, ptsB_Min, **kwargs):
+    """
+    """
+
+
+    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
+
+    bAddLine = getOpt('bAddLine')
+    bAddDot = getOpt('bAddDot')
+    iDotDecPlaces = getOpt('iDotDecPlaces')
+    iDotFontHt = getOpt('iDotFontHt')
+
+
+    if not (bAddLine or bAddDot):
+        return
+
+    # Maximum deviation(s).
+    for i, fDist_Max in enumerate(fDists_Max):
+        ptA_Max = ptsA_Max[i]
+        ptB_Max = ptsB_Max[i]
+        if None in (fDist_Max, ptA_Max, ptB_Max):
+            raise Exception("None in {}, {} ,{}".format(fDist_Max, ptA_Max, ptB_Max))
+        if bAddLine:
+            conduit.lines.append(rg.Line(ptA_Max, ptB_Max))
+            conduit.line_colors.append(Color.Red)
+        if bAddDot:
+            conduit.dots.append(
+                rg.TextDot(
+                    text="{0:.{1}f}".format(fDist_Max, iDotDecPlaces),
+                    location=(ptA_Max + ptB_Max) / 2.0))
+            conduit.dot_colors.append(Color.Red)
+
+    # Minimum deviation(s).
+    for i, fDist_Min in enumerate(fDists_Min):
+        ptA_Min = ptsA_Min[i]
+        ptB_Min = ptsB_Min[i]
+        if None in (fDist_Min, ptA_Min, ptB_Min):
+            raise Exception("None in {}, {} ,{}".format(fDist_Max, ptA_Min, ptB_Min))
+        if bAddLine and fDist_Min:
+            conduit.lines.append(rg.Line(ptA_Min, ptB_Min))
+            conduit.line_colors.append(Color.Lime)
+        if bAddDot:
+            conduit.dots.append(
+                rg.TextDot(
+                    text="{0:.{1}f}".format(fDist_Min, iDotDecPlaces),
+                    location=(ptA_Min + ptB_Min) / 2.0))
+            conduit.dot_colors.append(Color.Lime)
 
 
 def _addAnnotation(fDists_Max, ptsA_Max, ptsB_Max, fDists_Min, ptsA_Min, ptsB_Min, **kwargs):
@@ -1162,9 +1306,6 @@ def _addAnnotation(fDists_Max, ptsA_Max, ptsB_Max, fDists_Min, ptsA_Min, ptsB_Mi
     iDotFontHt = getOpt('iDotFontHt')
 
 
-    fDist_max_all = max(fDists_Max) if fDists_Max else None
-    fDist_min_all = min(fDists_Min) if fDists_Min else None
-    
     if not (bAddLine or bAddDot):
         return
 
@@ -1178,42 +1319,51 @@ def _addAnnotation(fDists_Max, ptsA_Max, ptsB_Max, fDists_Min, ptsA_Min, ptsB_Mi
     attr_Green.ObjectColor = attr_Green.ObjectColor.Lime
 
     # Maximum deviation(s).
-    for i, fDist_max in enumerate(fDists_Max):
-        ptA_max = ptsA_Max[i]
-        ptB_max = ptsB_Max[i]
-        if None in (fDist_max, ptA_max, ptB_max):
-            raise Exception("None in {}, {} ,{}".format(fDist_max, ptA_max, ptB_max))
-        #if (fDist_max is not None
-        #        and ptA_max is not None and ptB_max is not None
-        #):
-        if bAddLine:
-            sc.doc.Objects.AddLine(ptA_max, ptB_max, attr_Red)
-        if bAddDot:
-            _addTextDot(
-                "{0:.{1}f}".format(fDist_max, iDotDecPlaces),
-                (ptA_max + ptB_max) / 2.0,
-                iDotFontHt,
-                attr_Red)
+    if fDists_Max:
+        for i, fDist_Max in enumerate(fDists_Max):
+            ptA_Max = ptsA_Max[i]
+            ptB_Max = ptsB_Max[i]
+            if None in (fDist_Max, ptA_Max, ptB_Max):
+                raise Exception("None in {}, {} ,{}".format(fDist_Max, ptA_Max, ptB_Max))
+            #if (fDist_max is not None
+            #        and ptA_max is not None and ptB_max is not None
+            #):
+            if bAddLine:
+                sc.doc.Objects.AddLine(ptA_Max, ptB_Max, attr_Red)
+            if bAddDot:
+                _addTextDot(
+                    "{0:.{1}f}".format(fDist_Max, iDotDecPlaces),
+                    (ptA_Max + ptB_Max) / 2.0,
+                    iDotFontHt,
+                    attr_Red)
 
     # Minimum deviation(s).
-    for i, fDist_min in enumerate(fDists_Min):
-        ptA_min = ptsA_Min[i]
-        ptB_min = ptsB_Min[i]
-        if None in (fDist_min, ptA_min, ptB_min):
-            raise Exception("None in {}, {} ,{}".format(fDist_max, ptA_max, ptB_max))
-        #if (fDist_min is not None
-        #        and ptA_min is not None and ptB_min is not None):
-        if bAddLine and fDist_min:
-            sc.doc.Objects.AddLine(ptA_min, ptB_min, attr_Green)
-        if bAddDot:
-            _addTextDot(
-                "{0:.{1}f}".format(fDist_min, iDotDecPlaces),
-                (ptA_min + ptB_min) / 2.0,
-                iDotFontHt,
-                attr_Green)
+    if fDists_Min:
+        for i, fDist_Min in enumerate(fDists_Min):
+            ptA_Min = ptsA_Min[i]
+            ptB_Min = ptsB_Min[i]
+            if None in (fDist_Min, ptA_Min, ptB_Min):
+                raise Exception("None in {}, {} ,{}".format(fDist_Min, ptA_Min, ptB_Min))
+            #if (fDist_min is not None
+            #        and ptA_min is not None and ptB_min is not None):
+            if bAddLine and fDist_Min:
+                sc.doc.Objects.AddLine(ptA_Min, ptB_Min, attr_Green)
+            if bAddDot:
+                _addTextDot(
+                    "{0:.{1}f}".format(fDist_Min, iDotDecPlaces),
+                    (ptA_Min + ptB_Min) / 2.0,
+                    iDotFontHt,
+                    attr_Green)
 
 
 def main():
+
+    sk_conduit = 'conduit({})'.format(__file__) # StickyKey
+    if (sk_conduit in sc.sticky) and sc.sticky[sk_conduit]:
+        conduit = sc.sticky[sk_conduit]
+        conduit.Enabled = False
+        sc.doc.Views.Redraw()
+
 
     rgCrvsA = []
     rgCrvsB = []
@@ -1233,15 +1383,17 @@ def main():
         rgCrvsA = rc[0]
         rgCrvsB = rc[1]
 
+    bInputSets = Opts.values['bInputSets']
     bExplodeCrvs = Opts.values['bExplodeCrvs']
     fLocAlongCrvTol = Opts.values['fLocAlongCrvTol']
     bOnlyPerp = Opts.values['bOnlyPerp']
-    fDist_max_min_to_regard = Opts.values['fDist_max_min_to_regard']
+    fDist_max_to_regard = Opts.values['fDist_max_to_regard']
     bLimitMode = Opts.values['bLimitMode']
     fUprLimit = Opts.values['fUprLimit']
     fLwrLimit = Opts.values['fLwrLimit']
     bMarkMax = Opts.values['bMarkMax']
     bMarkMin = Opts.values['bMarkMin']
+    bVerifyAddMarks = Opts.values['bVerifyAddMarks']
     bAddLine = Opts.values['bAddLine']
     bAddDot = Opts.values['bAddDot']
     iDotDecPlaces = Opts.values['iDotDecPlaces']
@@ -1257,15 +1409,13 @@ def main():
         sEval = "len(rgCrvsB)"; print(sEval, '=', eval(sEval))
 
 
-    Rhino.RhinoApp.SetCommandPrompt("Working ...")
-
     rc = getDevsBtwn2Sets(
         rgCrvsA,
         rgCrvsB,
         bExplodeCrvs=bExplodeCrvs,
         fLocAlongCrvTol=fLocAlongCrvTol,
         bOnlyPerp=bOnlyPerp,
-        fDist_max_min_to_regard=fDist_max_min_to_regard,
+        fDist_max_to_regard=fDist_max_to_regard,
         bDebug=bDebug,
         )
 
@@ -1279,11 +1429,22 @@ def main():
         ) = rc
 
 
-    fDist_Max_All = max(fDists_Max)
-    fDist_Min_All = min(fDists_Min)
 
-    sEval = "fDist_Max_All"; print(sEval, '=', eval(sEval))
-    sEval = "fDist_Min_All"; print(sEval, '=', eval(sEval))
+    if (
+        all([d is None for d in fDists_Max])
+        and
+        all([d is None for d in fDists_Min])
+        ):
+        print("No results.")
+        return
+
+
+    fDist_Max_All = max(fDists_Max) if fDists_Max else None
+    fDist_Min_All = min(fDists_Min) if fDists_Min else None
+
+    if bDebug:
+        sEval = "fDist_Max_All"; print(sEval, '=', eval(sEval))
+        sEval = "fDist_Min_All"; print(sEval, '=', eval(sEval))
 
 
     if bEcho:
@@ -1303,6 +1464,72 @@ def main():
             s += "  None are above {}.".format(fUprLimit)
 
         print(s)
+
+
+
+    if not bLimitMode and bVerifyAddMarks and (bMarkMax or bMarkMin):
+        if (sk_conduit in sc.sticky) and sc.sticky[sk_conduit]:
+            conduit = None
+            #    conduit = DrawConduit()
+            #    sc.sticky[sk_conduit] = conduit
+            #if not ((sk_conduit in sc.sticky) and sc.sticky[sk_conduit]):
+            #    conduit = DrawConduit()
+            #    sc.sticky[sk_conduit] = conduit
+        conduit = DrawConduit()
+        sc.sticky[sk_conduit] = conduit
+
+
+        if bMarkMax and bMarkMin:
+            _addPreview(
+                conduit,
+                fDists_Max, ptsA_Max, ptsB_Max,
+                fDists_Min, ptsA_Min, ptsB_Min,
+                bAddLine=bAddLine,
+                bAddDot=bAddDot,
+                iDotDecPlaces=iDotDecPlaces,
+                iDotFontHt=iDotFontHt,
+                )
+        elif bMarkMax:
+            _addPreview(
+                conduit,
+                fDists_Max, ptsA_Max, ptsB_Max,
+                [], [], [],
+                bAddLine=bAddLine,
+                bAddDot=bAddDot,
+                iDotDecPlaces=iDotDecPlaces,
+                iDotFontHt=iDotFontHt,
+                )
+        elif bMarkMin:
+            _addPreview(
+                conduit,
+                [], [], [],
+                fDists_Min, ptsA_Min, ptsB_Min,
+                bAddLine=bAddLine,
+                bAddDot=bAddDot,
+                iDotDecPlaces=iDotDecPlaces,
+                iDotFontHt=iDotFontHt,
+                )
+        else:
+            raise Exception("What happened?")
+
+        conduit.Enabled = True
+        sc.doc.Views.Redraw()
+
+        go = ri.Custom.GetOption()
+        go.SetCommandPrompt("Press Enter to skip marks or")
+        idx_Opt = go.AddOption("KeepMarks")
+
+        res = go.Get()
+
+        conduit.Enabled = False
+
+        if res == ri.GetResult.Cancel:
+            go.Dispose()
+            return
+
+        if not go.Option():
+            return
+
 
 
     if bLimitMode:

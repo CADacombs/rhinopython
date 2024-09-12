@@ -1,14 +1,20 @@
 """
 As an alternative to _EdgeSrf, this script:
-1. Matches unionizes knot vectors more exactly.
-2. Offers face-face continuity above G0.
-3. Can create a surface from 3 input curves that form an open loop.
-4. Can create a surface from 2 input curves.
+    1. Offers face-face continuity above G0 (as allowed by the input),
+        similar to using (a more restricted) _MatchSrf _MultipleMatches after an _EdgeSrf.
+    2. Can create a surface from 3 input curves that form an open loop by calculating the missing (4th) curve.
+    3. Can create a surface from 2 input curves, like _ExtrudeCrvAlongCrv or _BlendEdge (_Loft with exactly 2 input curves/edges)
 
-Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
+Due to the accuracy of this script, the output surface may have more knot
+vectors than the result of _EdgeSrf (with the same input geometries).
+
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 
 from __future__ import absolute_import, division, print_function, unicode_literals
+
+#! python 2
 
 """
 211013-25: Created.
@@ -23,6 +29,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
             1. Only 1 of the 2 reference surfaces at corner is planar.
             2. Ends of both reference surfaces at corner are linear and intersect into created surface.
 231226: Bug fix in splitting of curve input that extend through adjacent input.
+240912: Big fix to allow G2 continuity for when the input are 2 adjacent edges (SumSurface).
 
 TODO:
     Convert (some) rational input to non-rational degree 5?
@@ -984,6 +991,90 @@ def transferUniqueKnotVector(nurbsA, nurbsB, sideA=None, sideB=None, paramTol=No
     return knotCount(nurbsB, sideB) > knotCt_B_In
 
 
+def _doAnyCrvsCompletelyOverlap(cs):
+    """
+    """
+
+    found = [[False, False] for i in range(len(cs))]
+    tol = 2.0 * sc.doc.ModelAbsoluteTolerance
+
+    for iA in range(len(cs)-1):
+        cA = cs[iA]
+        if not found[iA][0]:
+            ptA = cA.PointAtStart
+            for iB in range(1+iA, len(cs)):
+                cB = cs[iB]
+                if ptA.DistanceTo(cB.PointAtStart) <= tol:
+                    found[iA][0] = True
+                    found[iB][0] = True
+                    if cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= tol:
+                        return True
+                    break
+                if ptA.DistanceTo(cB.PointAtEnd) <= tol:
+                    found[iA][0] = True
+                    found[iB][1] = True
+                    if cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= tol:
+                        return True
+                    break
+
+        if not found[iA][1]:
+            ptA = cA.PointAtEnd
+            for iB in range(1+iA, len(cs)):
+                cB = cs[iB]
+                if ptA.DistanceTo(cB.PointAtStart) <= tol:
+                    found[iA][1] = True
+                    found[iB][0] = True
+                    if cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= tol:
+                        return True
+                    break
+                if ptA.DistanceTo(cB.PointAtEnd) <= tol:
+                    found[iA][1] = True
+                    found[iB][1] = True
+                    if cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= tol:
+                        return True
+                    break
+
+    return False
+
+
+def _getOppSide(side):
+    sides = W, S, E, N
+    iSide_In = sides.index(side)
+    iSide_Out = (iSide_In + 2) % 4
+    return sides[iSide_Out]
+
+
+def _areThereEnoughPtsToModifyTransverseFromSide(ns, side, iConts_Per_Side):
+
+    iG_side = iConts_Per_Side[side]
+    if iG_side < 0:
+        return True
+
+    opp = _getOppSide(side)
+    iG_opp = iConts_Per_Side[opp]
+
+    pts_Needed_side = iG_side + 1
+
+    pts_Needed_opp = 0 if (iG_opp < 0) else iG_opp + 1
+
+
+    if side in (W,E):
+        ct = ns.Points.CountU
+        #if ct < 2*(iG+1):
+        if ct < pts_Needed_side + pts_Needed_opp:
+            if side == W:
+                print("Not enough CPs to modify to G{} along U.".format(iG_side))
+            return False
+    else:
+        ct = ns.Points.CountV
+        #if ct < 2*(iG_side+1):
+        if ct < pts_Needed_side + pts_Needed_opp:
+            if side == S:
+                print("Not enough CPs to modify to G{} along V.".format(iG_side))
+            return False
+    return True
+
+
 def createSurface(rhCrvs_In, **kwargs):
     """
     Parmeteters:
@@ -995,10 +1086,12 @@ def createSurface(rhCrvs_In, **kwargs):
     """
 
 
-    if 'iContinuity_PerCrv' in kwargs: iContinuity_PerCrv = kwargs['iContinuity_PerCrv']
-    else: iContinuity_PerCrv = Opts.values['iContinuity']
+    if 'iContinuity_PerCrv' in kwargs:
+        iContinuity_PerCrv_In = kwargs['iContinuity_PerCrv']
+    else:
+        iContinuity_PerCrv_In = [Opts.values['iContinuity']]*len(rhCrvs_In)
 
-    iContinuity_PerCrv_Start = iContinuity_PerCrv[:]
+    iContinuity_PerCrv_WIP = iContinuity_PerCrv_In[:]
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
@@ -1101,56 +1194,11 @@ def createSurface(rhCrvs_In, **kwargs):
     cs_In = [getR3CurveOfGeom(g) for g in geoms_In]
 
 
-    def doAnyCrvsCompletelyOverlap(cs):
-        """
-        """
-
-        found = [[False, False] for i in range(len(cs))]
-        tol = 2.0 * sc.doc.ModelAbsoluteTolerance
-
-        for iA in range(len(cs)-1):
-            cA = cs[iA]
-            if not found[iA][0]:
-                ptA = cA.PointAtStart
-                for iB in range(1+iA, len(cs)):
-                    cB = cs[iB]
-                    if ptA.DistanceTo(cB.PointAtStart) <= tol:
-                        found[iA][0] = True
-                        found[iB][0] = True
-                        if cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= tol:
-                            return True
-                        break
-                    if ptA.DistanceTo(cB.PointAtEnd) <= tol:
-                        found[iA][0] = True
-                        found[iB][1] = True
-                        if cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= tol:
-                            return True
-                        break
-
-            if not found[iA][1]:
-                ptA = cA.PointAtEnd
-                for iB in range(1+iA, len(cs)):
-                    cB = cs[iB]
-                    if ptA.DistanceTo(cB.PointAtStart) <= tol:
-                        found[iA][1] = True
-                        found[iB][0] = True
-                        if cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= tol:
-                            return True
-                        break
-                    if ptA.DistanceTo(cB.PointAtEnd) <= tol:
-                        found[iA][1] = True
-                        found[iB][1] = True
-                        if cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= tol:
-                            return True
-                        break
-
-        return False
-
-    if doAnyCrvsCompletelyOverlap(cs_In):
+    if _doAnyCrvsCompletelyOverlap(cs_In):
         return None, "Some edges/trims completely overlap."
 
     geoms_Nurbs = []
-    for geom, iContinuity in zip(geoms_In, iContinuity_PerCrv):
+    for geom, iContinuity in zip(geoms_In, iContinuity_PerCrv_In):
         geom_Nurbs = spb.getShrunkNurbsSrfFromGeom(geom, bUseUnderlyingIsoCrvs=False)
         if geom_Nurbs is None:
             geom_Nurbs = spb.getNurbsGeomFromGeom(geom, iContinuity, bEcho, bDebug=False)
@@ -1208,7 +1256,7 @@ def createSurface(rhCrvs_In, **kwargs):
         polyCrv.Dispose()
         cs_R.append(nc_ToAdd)
         geoms_Nurbs.append((nc_ToAdd, None))
-        iContinuity_PerCrv.append(-1)
+        iContinuity_PerCrv_WIP.append(-1)
     elif len(rhCrvs_In) == 2:
         if any(getPtsAtNonEndIntersects(cs_R)):
             print("Input contains non-end-to-end intersections.  Split curves and rerun sctipt.")
@@ -1245,7 +1293,7 @@ def createSurface(rhCrvs_In, **kwargs):
                     nc_ToAdd = getIsoCurveOfSide(side, ns_M_Start)
                     cs_R.append(nc_ToAdd)
                     geoms_Nurbs.append((nc_ToAdd, None))
-                    iContinuity_PerCrv.append(-1)
+                    iContinuity_PerCrv_WIP.append(-1)
 
         elif len(pCrvs) == 2:
             # Create blend surface.  Can optionally do this using Brep.CreateFromLoft.
@@ -1259,10 +1307,10 @@ def createSurface(rhCrvs_In, **kwargs):
                     (cs_R[0].PointAtEnd, cs_R[1].PointAtStart))
             for i in 0,1:
                 nc_ToAdd = rg.LineCurve(pts[i][0], pts[i][1]).ToNurbsCurve()
-                nc_ToAdd.IncreaseDegree((iContinuity_PerCrv[i]+1)*2-1)
+                nc_ToAdd.IncreaseDegree((iContinuity_PerCrv_WIP[i]+1)*2-1)
                 cs_R.append(nc_ToAdd)
                 geoms_Nurbs.append((nc_ToAdd, None))
-                iContinuity_PerCrv.append(-1)
+                iContinuity_PerCrv_WIP.append(-1)
 
 
     if ns_M_Start is None:
@@ -1301,7 +1349,7 @@ def createSurface(rhCrvs_In, **kwargs):
         cs_C, cs_R, bDebug=bDebug)
     if idx_R_per_Ms_WSEN is None: return
 
-    iConts_WSEN = [iContinuity_PerCrv[i] for i in idx_R_per_Ms_WSEN]
+    iConts_WSEN = [iContinuity_PerCrv_WIP[i] for i in idx_R_per_Ms_WSEN]
 
 
     # Align each reference to the Coons by side and parameterization.
@@ -1322,12 +1370,13 @@ def createSurface(rhCrvs_In, **kwargs):
         else:
             geoms_In_Per_Side[side] = None
 
+
     # Reduce continuities that are above maximum that reference objects can offer.
     for side in W,S,E,N:
         if isinstance(geoms_Nurbs_AR[side], rg.NurbsCurve):
             if iConts_Per_Side[side] > 0:
                 if bEcho:
-                    print("Reduced continuity on {} from {} to {} since input is a curve, not surface.".format(
+                    print("Reduced target continuity on {} from {} to {} since input geometry is a curve, not surface.".format(
                         side, iConts_Per_Side[side], 0))
                 iConts_Per_Side[side] = 0
             continue
@@ -1348,12 +1397,12 @@ def createSurface(rhCrvs_In, **kwargs):
 
         if side in (W,E):
             if bEcho:
-                print("Reduced continuity on {} from {} to {}.".format(
+                print("Reduced target continuity on {} from {} to {}.".format(
                     side, iConts_Per_Side[side], 1))
             iConts_Per_Side[side] = 1
         else:
             if bEcho:
-                print("Reduced continuity on {} from {} to {}.".format(
+                print("Reduced target continuity on {} from {} to {}.".format(
                     side, iConts_Per_Side[side], 1))
             iConts_Per_Side[side] = 1
 
@@ -1410,7 +1459,7 @@ def createSurface(rhCrvs_In, **kwargs):
 
     # Match reference srf knot vectors to Coons patch srf.
 
-    # First, transfer unique knots to Coons so that the latter can contain all unqiue knots
+    # First, transfer unique knots to Coons so that the latter can contain all unique knots
     # to transfer to reference surfaces.
     [transferUniqueKnotVector(geoms_Nurbs_AR[side], ns_M_Start, side, side) for side in (S,N,W,E)]
 
@@ -1428,30 +1477,13 @@ def createSurface(rhCrvs_In, **kwargs):
         return ns_M_Start
 
 
-    def areThereEnoughPtsToModify(side, iG):
-        """ Directions are against side. """
-        if side in (W,E):
-            ct = ns_M_Start.Points.CountU
-            if ct < 2*(iG+1):
-                if side == W:
-                    print("Not enough CPs to modify to G{} along U.".format(iG))
-                return False
-        else:
-            ct = ns_M_Start.Points.CountV
-            if ct < 2*(iG+1):
-                if side == S:
-                    print("Not enough CPs to modify to G{} along V.".format(iG))
-                return False
-        return True
-
-
     if ns_M_Start.Points.CountU < 4 and ns_M_Start.Points.CountV < 4:
         if bEcho: print("Not enough points to modify continuity.")
         return ns_M_Start
 
     if bEcho:
-        iCt = sum(isinstance(geoms_Nurbs_AR[key], rg.NurbsSurface) for key in geoms_Nurbs_AR)
-        print("Modifying continuity of up to {} sides.".format(iCt))
+        print("Modifying continuity for {} reference edges.".format(
+            sum(isinstance(geoms_Nurbs_AR[key], rg.NurbsSurface) for key in geoms_Nurbs_AR)))
 
 
     ptsM_PreG1 = [cp.Location for cp in ns_M_Start.Points]
@@ -1472,10 +1504,14 @@ def createSurface(rhCrvs_In, **kwargs):
 
         iContinuity = iConts_Per_Side[side]
 
-        if iContinuity not in (1,2):
-            continue # Since surface is already G0 along this side.
+        if iContinuity < 1:
+            continue
 
-        if not areThereEnoughPtsToModify(side, 1):
+        if not _areThereEnoughPtsToModifyTransverseFromSide(
+            ns_M_Start,
+            side,
+            {W: 1, S: 1, E: 1, N: 1}
+        ):
             continue
 
         geom_AR = geoms_Nurbs_AR[side]
@@ -1554,7 +1590,7 @@ def createSurface(rhCrvs_In, **kwargs):
         #sc.doc.Objects.AddPoint(pts_WIP[idxPts['M',1][1]])
         #sc.doc.Objects.AddPoint(pts_WIP[idxPts['M',1][len(idxPts['M',1])-2]])
 
-        if iContinuity == 2 and areThereEnoughPtsToModify(side, 2):
+        if iContinuity == 2 and _areThereEnoughPtsToModifyTransverseFromSide(ns_M_Start, side, iConts_Per_Side):
             ns_M_G2 = spb.setContinuity_G2(
                 ns_M_BeforeAnyMatching=ns_M_Start,
                 ns_M_In=ns_WIP,

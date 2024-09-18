@@ -6,12 +6,23 @@ This script uses headless FreeCAD ( https://wiki.freecadweb.org/Headless_FreeCAD
 The most significant differences from Rhino's _FilletEdge are at the
 intersections of non-tangent edges.
 
-Warning: Check the resultant B-Reps for missing faces.
+Caution: Check the resultant polysurfaces (B-reps) for missing faces.
 
-This script was tested on
-- Rhino 7.35.23346.11001, 2023-12-12  & 8.2.23346.13001, 2023-12-12 on Windows
-- FreeCAD 0.19.24267 +99 (Git), 0.20.2.29603 (Git), & 0.21.1.33668 +26 (Git) on Windows
+See script file for setup instructions.
 
+Send any questions, comments, or script development service needs to @spb on
+the McNeel Forums ( https://discourse.mcneel.com/ )
+"""
+
+#! python 2  Must be on a line less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
+This script was last tested on
+- Rhino 8.11.24254.15001, 2024-09-10
+Using
+- FreeCAD 0.21.2.33771 (Git)
+On Windows.
 
 Requirements to run:
 1. Rhino 7 or 8.  Other versions have not been tested.  If you try other versions,
@@ -26,21 +37,6 @@ Requirements to run:
     are created on the current user's Desktop.
 
 
-TODO:
-For previous input option, should the input be merged with any current input?
-Maybe?: Allow variable radius fillet input.
-    FreeCAD only creates variable fillets that have 2 radii and are G1 blended
-    between the edges so that the target fillet radii can G1 match to
-    an adjacent fillet at a tangent edge.  They are not linearly blended.
-
-
-Send any questions, comments, or script development service needs to @spb on
-the McNeel Forums ( https://discourse.mcneel.com/ )
-"""
-
-from __future__ import absolute_import, division, print_function, unicode_literals
-
-"""
 211222-220103: Created.
 220106: subprocess.Popen now runs in a threading.Timer.
 220110: Removed code for PartDesign Fillet since it has less options than Part Fillet.
@@ -50,6 +46,15 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 240101: When running on Windows, now searches and automatically sets FreeCAD
         version to the latest installed.  Also, added command option to change versions
         if more than one are available.
+240918: To avoid Python process conflicts, the PYTHONHOME environment variable is
+        now deleted when the script is run in Rhino 8.
+
+TODO:
+For previous input option, should the input be merged with any current input?
+Maybe?: Allow variable radius fillet input.
+    FreeCAD only creates variable fillets that have 2 radii and are G1 blended
+    between the edges so that the target fillet radii can G1 match to
+    an adjacent fillet at a tangent edge.  They are not linearly blended.
 """
 
 import Rhino
@@ -106,6 +111,27 @@ class FC_paths:
             cls.sFC_Path_Parent,
             "FreeCAD {}".format(sFC_Ver),
             "bin\FreeCADcmd.exe"))
+
+
+def checkAndDelPYTHONHOME(bDebug=False):
+    """
+    Doing this due to behavior of Rhino 8.
+    """
+
+    import os
+
+    for sVar in ('PYTHONHOME', ):
+        sEval = "os.environ['{}']".format(sVar)
+        if sVar in os.environ:
+            print(sEval,"=",eval(sEval))
+            del os.environ[sVar]
+            if sVar in os.environ:
+                print(sEval,"=",eval(sEval))
+                del os.environ[sVar]
+            else:
+                if bDebug: print("{} doesn't exist.".format(sEval))
+        else:
+            if bDebug: print("{} doesn't exist.".format(sEval))
 
 
 s_FC = []
@@ -776,6 +802,8 @@ def processBrepObject(rhBrep_In, idxs_Es, fRadii, fFreeCADTimeoutSecs=10.0, bEch
 
 def main():
 
+    if Rhino.RhinoApp.ExeVersion >= 8:
+        checkAndDelPYTHONHOME(Opts.values['bDebug'])
 
     gBs_In = [] # This is used as the index for the brep in the following routine.
     idx_rgEdges_PerBrep = []

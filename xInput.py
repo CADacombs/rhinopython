@@ -6,13 +6,14 @@
 160822: Minor changes.
 190129-0605: Import-related update.
 200107-08: Import-related update and various minor changes.
+241224: Import-related update.
 """
 
 import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
-import xBrepFace_contiguousFilletFaces
+import spb_Brep_contiguousFilletFaces
 
 
 def getChainFilletFaces(bDebug=False):
@@ -107,7 +108,7 @@ def getChainFilletFaces(bDebug=False):
     rgBrep0 = rdORef.Brep()
     idxFace_Sel = rdORef.GeometryComponentIndex.Index
     
-    rc = xBrepFace_contiguousFilletFaces.indicesOfContiguousFilletFaces(
+    rc = spb_Brep_contiguousFilletFaces.indicesOfContiguousFilletFaces(
         rgBrep0,
         idxFace_Sel,
         bSameRad,

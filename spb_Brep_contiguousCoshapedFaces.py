@@ -6,6 +6,7 @@
 191101: Import-related update.
 191117: Import-related bug fix.
 191118: Import-related update.
+241224: Bug fix.
 """
 
 import Rhino
@@ -307,7 +308,7 @@ def getFaces(rgBrep0, idx_rgFaceA, idx_rgFaces_Filter=None, bMergeAll=True, bPri
                 rgFace0=rgFaceA,
                 fTolerance=fTolerance,
                 bDebug=bDebug)
-        if rc is not None:
+        if rc is not None and rc[0] is not None:
             rgShapeA, fTol_Used, sShrunkOrNot = rc[0]
             idx_rgFs_B0_Pass = getPrimitiveShapedFaces(
                     rgFaceA=rgFaceA,

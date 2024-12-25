@@ -40,7 +40,7 @@
 190810: Import-related changes.
 191101: Import-related changes.  Bug fix.
 191117: Non-manifold breps are no longer accepted.
-191118-19, 200715: Import-related updates.
+191118-19, 200715, 241224: Import-related updates.
 """
 
 import Rhino
@@ -52,7 +52,7 @@ import scriptcontext as sc
 from System import Guid
 from System.Drawing import Color
 
-import xBrep_contiguousCoshapedFaces
+import spb_Brep_contiguousCoshapedFaces
 import xBrep_createFromShape
 import xBrepObject
 import xPrimitiveShape
@@ -299,7 +299,7 @@ def processBrep(rgBrep0, idx_rgFaceA, idx_rgFaces_Filter=None, bTryConvert=None,
         if rc[0] is not None:
             rgPrimitiveShapeA, fTol_Used, sShrunkOrNot = rc[0]
             shapeA = rgPrimitiveShapeA
-            idx_rgFs_B0_Merge = xBrep_contiguousCoshapedFaces.getPrimitiveShapedFaces(
+            idx_rgFs_B0_Merge = spb_Brep_contiguousCoshapedFaces.getPrimitiveShapedFaces(
                     rgFaceA=rgFaceA,
                     rgPrimitiveShapeA=rgPrimitiveShapeA,
                     idx_rgFaces_Filter=idx_rgFaces_Filter,
@@ -312,7 +312,7 @@ def processBrep(rgBrep0, idx_rgFaceA, idx_rgFaces_Filter=None, bTryConvert=None,
             rgSrfA.Dispose()
             return
         shapeA = rgSrfA
-        idx_rgFs_B0_Merge = xBrep_contiguousCoshapedFaces.getNurbsSrfFaces(
+        idx_rgFs_B0_Merge = spb_Brep_contiguousCoshapedFaces.getNurbsSrfFaces(
                 rgFaceA=rgFaceA,
                 rgNurbsSurfaceA=rgSrfA,
                 idx_rgFaces_Filter=idx_rgFaces_Filter,

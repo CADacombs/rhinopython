@@ -6,6 +6,7 @@ Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums, https://discourse.mcneel.com/
 """
 
+#! python 2  Must be on a line number less than 32.
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
@@ -25,6 +26,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Added option and routine to split output curves at G2 discontinuities.
 240725: Bug fix in finding G2 discontinuities.
         Bug fix in removing knots.
+241229: Bug fixes.
 """
 
 import Rhino
@@ -33,6 +35,8 @@ import Rhino.Geometry as rg
 import Rhino.Input as ri
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
+
+from System import Guid
 
 import math
 
@@ -187,8 +191,10 @@ class Opts():
             return
 
         if key == 'fDistTol':
-            if cls.riOpts[key].CurrentValue < 1e-6:
+            if cls.riOpts[key].CurrentValue < 0.0:
                 cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < 1e-6:
+                cls.riOpts[key].CurrentValue = 1e-6
 
             cls.values[key] = cls.riOpts[key].CurrentValue
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
@@ -740,29 +746,25 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_D
     fTol_MaxRad = 1e3
 
 
-    if isinstance(rgCrv_In, (rg.PolylineCurve, rg.PolyCurve)):
-        raise Exception("Input is {}.".format(rgCrv_In.GetType().Name))
-
     if isinstance(rgCrv_In, (rg.ArcCurve, rg.LineCurve)):
-        print("Curve is already a {}. How did that happen?".format(rgCrv_In.GetType().Name))
+        print("Curve is already a {}. How did that happen?".format(
+            rgCrv_In.GetType().Name))
         return rgCrv_In.DuplicateCurve()
 
-    nc_In = rgCrv_In
-
-    if not nc_In.IsClosed:
-        if nc_In.IsLinear(fTol_Min):
+    if not rgCrv_In.IsClosed:
+        if rgCrv_In.IsLinear(fTol_Min):
             return rg.LineCurve(
-                nc_In.PointAtStart,
-                nc_In.PointAtEnd)
+                rgCrv_In.PointAtStart,
+                rgCrv_In.PointAtEnd)
 
     if bArcOK:
-        if nc_In.IsClosed:
-            b, circle = nc_In.TryGetCircle(fTol_Min)
+        if rgCrv_In.IsClosed:
+            b, circle = rgCrv_In.TryGetCircle(fTol_Min)
             if b:
                 if circle.Radius <= fTol_MaxRad:
                     return rg.ArcCurve(circle)
         else:
-            b, arc = nc_In.TryGetArc(fTol_Min)
+            b, arc = rgCrv_In.TryGetArc(fTol_Min)
             if b:
                 if arc.Radius <= fTol_MaxRad:
                     return rg.ArcCurve(arc)
@@ -771,6 +773,21 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_D
         ## TODO: Remove this?
         #if nc_In.IsRational:
         #    return nc_In.Duplicate()
+
+    if isinstance(rgCrv_In, rg.PolylineCurve):
+        
+        if sc.doc.Objects.AddCurve(rgCrv_In) == Guid.Empty:
+            s = ""
+        else:
+            s = ", and was added to the document"
+        raise Exception("Input is {}{}.".format(
+            rgCrv_In.GetType().Name, s))
+
+    if isinstance(rgCrv_In, rg.PolyCurve):
+        nc_In = rgCrv_In.ToNurbsCurve()
+        print("PolyCurve converted to a NurbsCurve for simplification processing.")
+    else:
+        nc_In = rgCrv_In.Duplicate()
 
     if isUniformNurbsCurve(nc_In):
         return nc_In.Duplicate()
@@ -797,6 +814,8 @@ def simplifyCurve(rgCrv_In, bArcOK=False, iDegs=(2,3,5), fTol=None, fAngle_Tol_D
 
     if rc:
         return rc[0]
+
+    nc_In.Dispose()
 
 
 def split_NurbsCrv_at_G2_discontinuities(nc_In, angleToleranceRadians, bDebug=False):
@@ -832,7 +851,7 @@ def split_NurbsCrv_at_G2_discontinuities(nc_In, angleToleranceRadians, bDebug=Fa
     split = nc_In.Split(ts_Found)
 
     if len(split) < 2:
-        s = "Split produced {} curves. Should have been {}.".format(
+        s = "Split produced {} curves. Should have been {}. Curves were added.".format(
             len(split), len(ts_Found)+1)
         print(s)
         sc.doc.Objects.AddCurve(nc_In)
@@ -1013,6 +1032,9 @@ def createSilhouetteCurves(rgGeomForSilh, **kwargs):
                 new_pull = create_normal_def_pull_to_face(rgF, silh.Curve, tol_ForCompute_or_CDC, bDebug=bDebug)
                 silh.Curve.Dispose()
                 rgCs_WIP.append(new_pull)
+
+    if not rgCs_WIP:
+        return rgCs_WIP
 
 
     if not bSimplifyRes and not bSplitNonG2:

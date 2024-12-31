@@ -1,7 +1,7 @@
 """
 This script is an alternative to _Project.
 Segments of polycurves can be projected individually, avoiding merges through joints.
-Projections of curves onto planar surfaces of polyface breps are more similar to loose projections.
+Projection of curves onto planar surfaces of polyface breps is more similar to loose projection.
 For increased accuracy, all curves projected to planar faces are projected loose
 to the TryGetPlane plane, then split at the intersections with the monoface brep's edges.
 With AttemptRebuild enabled, curve will be projected at half the tolerance,
@@ -12,17 +12,27 @@ Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums, https://discourse.mcneel.com/
 """
 
+#! python 2  Must be on a line number less than 32.
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 191124-25: Created.
 ...
 220821: Modified an option default value.
-230720: Now passes fTol to a method instead of ModelAbsoluteTolerance.
+230720: Now passes fTol_Proj to a method instead of ModelAbsoluteTolerance.
 231106: Improved selection routine for faces.
 240712-15: Refactored and modified behavior of simplification routines.
+241107, 241225: Fixed bugs created during 240712-15 refactoring.
+241226-28: Fixed bugs, added another tolerance option, and refactored.
 
 TODO:
+    Reviewing tolerance values passed to:
+        rg.Intersect.Intersection.CurveCurve
+        rg.Curve.ProjectToBrep
+        removeShortCrvsInList
+        convertLinearNurbsToLinesInList
+        rg.Intersect.Intersection.ProjectPointsToBreps
+
     Determine solution for when a loose projected curve doesn't lie within
     the projection boundary of the brep.
     Possible solutions:
@@ -36,29 +46,10 @@ import Rhino
 import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
-import rhinoscript.utility
-import rhinoscript.userinterface
+import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from System import Guid
-
-
-sOpts_OutputLayer = [
-    'Input',
-    'Current',
-    'TargetObject',
-    ]
-
-sOpts_Direction = [
-    'CPlaneX',
-    'CPlaneY',
-    'CPlaneZ',
-    'WorldX',
-    'WorldY',
-    'WorldZ',
-    'View',
-    'Custom',
-    ]
 
 
 class Opts:
@@ -67,106 +58,90 @@ class Opts:
     values = {}
     names = {}
     riOpts = {}
-    riAddOpts = {}
+    listValues = {}
     stickyKeys = {}
-
-
-    def addOptionDouble(key, names, riOpts):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionDouble(
-            getObj, englishName=names[key], numberValue=riOpts[key])
-
-
-    def addOptionInteger(key, names, riOpts):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionInteger(
-            getObj, englishName=names[key], intValue=riOpts[key])
-
-
-    def addOptionList(key, names, listValues, values):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionList(
-            getObj,
-            englishOptionName=names[key],
-            listValues=listValues,
-            listCurrentIndex=values[key])
-
-
-    def addOptionToggle(key, names, riOpts):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionToggle(
-            getObj, englishName=names[key], toggleValue=riOpts[key])
 
 
     key = 'bProjectCrvSegs'; keys.append(key)
     values[key] = True
     names[key] = "Project"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'WholeCrv', 'CrvSegs')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'fTol_Proj'; keys.append(key)
+    values[key] = 0.25 * sc.doc.ModelAbsoluteTolerance
+    names[key] = 'ProjTol'
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.ModelUnitSystem)
 
     key = 'bLoose'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'fTol'; keys.append(key)
-    values[key] = sc.doc.ModelAbsoluteTolerance
-    names[key] = key[1:]
-    riOpts[key] = ri.Custom.OptionDouble(values[key])
-    riAddOpts[key] = addOptionDouble(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bPostProcess'; keys.append(key)
     values[key] = True
-    names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'fTol_MinLength'; keys.append(key)
+    values[key] = sc.doc.ModelAbsoluteTolerance
+    names[key] = 'MinLenTol'
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.ModelUnitSystem)
 
     key = 'bOnlyLinesAndCubicNurbs'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bTryGetArcs'; keys.append(key)
     values[key] = True
-    names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bAcceptRational'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bTryRebuildOthersUniform'; keys.append(key)
     values[key] = True
-    names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bJoinPerInputCrv'; keys.append(key)
+    values[key] = True
+    #names[key] = 'Join'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bDeleteInput'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iOutputLayer'; keys.append(key)
     values[key] = 1
-    names[key] = key[1:]
-    riAddOpts[key] = addOptionList(key, names, sOpts_OutputLayer, values)
+    listValues[key] = (
+        'Input',
+        'Current',
+        'TargetObject',
+        )
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iDirection'; keys.append(key)
     values[key] = 2
-    names[key] = key[1:]
-    riAddOpts[key] = addOptionList(key, names, sOpts_Direction, values)
+    listValues[key] = (
+        'CPlaneX',
+        'CPlaneY',
+        'CPlaneZ',
+        'WorldX',
+        'WorldY',
+        'WorldZ',
+        'View',
+        'Custom',
+        )
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'vectCustom'; keys.append(key)
@@ -175,16 +150,12 @@ class Opts:
 
     key = 'bEcho'; keys.append(key)
     values[key] = True
-    names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bDebug'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     # Load sticky.
@@ -196,20 +167,88 @@ class Opts:
                 values[key] = sc.sticky[stickyKeys[key]]
 
 
-    @classmethod
-    def setValues(cls):
-        for key in cls.keys:
-            if key in cls.riOpts:
-                cls.values[key] = cls.riOpts[key].CurrentValue
+    for key in keys:
+        if key not in names:
+            names[key] = key[1:]
 
 
-    @classmethod
-    def saveSticky(cls):
-        for key in cls.stickyKeys:
-            if key in cls.riOpts:
-                sc.sticky[cls.stickyKeys[key]] = cls.riOpts[key].CurrentValue
+    # Load sticky.
+    for key in stickyKeys:
+        if stickyKeys[key] in sc.sticky:
+            if key in riOpts:
+                riOpts[key].CurrentValue = values[key] = sc.sticky[stickyKeys[key]]
             else:
+                # For OptionList.
+                values[key] = sc.sticky[stickyKeys[key]]
+
+
+    @classmethod
+    def addOption(cls, go, key):
+
+        idxOpt = None
+
+        if key in cls.riOpts:
+            if key[0] == 'b':
+                idxOpt = go.AddOptionToggle(
+                    cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'f':
+                idxOpt = go.AddOptionDouble(
+                    cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'i':
+                idxOpt = go.AddOptionInteger(
+                    englishName=cls.names[key], intValue=cls.riOpts[key])[0]
+        elif key in cls.listValues:
+            idxOpt = go.AddOptionList(
+                englishOptionName=cls.names[key],
+                listValues=cls.listValues[key],
+                listCurrentIndex=cls.values[key])
+        else:
+            print("{} is not a valid key in Opts.".format(key))
+
+        return idxOpt
+
+
+    @classmethod
+    def setValue(cls, key, idxList=None):
+
+        if key == 'fTol_Proj':
+            # Rhino.RhinoMath.ZeroTolerance == 2**-32 in RC >= V7. It is 1.0e-12 in previous versions.
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.values[key] = cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
                 sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+                return
+
+            if cls.riOpts[key].CurrentValue <= 2**-32:
+                cls.values[key] = cls.riOpts[key].CurrentValue = 2**-32
+                sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+                return
+
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
+            return
+
+
+        if key == 'fTol_MinLength':
+            # Rhino.RhinoMath.ZeroTolerance == 2**-32 in RC >= V7. It is 1.0e-12 in previous versions.
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.values[key] = cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+                sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+                return
+
+            if cls.riOpts[key].CurrentValue <= 2**-32:
+                cls.values[key] = cls.riOpts[key].CurrentValue = 2**-32
+                sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+                return
+
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
+            return
+
+        if key in cls.riOpts:
+            cls.values[key] = cls.riOpts[key].CurrentValue
+        elif key in cls.listValues:
+            cls.values[key] = idxList
+        else:
+            return
+        sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
 def getInput(rdObjs_toHighlight, sPrompt, rdGeomFilter):
@@ -226,45 +265,40 @@ def getInput(rdObjs_toHighlight, sPrompt, rdGeomFilter):
     go.EnableClearObjectsOnEntry(False) # Do not clear objects in go on repeats of While loop.
     go.EnableUnselectObjectsOnExit(False) # Do not unselect object when an option selected, a number is entered, etc.
 
-    idxs_Opts = {}
+    idxs_Opt = {}
+    def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
     bPreselectedObjsChecked = False
     go.EnablePreSelect(True, ignoreUnacceptablePreselectedObjects=True)
 
     while True:
-        Opts.riAddOpts['bProjectCrvSegs'](go)
-        Opts.riAddOpts['bLoose'](go)
-        if not Opts.values['bLoose']:
-            Opts.riAddOpts['fTol'](go)
-            Opts.riAddOpts['bPostProcess'](go)
-            if Opts.values['bPostProcess']:
-                Opts.riAddOpts['bOnlyLinesAndCubicNurbs'](go)
-                if not Opts.values['bOnlyLinesAndCubicNurbs']:
-                    Opts.riAddOpts['bTryGetArcs'](go)
-                    Opts.riAddOpts['bAcceptRational'](go)
-                    Opts.riAddOpts['bTryRebuildOthersUniform'](go)
-        Opts.riAddOpts['bDeleteInput'](go)
-        idxs_Opts['iOutputLayer'] = Opts.riAddOpts['iOutputLayer'](go)
-        idxs_Opts['iDirection'] = Opts.riAddOpts['iDirection'](go)
-        Opts.riAddOpts['bEcho'](go)
-        Opts.riAddOpts['bDebug'](go)
+        go.ClearCommandOptions()
 
-        if Opts.values['bDebug']:
-            print("Before GetMultiple")
-            sEval = "  go.ObjectCount"; print("{}: {}".format(sEval, eval(sEval)))
+        idxs_Opt.clear()
+
+        addOption('bProjectCrvSegs')
+        addOption('fTol_Proj')
+        addOption('bLoose')
+        if not Opts.values['bLoose']:
+            addOption('bPostProcess')
+            if Opts.values['bPostProcess']:
+                addOption('fTol_MinLength')
+                addOption('bOnlyLinesAndCubicNurbs')
+                if not Opts.values['bOnlyLinesAndCubicNurbs']:
+                    addOption('bTryGetArcs')
+                    addOption('bAcceptRational')
+                    addOption('bTryRebuildOthersUniform')
+        addOption('bJoinPerInputCrv')
+        addOption('bDeleteInput')
+        addOption('iOutputLayer')
+        addOption('iDirection')
+        addOption('bEcho')
+        addOption('bDebug')
 
         res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
 
-        if Opts.values['bDebug']:
-            print("After GetMultiple")
-            sEval = "  go.ObjectCount"; print("{}: {}".format(sEval, eval(sEval)))
-
         # Use bPreselectedObjsChecked so that only objects before the
         # first call to go.GetMultiple is considered.
-        if Opts.values['bDebug']:
-            sEval = "  bPreselectedObjsChecked"; print("{}: {}".format(sEval, eval(sEval)))
-            sEval = "  go.ObjectsWerePreselected"; print("{}: {}".format(sEval, eval(sEval)))
-
         if not bPreselectedObjsChecked:
             go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
             bPreselectedObjsChecked = True
@@ -274,41 +308,42 @@ def getInput(rdObjs_toHighlight, sPrompt, rdGeomFilter):
         if res == ri.GetResult.Cancel:
             go.Dispose()
             return
+
         if res == ri.GetResult.Object:
             objrefs = go.Objects()
             go.Dispose()
-            return [objrefs] + [Opts.values[key] for key in Opts.keys]
+            return objrefs
 
         # An option was selected or a number was entered.
         if res == ri.GetResult.Number:
-            Opts.riOpts['fTol'].CurrentValue = go.Number()
-        else:
-            if go.Option().Index == idxs_Opts['iOutputLayer']:
-                Opts.values['iOutputLayer'] = (
-                        go.Option().CurrentListOptionIndex)
-            elif go.Option().Index == idxs_Opts['iDirection']:
-                Opts.values['iDirection'] = (
-                        go.Option().CurrentListOptionIndex)
+            key = 'fTol_Proj'
+            Opts.riOpts[key].CurrentValue = go.Number()
+            Opts.setValue(key)
+            continue
 
-                if sOpts_Direction[go.Option().CurrentListOptionIndex] == 'Custom':
-                    rc = rhinoscript.userinterface.GetLine(
-                        mode=1, point=None,
-                        message1='Projection direction',
-                        message3='Second direction point',
-                        )
-                    if not rc:
-                        Opts.values['iDirection'] = 0
-                    else:
-                        Opts.values['vectCustom'] = rg.Vector3d(rc[1] - rc[0])
-                        Opts.values['vectCustom'].Unitize()
+        if go.Option().Index == idxs_Opt['iOutputLayer']:
+            Opts.values['iOutputLayer'] = (
+                    go.Option().CurrentListOptionIndex)
+        elif go.Option().Index == idxs_Opt['iDirection']:
+            Opts.values['iDirection'] = (
+                    go.Option().CurrentListOptionIndex)
 
-        key = 'fTol'
-        if Opts.riOpts[key].CurrentValue <= (1.0/2**32):
-            Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
-        
-        Opts.setValues()
-        Opts.saveSticky()
-        go.ClearCommandOptions()
+            if Opts.listValues['iDirection'][go.Option().CurrentListOptionIndex] == 'Custom':
+                rc = rs.GetLine(
+                    mode=1, point=None,
+                    message1='Projection direction',
+                    message3='Second direction point',
+                    )
+                if not rc:
+                    Opts.values['iDirection'] = 0
+                else:
+                    Opts.values['vectCustom'] = rg.Vector3d(rc[1] - rc[0])
+                    Opts.values['vectCustom'].Unitize()
+
+        for key in idxs_Opt:
+            if go.Option().Index == idxs_Opt[key]:
+                Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                break
 
 
 def coerceBrep(rhObj):
@@ -342,227 +377,362 @@ def formatDistance(fDistance):
         return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
 
 
-def projectCurve_Loose(rgC0, rgB, vectDir, bProjectCrvSegs=True, fTol=None, bDebug=False):
+def projectCurve_Loose(rgCrv_In, rgB, vectDir, fTol_Proj=None, bDebug=False):
     """
-    Projecting to breps of individual faces results in simpler curves for any
-    planar (not only PlaneSurface) faces.
-    For more accurate results, the curves's control points should be projected to
-    the Plane themselves.
-
     Parameters:
         rgC0
         rgB
         vectDir
-        bProjectCrvSegs
-        fTol: float = Tolerance of projected control points and determining short segments,
-                        not the deviation of the curves to the surfaces.
+        fTol_Proj: float = Tolerance of projected control points, not the maximum
+                           deviation of curves to surfaces.
         bDebug: bool
     """
 
-    if bProjectCrvSegs:
-        cs_toProj = rgC0.DuplicateSegments()
-        if not cs_toProj:
-            cs_toProj = [rgC0.DuplicateCurve()]
-    else:
-        cs_toProj = [rgC0.DuplicateCurve()]
-
-    if fTol is None: fTol = 0.1 * sc.doc.ModelAbsoluteTolerance
+    #TODOif fTol_Proj is None: fTol_Proj = 1e-6#0.1 * sc.doc.ModelAbsoluteTolerance
 
 
-    rgCs_Proj_ThisC0 = []
+    rgCs_Out = []
 
-    for c_toProj in cs_toProj:
-        # Duplicate curve and translate Greville points to projected locations.
-        nc_toProj = c_toProj.ToNurbsCurve()
+    # Duplicate curve and translate Greville points to projected locations.
+    nc_toProj = rgCrv_In.ToNurbsCurve()
 
-        grPts1 = []
-        for gr in nc_toProj.GrevillePoints(all=False):
-            pts_Proj = rg.Intersect.Intersection.ProjectPointsToBreps(
-                breps=[rgB],
-                points=[gr],
-                direction=vectDir,
-                tolerance=fTol)
-            if pts_Proj:
-                grPts1.append(pts_Proj[0])
-            else:
-                grPts1.append(gr)
+    grPts1 = []
+    for gr in nc_toProj.GrevillePoints(all=False):
+        pts_Proj = rg.Intersect.Intersection.ProjectPointsToBreps(
+            breps=[rgB],
+            points=[gr],
+            direction=vectDir,
+            tolerance=fTol_Proj)
+        if pts_Proj:
+            grPts1.append(pts_Proj[0])
+        else:
+            grPts1.append(gr)
             
-            #sc.doc.Objects.AddPoint(pts_Proj[0])
-        #sc.doc.Views.Redraw(); 1/0
+        #sc.doc.Objects.AddPoint(pts_Proj[0])
+    #sc.doc.Views.Redraw(); 1/0
 
-        nc_toProj.SetGrevillePoints(grPts1)
+    nc_toProj.SetGrevillePoints(grPts1)
 
-        rgCs_Proj_ThisC0.append(nc_toProj)
+    rgCs_Out.append(nc_toProj)
 
-    rgCs_Proj_Joined_ThisC0 = rg.Curve.JoinCurves(rgCs_Proj_ThisC0)
+
+    return rgCs_Out
+
+    # TODO: Move the following elsewhere.
+
+
 
     # This will clean up any short segments that had passed the previous
     # checks, but have been deformed to short segments after JoinCurves.
-    # _Project doesn't tackle this problem.
-    for rgC in rgCs_Proj_Joined_ThisC0:
-        rgC.RemoveShortSegments(fTol)
+    # _Project doesn't address this problem.
+    removeShortSegmentsInEachCrv_inList(rgCs_Proj_Joined_ThisC0, fTol_MinLength)
 
     return rgCs_Proj_Joined_ThisC0
 
 
-def tryConvertNurbsToLines(crvs_toMod, tol):
-    """
-    crvs_toMod is modified.
-    Returns: None
-    """
+def removeShortCrvsInList(rgCrvs, tolerance):
+    bFound = False
+    i = len(rgCrvs) - 1
+    while i >= 0:
+        sc.escape_test()
 
-    for i, c in enumerate(crvs_toMod):
+        rgC = rgCrvs[i]
+
+        length = rgC.GetLength()
+
+        if length < tolerance:
+            bFound = True
+            del rgCrvs[i]
+            rgC.Dispose()
+            #print("{}-long curve created at {} tolerance ignored.".format(
+            #    formatDistance(length),
+            #    formatDistance(tolerance)))
+
+        i -= 1
+
+    return bFound
+
+
+def explodePolyCrv(pc):
+    pc.RemoveNesting()
+    rv = pc.Explode()
+    if not rv:
+        raise Exception("{} resulted from rg.PolyCurve.Explode.".format(rv))
+    return rv
+
+
+def explodePolyCrvsInList(rgCrvs):
+    bFound = False
+    i = len(rgCrvs) - 1
+    while i >= 0:
+        sc.escape_test()
+
+        rgC = rgCrvs[i]
+
+        if isinstance(rgC, rg.PolyCurve):
+            rv = explodePolyCrv(rgC)
+            if not rv:
+                1/0
+            else:
+                bFound = True
+                rgCrvs[i:i+1] = rv
+                rgC.Dispose()
+
+        i -= 1
+
+    return bFound
+
+
+def convertCrvsForPeriodicInList(rgCrvs):
+    bFound = False
+    for i, rgC in enumerate(rgCrvs):
+        if rgC.IsArc():
+            print(rgC.GetType().Name)
+            1/0
+            bFound = True
+        elif isinstance(rgC, rg.NurbsCurve):
+            continue
+        else:
+            print(rgC.GetType().Name)
+            1/0
+            rgCrvs[i] = rgC.ToNurbsCurve()
+            rgC.Dispose()
+            bFound = True
+
+    return bFound
+
+
+def convertLinearNurbsToLinesInList(rgCrvs, tolerance=1e-6):
+    bFound = False
+    for i, c in enumerate(rgCrvs):
         if isinstance(c, rg.NurbsCurve):
             if not c.IsClosed:
-                if c.IsLinear(tol):
-                    crvs_toMod[i] = rg.LineCurve(
+                if c.IsLinear(tolerance):
+                    rgCrvs[i] = rg.LineCurve(
                         c.PointAtStart,
                         c.PointAtEnd)
+                    #sEval = "c.IsDocumentControlled"; print(sEval,'=',eval(sEval))
                     c.Dispose()
+                    bFound = True
+    return bFound
 
 
-def projectCrvToGeom(crv_In, rgBs_1Face, rgPlanes, vectDir, tolerance):
+def removeShortSegmentsInEachCrv_inList(rgCrvs, tolerance):
+    # rgCrvs: list or array
+    bFound = False
+    for i, c in enumerate(rgCrvs):
+        if c.RemoveShortSegments(tolerance):
+            bFound = True
+    return bFound
+
+
+def projectCurve_Greville_pts_to_plane(rgC_In, rgPlane, vectDir):
+    rgC_Working = rgC_In.ToNurbsCurve()
+
+    grPts1 = []
+
+    for gr0 in rgC_Working.GrevillePoints(all=False):
+
+        rgLine = rg.Line(gr0, vectDir)
+        bSuccess, tLine = Rhino.Geometry.Intersect.Intersection.LinePlane(
+            rgLine, rgPlane);
+        if not bSuccess:
+            s  = "Point missed the plane when projecting loose to a plane."
+            s += "  Check results for accuracy."
+            print(s)
+            sEval = "rgC_Working.IsDocumentControlled"; print(sEval,'=',eval(sEval))
+            rgC_Working.Dispose()
+            return
+
+        gr1 = rgLine.PointAt(tLine);
+
+        grPts1.append(gr1)
+
+    rgC_Working.SetGrevillePoints(grPts1)
+    
+    return rgC_Working
+
+
+def trimCurves_to_brep_edges(rgC_fromProjectLoose, rgB, fTol_Proj):
     """
-    Returns list(list(rg.Curve))
+    Returns list(rg.Curve)
     """
 
-    rgCs_Proj_ThisSeg = []
+    ts_atSplits = []
 
-    rgPlanes_ = rgPlanes # For debugging.
+    for rgEdge in rgB.Edges:
+        crvinters = rg.Intersect.Intersection.CurveCurve(
+            rgC_fromProjectLoose,
+            rgEdge,
+            tolerance=fTol_Proj,
+            overlapTolerance=0.0)
+        if crvinters.Count == 0: continue # to next curve.
+        for crvinter in crvinters:
+            ts_atSplits.append(crvinter.ParameterA)
 
-    for rgB, rgPlane in zip(rgBs_1Face, rgPlanes_):
-        rgCs_Proj_ThisSeg_1F = rg.Curve.ProjectToBrep(
-            curve=crv_In,
-            brep=rgB,
-            direction=vectDir,
-            tolerance=tolerance)
+    if not ts_atSplits: 
+        # Presuming projected curve lies completely on the face.
+        return [rgC_fromProjectLoose]
 
-        if not rgCs_Proj_ThisSeg_1F: continue
+    segs2_PostSplit = rgC_fromProjectLoose.Split(ts_atSplits)
 
-        #for c in rgCs_Proj_ThisSeg_1F: sc.doc.Objects.AddCurve(c)
-        #sc.doc.Views.Redraw()
-        pass
+    # Determine which of the split project-to-plane curves should be kept.
 
-        WipList = []
+    rgCs_Out = []
 
-        for i, rgC in enumerate(rgCs_Proj_ThisSeg_1F):
-            if rgC.GetLength() > tolerance:
-                WipList.append(rgC)
-            else:
-                rgC.Dispose()
-                print("Short curve created at {} tolerance ignored.".format(
-                    formatDistance(tolerance)))
+    for rgC in segs2_PostSplit:
+        midDomainPt = rgC.PointAt(rgC.Domain.Mid)
+        closestPt = rgB.ClosestPoint(midDomainPt)
 
-            if crv_In.IsPeriodic:
-                if isinstance(rgC, rg.NurbsCurve):
-                    WipList.append(rgC)
-                else:
-                    WipList.append(rgC.ToNurbsCurve())
-                    rgC.Dispose()
-            elif isinstance(rgC, rg.PolyCurve):
-                rgC.RemoveNesting()
-                rc = rgC.Explode()
-                if not rc:
-                    raise Exception("{} resulted from rg.PolyCurve.Explode.".format(rc))
-                WipList.extend(rc)
-                rgC.Dispose()
+        dist = midDomainPt.DistanceTo(closestPt)
+        #print(dist)
+
+        if dist <= 1e-6:
+            rgCs_Out.append(rgC)
+
+    return rgCs_Out
 
 
-        rgCs_Proj_ThisSeg_1F = WipList
 
-        if not rgCs_Proj_ThisSeg_1F: continue
+    # Old method. Need curves projected to brep of face.
 
-        tryConvertNurbsToLines(rgCs_Proj_ThisSeg_1F, 1e-6)
+    pts_toDetermineTrims = []
+    for rgC in rgCs_Proj_This_face_or_plane:
+        pts_toDetermineTrims.append(rgC.PointAt(rgC.Domain.Mid))
+        rgC.Dispose()
 
-
-        #            # Temp for debug. ############################
-        #            rgCs_Proj_ThisSeg.extend(rgCs_Proj_ThisSeg_1F)
-        #            continue
-
-        if not rgPlane:
-            rgCs_Proj_ThisSeg.extend(rgCs_Proj_ThisSeg_1F)
-            continue
-
-
-        # Curves are projected to a planar surface.
-
-
-        # Results of ProjectToBrep:
-        #   ArcCurves and NurbCurves with more than 2 points
-        # are not projected accurately enough (sometimes only 3 decimal places).
-        #   LineCurves, PolylineCurves, and 2-point NurbsCurves
-        # are projected accurately.
-        for c in rgCs_Proj_ThisSeg_1F:
-            if isinstance(c, rg.NurbsCurve) and c.Points.Count > 2:
-                break
-            if isinstance(c, rg.ArcCurve):
-                break
-            elif isinstance(c, rg.NurbsCurve) and c.Points.Count == 2:
-                continue
-            if isinstance(c, (rg.LineCurve, rg.PolylineCurve)):
-                continue
-        else:
-            # Yes, all of rgCs_Proj_ThisSeg_1F are goo.
-            rgCs_Proj_ThisSeg.extend(rgCs_Proj_ThisSeg_1F)
-            continue
-
-
-        # Project loose to the Plane for higher accuracy than Curve.ProjectToBrep.
-
-        seg1_PostProject_PreSplit = projectCurveLooseToPlane(crv_In, rgPlane)
-        if seg1_PostProject_PreSplit is None:
-            # Use tight projection instead.
-            rgCs_Proj_ThisSeg.extend(rgCs_Proj_ThisSeg_1F)
-            continue
-
-
-        # Split.
-
-        ts_atSplits = []
-
-        for rgEdge in rgB.Edges:
-            crvinters = rg.Intersect.Intersection.CurveCurve(
-                seg1_PostProject_PreSplit,
-                rgEdge,
-                tolerance=tolerance,
-                overlapTolerance=0.0)
-            if crvinters.Count == 0: continue # to next curve.
-            for crvinter in crvinters:
-                ts_atSplits.append(crvinter.ParameterA)
-
-        if not ts_atSplits: 
-            # Projected curve may lie completely within the face.
-            rgCs_Proj_ThisSeg.append(seg1_PostProject_PreSplit)
-            continue
-
-        segs2_PostSplit = seg1_PostProject_PreSplit.Split(ts_atSplits)
-
-        # Determine which of the split project-to-plane curves should be kept.
-        pts_toDetermineTrims = []
-        for rgC in rgCs_Proj_ThisSeg_1F:
-            pts_toDetermineTrims.append(rgC.PointAt(rgC.Domain.Mid))
-            rgC.Dispose()
-
-        for rgC in segs2_PostSplit:
-            for pt in pts_toDetermineTrims:
-                bSuccess, t = rgC.ClosestPoint(pt)
-                if not bSuccess: continue # To next point.
-                if rgC.PointAt(t).DistanceTo(pt) <= 0.1 * tolerance:
-                    # Tight tolerance above is to avoid grabbing segments
-                    # adjacent to correct results that also happen to be short.
-                    rgCs_Proj_ThisSeg.append(rgC)
-                    break # To next curve from split.
+    for rgC in segs2_PostSplit:
+        for pt in pts_toDetermineTrims:
+            bSuccess, t = rgC.ClosestPoint(pt)
+            if not bSuccess: continue # To next point.
+            if rgC.PointAt(t).DistanceTo(pt) <= 0.1 * tolerance:
+                # Tight tolerance above is to avoid grabbing segments
+                # adjacent to correct results that also happen to be short.
+                rgCs_Out.append(rgC)
+                break # To next curve from split.
 
 
     #for rgC in rgCs_Proj_ThisSeg:
     #    sc.doc.Objects.AddCurve(rgC)
     #sc.doc.Views.Redraw(); 1/0
 
-    for rgC in rgCs_Proj_ThisSeg:
-        rgC.RemoveShortSegments(tolerance)
+    removeShortSegmentsInEachCrv_inList(rgCs_Out, tolerance=fTol_MinLength)
 
-    return rgCs_Proj_ThisSeg
-    return [[_] for _ in rgCs_Proj_ThisSeg]
+    return rgCs_Out
+
+
+def projectCurve_to_plane_and_trim_to_face(rgC_In, rgPlane, rgB, vectDir, fTol_Proj):
+    """
+    Returns list(rg.Curve)
+    """
+
+    rgCs_Out = []
+
+    rgC_fromProjectLoose = projectCurve_Greville_pts_to_plane(rgC_In, rgPlane, vectDir)
+    if rgC_fromProjectLoose is None:
+        return
+
+    return(trimCurves_to_brep_edges(
+        rgC_fromProjectLoose,
+        rgB=rgB,
+        fTol_Proj=fTol_Proj,
+        ))
+
+
+def cleanProjectedCrvs_inList(rgCs_toMod, fTol_MinLength, bDebug=False):
+    """
+    rgCs_Out: list, not array
+    Returns list(list(rg.Curve))
+    """
+
+    #rgCs_Out = list(rgCs_Out) # Need to convert from Array to allow list slicing.
+
+    bModified = False
+
+    lenList = len(rgCs_toMod)
+
+    if removeShortCrvsInList(rgCs_toMod, tolerance=1e-6):
+        bModified = True
+        lenList = len(rgCs_toMod)
+    if removeShortSegmentsInEachCrv_inList(rgCs_toMod, tolerance=1e-6):
+        bModified = True
+        if bDebug: print("Short segments removed before exploding polycurves.")
+    if explodePolyCrvsInList(rgCs_toMod):
+        bModified = True
+        lenList = len(rgCs_toMod)
+    if removeShortCrvsInList(rgCs_toMod, tolerance=fTol_MinLength):
+        bModified = True
+        lenList = len(rgCs_toMod)
+    if convertLinearNurbsToLinesInList(rgCs_toMod, 1e-6):
+        bModified = True
+        lenList = len(rgCs_toMod)
+    if removeShortSegmentsInEachCrv_inList(rgCs_toMod, tolerance=fTol_MinLength):
+        bModified = True
+        if bDebug: print("Short segments removed at end of routine.")
+
+    return bModified
+
+
+def shouldCrvBeProjectedToPlaneInsteadOfFace(crv):
+    """
+    It's been found that while LineCurves, PolylineCurves, and 2-point NurbsCurves
+    are projected accurately to planar faces,
+    ArcCurves and NurbCurves with more than 2 points are often not.
+    """
+
+    #print(crv.GetType().Name)
+
+    if isinstance(crv, rg.ArcCurve):
+        return True
+    if isinstance(crv, rg.NurbsCurve):
+        if crv.Points.Count > 2:
+            return True
+
+    return False
+
+
+def projectCrv_to_1faceBreps_and_planes(rgCrv_In, rgBs_1Face, rgPlanes, vectDir, fTol_Proj):
+    """
+    Returns list(list(rg.Curve))
+    """
+
+    rgCs_Out = []
+
+    rgPlanes_ = rgPlanes # For debugging.
+
+    for rgB_1F, rgPlane in zip(rgBs_1Face, rgPlanes_):
+
+        rgCs_Proj_to_1FB = rg.Curve.ProjectToBrep(
+            curve=rgCrv_In,
+            brep=rgB_1F,
+            direction=vectDir,
+            tolerance=fTol_Proj)
+
+        if not rgCs_Proj_to_1FB:
+            continue
+
+        if not rgPlane:
+            rgCs_Out.extend(rgCs_Proj_to_1FB)
+            #sc.doc.Objects.AddBrep(rgB_1F)
+            continue
+
+        # Since rgCs_Proj_to_1FB exists, project to the current rgPlane.
+
+        if shouldCrvBeProjectedToPlaneInsteadOfFace(rgCrv_In):
+            rgCs_Proj_to_plane = projectCurve_to_plane_and_trim_to_face(
+                rgCrv_In,
+                rgPlane,
+                rgB_1F,
+                vectDir,
+                fTol_Proj=fTol_Proj)
+            if rgCs_Proj_to_plane:
+                rgCs_Out.extend(rgCs_Proj_to_plane)
+                for _ in rgCs_Proj_to_1FB: _.Dispose()
+                continue
+
+        rgCs_Out.extend(rgCs_Proj_to_1FB)
+
+    return rgCs_Out
 
 
 def isUniformNurbsCurve(nc):
@@ -589,12 +759,19 @@ def isUniformNurbsCurve(nc):
 
     span0 = nc.Knots[start+1] - nc.Knots[start]
 
+    def areEpsilonEqual(a, b, epsilon):
+        # This is a relative comparison.
+        delta = abs(a - b)
+        fRelComp = delta / max(abs(a), abs(b))
+        return fRelComp < epsilon
+
+
     for i in range(start+1, end):
         if nc.Knots.KnotMultiplicity(i) > 1:
             return False
         if not areEpsilonEqual(
             span0, nc.Knots[i+1] - nc.Knots[i],
-            epsilon=(1.0/2**32)):
+            epsilon=2**-32):
                 return False
 
     return True
@@ -702,54 +879,7 @@ def reportCrvTypes(rgCrvs):
         print("[{}] {}".format(sTypes.count(sType), sType))
 
 
-def processCrv_to_only_lines_and_cubicNurbs(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped, bDebug=False):
-
-    projs_FullTol = projectCrvToGeom_wrapped(c_toProj, tolerance=fTol_Proj_Total)
-    if not projs_FullTol:
-        return
-
-    if bDebug:
-        print('-'*20)
-        reportCrvTypes(projs_FullTol)
-
-    if are_all_crvs_lines_or_uniformNonrationalCubic(projs_FullTol):
-        return projs_FullTol
-
-    # Project to a different tolerance and rebuild.
-
-    for fTol_Proj_WIP in (0.5*fTol_Proj_Total, 0.1*fTol_Proj_Total):
-
-        projs_atTrialTol = projectCrvToGeom_wrapped(c_toProj, tolerance=fTol_Proj_WIP)
-
-        if are_all_crvs_lines_or_uniformNonrationalCubic(projs_atTrialTol):
-            return projs_atTrialTol
-
-        for i, proj in enumerate(projs_atTrialTol):
-            if are_all_crvs_lines_or_uniformNonrationalCubic([proj]):
-                continue
-            rebuilt = rebuildUniformNonrationalCubic(
-                proj,
-                tolerance=fTol_Proj_Total-fTol_Proj_WIP, 
-                bDebug=bDebug)
-
-            if rebuilt:
-                projs_atTrialTol[i] = rebuilt
-                proj.Dispose()
-                continue
-            else:
-                for c in projs_atTrialTol: c.Dispose()
-                break # out of loop of projs_atTrialTol to next tolerance for rebuild.
-
-        else:
-            for proj in projs_FullTol: proj.Dispose()
-            return projs_atTrialTol
-    else:
-        if bDebug:
-            print("All rebuild tolerances failed for segment.")
-        return projs_FullTol
-
-
-def tryConvertNurbsToArcs(rgCrvs_toMod, tol):
+def tryConvertNurbsToArcs_inList(rgCrvs_toMod, tol):
     """
     rgCrvs_toMod is modified.
     Returns: None
@@ -770,29 +900,6 @@ def tryConvertNurbsToArcs(rgCrvs_toMod, tol):
                     if arc.Radius <= fTol_MaxRad:
                         rgCrvs_toMod[i] = rg.ArcCurve(arc)
                         c.Dispose()
-
-
-def isCrvSimplified(crv):
-    pass
-
-
-def areAllCurvesSimplified(rgCrvs, bTryRebuildOthersUniform):
-    for c in rgCrvs:
-        if isinstance(c, rg.LineCurve):
-            pass
-        elif isinstance(c, rg.ArcCurve):
-            if not bTryGetArcs:
-                return False
-        elif isinstance(c, rg.NurbsCurve):
-            if c.IsRational:
-                if not bAcceptRational:
-                    return False
-            if bTryRebuildOthersUniform and not isUniformNurbsCurve(c):
-                return False
-        else:
-            raise ValueError("{} in areAllCurvesSimplified.".format(c.GetType().Name))
-
-    return True
 
 
 def rebuild(nc, tolerance, bDebug=False):
@@ -882,9 +989,16 @@ def rebuild(nc, tolerance, bDebug=False):
     return rebuilt_LastSuccess
 
 
-def processCrv_per_arguments(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped, bTryGetArcs, bTryRebuildOthersUniform, bDebug=False):
+def convertPolysToNurbs(rgCrvs_toMod):
+    for i, c in enumerate(rgCrvs_toMod):
+        if isinstance(c, rg.PolyCurve):
+            rgCrvs_toMod[i] = c.ToNurbsCurve()
+            c.Dispose()
 
-    projs_FullTol = projectCrvToGeom_wrapped(c_toProj, tolerance=fTol_Proj_Total)
+
+def projectCrv_Try_to_output_only_lines_and_cubicNurbs(fTol_Proj_Total, projectCrvToGeom_wrapped, bDebug=False):
+
+    projs_FullTol = projectCrvToGeom_wrapped(tolerance=fTol_Proj_Total)
     if not projs_FullTol:
         return
 
@@ -892,20 +1006,104 @@ def processCrv_per_arguments(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped
         print('-'*20)
         reportCrvTypes(projs_FullTol)
 
-    if bTryGetArcs:
-        tryConvertNurbsToArcs(projs_FullTol, fTol_Proj_Total)
-
-    if areAllCurvesSimplified(projs_FullTol, bTryRebuildOthersUniform):
+    if are_all_crvs_lines_or_uniformNonrationalCubic(projs_FullTol):
         return projs_FullTol
 
     # Project to a different tolerance and rebuild.
 
     for fTol_Proj_WIP in (0.5*fTol_Proj_Total, 0.1*fTol_Proj_Total):
 
-        projs_atTrialTol = projectCrvToGeom_wrapped(c_toProj, tolerance=fTol_Proj_WIP)
+        projs_atTrialTol = projectCrvToGeom_wrapped(tolerance=fTol_Proj_WIP)
+
+        if are_all_crvs_lines_or_uniformNonrationalCubic(projs_atTrialTol):
+            for proj in projs_FullTol: proj.Dispose()
+            return projs_atTrialTol
+
+        for i, proj in enumerate(projs_atTrialTol):
+            if are_all_crvs_lines_or_uniformNonrationalCubic([proj]):
+                continue
+            rebuilt = rebuildUniformNonrationalCubic(
+                proj,
+                tolerance=fTol_Proj_Total-fTol_Proj_WIP, 
+                bDebug=bDebug)
+
+            if rebuilt:
+                projs_atTrialTol[i] = rebuilt
+                proj.Dispose()
+                continue
+            else:
+                for c in projs_atTrialTol: c.Dispose()
+                break # out of loop of projs_atTrialTol to next tolerance for rebuild.
+
+        else:
+            for proj in projs_FullTol: proj.Dispose()
+            return projs_atTrialTol
+    else:
+        if bDebug:
+            print("All rebuild tolerances failed for segment.")
+        return projs_FullTol
+
+
+def projectCrv_Try_to_output_per_arguments(fTol_Proj, projectCrvToGeom_wrapped, fTol_MinLength, bTryGetArcs, bAcceptRational, bTryRebuildOthersUniform, bDebug=False):
+    """
+    If necessary, reproject through various tolerances.
+    """
+
+    projs_FullTol = projectCrvToGeom_wrapped(tolerance=fTol_Proj)
+    if not projs_FullTol:
+        return
+
+    if bDebug:
+        print('-'*20)
+        reportCrvTypes(projs_FullTol)
+
+
+    if bTryGetArcs:
+        tryConvertNurbsToArcs_inList(projs_FullTol, 1e-6)
+
+    if cleanProjectedCrvs_inList(projs_FullTol, fTol_MinLength, bDebug=bDebug):
+        if bDebug: print("Curve was cleaned.")
+
+    if bTryGetArcs:
+        tryConvertNurbsToArcs_inList(projs_FullTol, 1e-6)
+
+
+    def areAllCurvesSimplified(rgCrvs, bTryRebuildOthersUniform):
+        for c in rgCrvs:
+            if isinstance(c, rg.LineCurve):
+                pass
+            elif isinstance(c, rg.ArcCurve):
+                if not bTryGetArcs:
+                    return False
+            elif isinstance(c, rg.NurbsCurve):
+                if c.IsRational:
+                    if not bAcceptRational:
+                        return False
+                if bTryRebuildOthersUniform and not isUniformNurbsCurve(c):
+                    return False
+            else:
+                raise ValueError("{} in areAllCurvesSimplified.".format(c.GetType().Name))
+    
+        return True
+
+
+    if areAllCurvesSimplified(projs_FullTol, bTryRebuildOthersUniform):
+        return projs_FullTol
+
+    # Project to a different tolerance and rebuild.
+
+    for fTol_Proj_WIP in (0.5*fTol_Proj, 0.1*fTol_Proj):
+
+        projs_atTrialTol = projectCrvToGeom_wrapped(tolerance=fTol_Proj_WIP)
 
         if bTryGetArcs:
-            tryConvertNurbsToArcs(projs_atTrialTol, fTol_Proj_Total-fTol_Proj_WIP)
+            tryConvertNurbsToArcs_inList(projs_atTrialTol, fTol_Proj-1e-6)
+
+        if cleanProjectedCrvs_inList(projs_atTrialTol, fTol_MinLength, bDebug=bDebug):
+            if bDebug: print("Curve was cleaned.")
+
+        if bTryGetArcs:
+            tryConvertNurbsToArcs_inList(projs_atTrialTol, 1e-6)
 
         if areAllCurvesSimplified(projs_atTrialTol, bTryRebuildOthersUniform):
             for proj in projs_FullTol: proj.Dispose()
@@ -918,9 +1116,9 @@ def processCrv_per_arguments(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped
                 continue
             
             if not isinstance(proj, rg.NurbsCurve):
-                raise ValueError("Not a NurbsCurve!")
+                raise ValueError("{}, not a NurbsCurve!".format(proj.GetType().Name))
 
-            if proj.IsRational and rg.Curve.IsEllipse(proj, tolerance=fTol_Proj_Total-fTol_Proj_WIP):
+            if proj.IsRational and rg.Curve.IsEllipse(proj, tolerance=fTol_Proj-fTol_Proj_WIP):
                 potentials.append(proj)
             elif not bTryRebuildOthersUniform and proj.IsRational and isUniformNurbsCurve(proj):
                 potentials.append(proj)
@@ -930,7 +1128,7 @@ def processCrv_per_arguments(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped
                 # Rebuild to complement of projection tolerance.
                 rebuilt = rebuild(
                     proj,
-                    tolerance=fTol_Proj_Total-fTol_Proj_WIP,
+                    tolerance=fTol_Proj-fTol_Proj_WIP,
                     bDebug=bDebug)
                 if rebuilt:
                     potentials.append(rebuilt)
@@ -944,17 +1142,91 @@ def processCrv_per_arguments(c_toProj, fTol_Proj_Total, projectCrvToGeom_wrapped
             for proj in projs_FullTol: proj.Dispose()
             return potentials
     else:
-        if bDebug:
-            print("All rebuild tolerances failed for segment.")
+        if bDebug: print("All rebuild tolerances failed for segment.")
         return projs_FullTol
 
 
-def projectCurve_Tight(rgC0, rgBs_1Face, rgPlanes, vectDir, **kwargs):
+def getJoints(rgCs_In, joinTolerance):
+    """
+    """
+
+    joined = rg.Curve.JoinCurves(rgCs_In, joinTolerance=joinTolerance)
+
+    joints = []
+    for rgC in joined:
+        if not isinstance(rgC, rg.PolyCurve): continue
+
+        if rgC.IsClosed:
+            joints.append(rgC.PointAtStart)
+
+        for iSeg in range(1, rgC.SegmentCount):
+            seg = rgC.SegmentCurve(iSeg)
+            joints.append(seg.PointAtStart)
+            seg.Dispose()
+
+        rgC.Dispose()
+
+    return joints
+
+
+def joinCurves(rgCs_In, tolerance, bDebug=False):
+    """
+    Since JoinCurves, as well as _Join, can skew the knot vector,
+    join the curves by only moving control points as needed.
+    """
+
+    joints = getJoints(rgCs_In, tolerance)
+    if bDebug:
+        for _ in joints: sc.doc.Objects.AddPoint(_)
+    sc.doc.Views.Redraw()
+
+    rgCrvs_toJoin = [rgC.DuplicateCurve() for rgC in rgCs_In]
+
+    iJ = 0
+
+    # Before JoinCurves, adjust ends of NurbsCurves.
+
+    for joint in joints:
+        sc.escape_test()
+
+        iCt_EndsProcessed = 0
+
+        for rgCrv in rgCrvs_toJoin:
+                
+            # Only NurbsCurves should have their control points translated when needed.
+            if not isinstance(rgCrv, rg.NurbsCurve):
+                #print("Curve is a {}.".format(rgCrv.GetType().Name)
+                #sc.doc.Objects.AddCurve(rgCrv)
+                #sc.doc.Views.Redraw(); 1/0
+                continue # to next curve to include in JoinCurves.
+
+            if rgCrv.PointAtStart.DistanceTo(joint) < tolerance:
+                rgCrv.Points.SetPoint(
+                    index=0,
+                    point=joint,
+                    weight=rgCrv.Points[0].Weight)
+                #sc.doc.Objects.AddCurve(rgCrv); sc.doc.Views.Redraw(); #1/0
+                iCt_EndsProcessed += 1
+            elif rgCrv.PointAtEnd.DistanceTo(joint) < tolerance:
+                rgCrv.Points.SetPoint(
+                    index=rgCrv.Points.Count-1,
+                    point=joint,
+                    weight=rgCrv.Points[0].Weight)
+                #sc.doc.Objects.AddCurve(rgCrv); sc.doc.Views.Redraw(); #1/0
+                iCt_EndsProcessed += 1
+
+            if iCt_EndsProcessed == 2:
+                break # for loop to next joint.
+
+    return list(rg.Curve.JoinCurves(rgCrvs_toJoin, joinTolerance=1e-6))
+
+
+def projectCurve_NotLoose(rgC_In, rgBs_1Face, rgPlanes, vectDir, **kwargs):
     """
     Parameters:
-        bProjectCrvSegs
-        fTol
+        fTol_Proj
         bPostProcess
+        fTol_MinLength
         bOnlyLinesAndCubicNurbs
         bTryGetArcs
         bAcceptRational
@@ -969,9 +1241,9 @@ def projectCurve_Tight(rgC0, rgBs_1Face, rgPlanes, vectDir, **kwargs):
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    bProjectCrvSegs = getOpt('bProjectCrvSegs')
-    fTol = getOpt('fTol')
+    fTol_Proj = getOpt('fTol_Proj')
     bPostProcess = getOpt('bPostProcess')
+    fTol_MinLength = getOpt('fTol_MinLength')
     bOnlyLinesAndCubicNurbs = getOpt('bOnlyLinesAndCubicNurbs')
     bTryGetArcs = getOpt('bTryGetArcs')
     bAcceptRational = getOpt('bAcceptRational')
@@ -982,230 +1254,54 @@ def projectCurve_Tight(rgC0, rgBs_1Face, rgPlanes, vectDir, **kwargs):
     sc.doc.Objects.UnselectAll() # For debug.
 
 
-    def projectCurveLooseToPlane(rgC_In, rgPlane):
-        rgC_Working = rgC_In.ToNurbsCurve()
-
-        grPts1 = []
-
-        for gr0 in rgC_Working.GrevillePoints(all=False):
-
-            rgLine = rg.Line(gr0, vectDir)
-            bSuccess, tLine = Rhino.Geometry.Intersect.Intersection.LinePlane(
-                rgLine, rgPlane);
-            if not bSuccess:
-                s  = "Point missed the plane when projecting loose to a plane."
-                s += "  Check results for accuracy."
-                print(s)
-                rgC_Working.Dispose()
-                return
-
-            gr1 = rgLine.PointAt(tLine);
-
-            grPts1.append(gr1)
-
-        rgC_Working.SetGrevillePoints(grPts1)
-        
-        return rgC_Working
+    #TODO
+    #fTol_Proj_Total = 0.1*sc.doc.ModelAbsoluteTolerance if fTol_Proj is None else fTol_Proj
+    fTol_Proj_Total = fTol_Proj
 
 
-    def removeShortestCountDiffSegs():
-        print("Counts of HalfTol vs. FullTol projected curves are different.")
-        sEval='len(rgCs_Proj_ThisSeg_HalfTol)'; print("{}: {}".format(sEval, eval(sEval)))
-        sEval='len(rgCs_Proj_ThisSeg_FullTol)'; print("{}: {}".format(sEval, eval(sEval)))
-        if len(rgCs_Proj_1Seg_HalfTol) > len(rgCs_Proj_1Seg_FullTol):
-            # Remove n shortest segments of difference in counts.
-            iCt_RemoveShortest = len(rgCs_Proj_1Seg_HalfTol) - len(rgCs_Proj_1Seg_FullTol)
-
-            fLengths = []
-            for rgC in rgCs_Proj_1Seg_HalfTol:
-                fLength = rgC.GetLength()
-                fLengths.append(fLength)
-
-            for i in range(iCt_RemoveShortest):
-                idx_ToRemove = fLengths.index(min(fLengths))
-                del rgCs_Proj_1Seg_HalfTol[idx_ToRemove]
-                del fLengths[idx_ToRemove]
-
-            print("Removed {} segments from HalfTol result.".format(iCt_RemoveShortest))
-        else:
-            print("Check results!")
+    if not bPostProcess:
+        return projectCrv_to_1faceBreps_and_planes(
+            rgC_In,
+            rgBs_1Face,
+            rgPlanes,
+            vectDir,
+            fTol_Proj=fTol_Proj)
 
 
-    def hasInternalPolyknots(nc):
-        if not isinstance(nc, rg.NurbsCurve): return
-
-        # Bezier?
-        if nc.Points.Count == nc.Degree + 1:
-            return False
-
-        start = 0 if nc.IsPeriodic else nc.Degree
-        end = nc.Knots.Count - (0 if nc.IsPeriodic else nc.Degree) - 1
-
-        for i in range(start, end):
-            if nc.Knots.KnotMultiplicity(i) > 1:
-                return True
-
-        return False
+    # Wrapping the function since only the tolerance argument will change.
+    def projectCrvToGeom_wrapped(tolerance):
+        return projectCrv_to_1faceBreps_and_planes(
+            rgC_In,
+            rgBs_1Face,
+            rgPlanes,
+            vectDir,
+            fTol_Proj=fTol_Proj,
+            )
 
 
-    def areEpsilonEqual(a, b, epsilon):
-        # This is a relative comparison.
-        delta = abs(a - b)
-        fRelComp = delta / max(abs(a), abs(b))
-        return fRelComp < epsilon
+    if bOnlyLinesAndCubicNurbs:
+        return projectCrv_Try_to_output_only_lines_and_cubicNurbs(
+            fTol_Proj_Total=fTol_Proj,
+            projectCrvToGeom_wrapped=projectCrvToGeom_wrapped,
+            bDebug=bDebug)
 
 
-    def tryConvertNurbsCrvsToLinearCubicBeziers(rgCrvs_toMod, tol):
-        """
-        rgCrvs_toMod is modified.
-        Returns: None
-        """
-        for i, c in enumerate(rgCrvs_toMod):
-            if isinstance(c, rg.NurbsCurve):
-                if not c.IsClosed:
-                    if c.IsLinear(tol):
-                        Lc = rg.LineCurve(
-                            c.PointAtStart,
-                            c.PointAtEnd)
-                        rgCrvs_toMod[i] = Lc.ToNurbsCurve()
-                        rgCrvs_toMod[i].IncreaseDegree(3)
-                        c.Dispose()
+    return projectCrv_Try_to_output_per_arguments(
+        fTol_Proj=fTol_Proj,
+        projectCrvToGeom_wrapped=projectCrvToGeom_wrapped,
+        fTol_MinLength=fTol_MinLength,
+        bTryGetArcs=bTryGetArcs,
+        bAcceptRational=bAcceptRational,
+        bTryRebuildOthersUniform=bTryRebuildOthersUniform,
+        bDebug=bDebug)
 
 
-    def getJoints(rgCrvs_In):
-        # Use JoinCurves to quickly obtain joint locations.
-
-        joined = rg.Curve.JoinCurves(rgCrvs_In)
-        joints = []
-        for rgC in joined:
-            if not isinstance(rgC, rg.PolyCurve): continue
-
-            if rgC.IsClosed:
-                joints.append(rgC.PointAtStart)
-
-            for iSeg in range(1, rgC.SegmentCount):
-                seg = rgC.SegmentCurve(iSeg)
-                joints.append(seg.PointAtStart)
-                seg.Dispose()
-
-            rgC.Dispose()
-
-        return joints
-
-
-    def joinCurves(rgCs_In):
-
-        joints = getJoints(rgCs_In)
-
-        rgCrvs_toJoin = [rgC.DuplicateCurve() for rgC in rgCs_In]
-
-        iJ = 0
-
-        # Before JoinCurves, adjust ends of NurbsCurves.
-
-        for joint in joints:
-            sc.escape_test()
-
-            iCt_EndsProcessed = 0
-
-            for rgCrv in rgCrvs_toJoin:
-                
-                # Only NurbsCurves should have their control points translated when needed.
-                if not isinstance(rgCrv, rg.NurbsCurve):
-                    #print("Curve is a {}.".format(rgCrv.GetType().Name)
-                    #sc.doc.Objects.AddCurve(rgCrv)
-                    #sc.doc.Views.Redraw(); 1/0
-                    continue # to next curve to include in JoinCurves.
-
-                if rgCrv.PointAtStart.DistanceTo(joint) < sc.doc.ModelAbsoluteTolerance:
-                    rgCrv.Points.SetPoint(
-                        index=0,
-                        point=joint,
-                        weight=rgCrv.Points[0].Weight)
-                    #sc.doc.Objects.AddCurve(rgCrv); sc.doc.Views.Redraw(); #1/0
-                    iCt_EndsProcessed += 1
-                elif rgCrv.PointAtEnd.DistanceTo(joint) < sc.doc.ModelAbsoluteTolerance:
-                    rgCrv.Points.SetPoint(
-                        index=rgCrv.Points.Count-1,
-                        point=joint,
-                        weight=rgCrv.Points[0].Weight)
-                    #sc.doc.Objects.AddCurve(rgCrv); sc.doc.Views.Redraw(); #1/0
-                    iCt_EndsProcessed += 1
-
-                if iCt_EndsProcessed == 2:
-                    break # for loop to next joint.
-
-        return list(rg.Curve.JoinCurves(rgCrvs_toJoin))
-
-
-    if bProjectCrvSegs:
-        cs_toProj = rgC0.DuplicateSegments()
-        if not cs_toProj:
-            cs_toProj = [rgC0.DuplicateCurve()]
-    else:
-        cs_toProj = [rgC0.DuplicateCurve()]
-
-    fTol_Proj_Total = sc.doc.ModelAbsoluteTolerance if fTol is None else fTol
-
-
-    if bPostProcess:
-        rgCs_Proj_1C0 = []
-
-        def projectCrvToGeom_wrapped(crv_In, tolerance):
-            return projectCrvToGeom(crv_In, rgBs_1Face, rgPlanes, vectDir, tolerance)
-
-        if bOnlyLinesAndCubicNurbs:
-            for i, c_toProj in enumerate(cs_toProj):
-                projected_segs = processCrv_to_only_lines_and_cubicNurbs(
-                    c_toProj,
-                    fTol_Proj_Total,
-                    projectCrvToGeom_wrapped,
-                    bDebug=bDebug)
-                if projected_segs:
-                    rgCs_Proj_1C0.extend(projected_segs)
-        else:
-            for i, c_toProj in enumerate(cs_toProj):
-                projected_segs = processCrv_per_arguments(
-                    c_toProj,
-                    fTol_Proj_Total,
-                    projectCrvToGeom_wrapped,
-                    bTryGetArcs=bTryGetArcs,
-                    bTryRebuildOthersUniform=bTryRebuildOthersUniform,
-                    bDebug=bDebug)
-                if projected_segs:
-                    rgCs_Proj_1C0.extend(projected_segs)
-
-        if bDebug:
-            reportCrvTypes(rgCs_Proj_1C0)
-    else:
-        rgCs_Proj_1C0 = []
-        for c in cs_toProj:
-            rgCs_Proj_1C0.extend(projectCrvToGeom(c, rgBs_1Face, rgPlanes, vectDir, tolerance=fTol_Proj_Total))
-
-
-    if not rgCs_Proj_1C0: return []
-
-    #for rgC in rgCs_Proj_1C0: sc.doc.Objects.AddCurve(rgC)
-    #sc.doc.Views.Redraw(); 1/0
-
-
-    if len(rgCs_Proj_1C0) == 1:
-        rgCs_Proj_Joined_1C0 = rgCs_Proj_1C0
-    elif len(rgCs_Proj_1C0) > 1:
-        # Since JoinCurves, as well as _Join, can skew the knot vector
-        # (See )
-        # join the curves by only moving control points as needed.
-        rgCs_Proj_Joined_1C0 = joinCurves(rgCs_Proj_1C0)
-
-
-        # This will clean up any short segments that had previous passed
-        # the previous checks, but have been deformed to short segments
-        # after JoinCurves.
-        # This problem also occurs using _Project.
-        for rgC in rgCs_Proj_Joined_1C0:
-            rgC.RemoveShortSegments(fTol_Proj_Total)
-
-    return rgCs_Proj_Joined_1C0
+def duplicateSegments(rgC_In):
+    rgCs_Segs = rgC_In.DuplicateSegments()
+    if not rgCs_Segs:
+        1/0
+        rgCs_Segs = [rgC_In.DuplicateCurve()]
+    return rgCs_Segs
 
 
 def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
@@ -1215,13 +1311,15 @@ def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
     bProjectCrvSegs = getOpt('bProjectCrvSegs')
+    fTol_Proj = getOpt('fTol_Proj')
     bLoose = getOpt('bLoose')
-    fTol = getOpt('fTol')
     bPostProcess = getOpt('bPostProcess')
+    fTol_MinLength = getOpt('fTol_MinLength')
     bOnlyLinesAndCubicNurbs = getOpt('bOnlyLinesAndCubicNurbs')
     bTryGetArcs = getOpt('bTryGetArcs')
     bAcceptRational = getOpt('bAcceptRational')
     bTryRebuildOthersUniform = getOpt('bTryRebuildOthersUniform')
+    bJoinPerInputCrv = getOpt('bJoinPerInputCrv')
     bDeleteInput = getOpt('bDeleteInput')
     iOutputLayer = getOpt('iOutputLayer')
     bEcho = getOpt('bEcho')
@@ -1229,121 +1327,51 @@ def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
 
 
     def coerceBrepObject(rhObj):
-        rdObj = rhinoscript.utility.coercerhinoobject(rhObj)
+        rdObj = rs.coercerhinoobject(rhObj)
         if rdObj and (rdObj.ObjectType == rd.ObjectType.Brep):
             return rdObj
 
 
-    def processCurveObject():
 
-        gCrvs_Out = []
-
-        if bLoose:
-            for rdB0, rgB0 in zip(rdB0s, rgB0s):
-                if iOutputLayer == sOpts_OutputLayer.index('TargetObject'):
-                    attr_Out.LayerIndex = rdB0.Attributes.LayerIndex
-
-                rgCs_Proj_Joined_ThisC0_ThisB = projectCurve_Loose(
-                    rgC0,
-                    rgB0,
-                    vect,
-                    bProjectCrvSegs,
-                    fTol=0.1*sc.doc.ModelAbsoluteTolerance,
-                    bDebug=bDebug)
-
-                for rgC in rgCs_Proj_Joined_ThisC0_ThisB:
-                    gCrv_Out = sc.doc.Objects.AddCurve(rgC, attributes=attr_Out)
-                    if gCrv_Out != Guid.Empty:
-                        gCrvs_Out.append(gCrv_Out)
-
-            return gCrvs_Out
-
-        # Tight.
-        for rdB0, rgBs_1Face, rgPlanes in zip(rdB0s, rgB1s_1F_PerB0, rgPlanes_PerB0):
-            if iOutputLayer == sOpts_OutputLayer.index('TargetObject'):
-                attr_Out.LayerIndex = rdB0.Attributes.LayerIndex
-
-            rgCs_Proj_Joined_ThisC0_ThisB = projectCurve_Tight(
-                rgC0,
-                rgBs_1Face,
-                rgPlanes,
-                vect,
-                bProjectCrvSegs=bProjectCrvSegs,
-                fTol=fTol,
-                bPostProcess=bPostProcess,
-                bOnlyLinesAndCubicNurbs=bOnlyLinesAndCubicNurbs,
-                bTryGetArcs=bTryGetArcs,
-                bAcceptRational=bAcceptRational,
-                bTryRebuildOthersUniform=bTryRebuildOthersUniform,
-                bDebug=bDebug)
-
-            for rgC in rgCs_Proj_Joined_ThisC0_ThisB:
-                gCrv_Out = sc.doc.Objects.AddCurve(rgC, attributes=attr_Out)
-                if gCrv_Out != Guid.Empty:
-                    gCrvs_Out.append(gCrv_Out)
-
-            return gCrvs_Out
+    rdBs_In = [] # Flat list.
+    rgBs_In = [] # Flat list. May be breps of individual faces if the latter were subobject selected.
+    rgB1s_1F_PerB_In = [] # Nested lists.
+    rgPlanes_PerB_In = [] # Nested lists.
 
 
-    def processPointObject():
+    def collectTargetBrepData(rhBreps, rdBs_In, rgBs_In, rgB1s_1F_PerB_In, rgPlanes_PerB_In):
+        for rhB in rhBreps:
+            rgB = coerceBrep(rhB)
+            if not rgB.IsValid:
+                print("Invalid Brep in input, but projection to it" \
+                    " will still be attempted." \
+                    "  Check results!")
 
-        gPts_Out = []
+            rdBs_In.append(coerceBrepObject(rhB))
+            rgBs_In.append(rgB)
 
-        for rdB, rgB in zip(rdB0s, rgB0s):
-            if iOutputLayer == sOpts_OutputLayer.index('TargetObject'):
-                attr_Out.LayerIndex = rdB.Attributes.LayerIndex
+            if not bLoose:
+                rgB1s_1F_PerB_In.append([])
+                rgPlanes_PerB_In.append([])
 
-            pts_Proj = rg.Intersect.Intersection.ProjectPointsToBreps(
-                breps=[rgB],
-                points=[rgPt0.Location],
-                direction=vect,
-                tolerance=0.1*fTol)
-            if not pts_Proj: continue
+                for rgF in rgB.Faces:
+                    rgB_1F = rgF.DuplicateFace(duplicateMeshes=False)
 
-            for rgPt in pts_Proj:
-                gPt_Out = sc.doc.Objects.AddPoint(rgPt, attributes=attr_Out)
-                if gPt_Out != Guid.Empty:
-                    gPts_Out.append(gPt_Out)
+                    # Shrink face, otherwise Curve.ProjectToBrep
+                    # for some toroidal RevSurfaces may return None.
+                    # If this doesn't work, conversion from RevSurface
+                    # to NurbsSurface may be a solution.
+                    rgB_1F.Faces.ShrinkFaces()
 
-        return gPts_Out
+                    rgB1s_1F_PerB_In[-1].append(rgB_1F)
+                    rgSrf = rgF.UnderlyingSurface()
+                    bSuccess, rgPlane = rgSrf.TryGetPlane(tolerance=2**-32)
+                    if bSuccess:
+                        rgPlanes_PerB_In[-1].append(rgPlane)
+                    else:
+                        rgPlanes_PerB_In[-1].append(None)
 
-
-
-    rgB0s = []
-    rgB1s_1F_PerB0 = []
-    rgPlanes_PerB0 = []
-    rdB0s = []
-
-    for rhB in rhBreps:
-        rgB = coerceBrep(rhB)
-        if not rgB.IsValid:
-            print("Invalid Brep in input, but projection to it" \
-                " will still be attempted." \
-                "  Check results!")
-        rgB0s.append(rgB)
-
-        if not bLoose:
-            rgB1s_1F_PerB0.append([])
-            rgPlanes_PerB0.append([])
-
-            for rgF in rgB.Faces:
-                rgB_1F = rgF.DuplicateFace(duplicateMeshes=False)
-
-                # Shrink face, otherwise Curve.ProjectToBrep
-                # for some toroidal RevSurfaces may return None.
-                # If this doesn't work, conversion from RevSurface
-                # to NurbsSurface may be a solution.
-                rgB_1F.Faces.ShrinkFaces()
-
-                rgB1s_1F_PerB0[-1].append(rgB_1F)
-                rgSrf = rgF.UnderlyingSurface()
-                bSuccess, rgPlane = rgSrf.TryGetPlane(tolerance=(1.0/2**32))
-                if bSuccess:
-                    rgPlanes_PerB0[-1].append(rgPlane)
-                else:
-                    rgPlanes_PerB0[-1].append(None)
-
-        rdB0s.append(coerceBrepObject(rhB))
+    collectTargetBrepData(rhBreps, rdBs_In, rgBs_In, rgB1s_1F_PerB_In, rgPlanes_PerB_In)
 
     rgCs_Proj_All = []
 
@@ -1351,7 +1379,7 @@ def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
 
     g_Out_All = []
 
-    if iOutputLayer == sOpts_OutputLayer.index('Current'):
+    if iOutputLayer == Opts.listValues['iOutputLayer'].index('Current'):
         attr_Out.LayerIndex = sc.doc.Layers.CurrentLayerIndex
 
     len_rhObjs0 = len(rhObjs_toProj)
@@ -1369,43 +1397,149 @@ def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
         elif len_rhObjs0 > 1:
             Rhino.RhinoApp.SetCommandPrompt(
                 "Projecting {} of {} objects ({})".format(
-                    iO+1, len_rhObjs0, rhinoscript.utility.coerceguid(rhObj_toProj)))
+                    iO+1, len_rhObjs0, rs.coerceguid(rhObj_toProj)))
         else:
             Rhino.RhinoApp.SetCommandPrompt("Projecting object ...")
 
 
-        rdObj0 = rhinoscript.utility.coercerhinoobject(rhObj_toProj)
+        rdObj_In = rs.coercerhinoobject(rhObj_toProj)
 
-        if iOutputLayer == sOpts_OutputLayer.index('Input'):
-            attr_Out.LayerIndex = rdObj0.Attributes.LayerIndex
+        if iOutputLayer == Opts.listValues['iOutputLayer'].index('Input'):
+            attr_Out.LayerIndex = rdObj_In.Attributes.LayerIndex
 
-        if rdObj0.ObjectType == rd.ObjectType.Curve:
-            rgC0 = rdObj0.Geometry
-            g_Out = processCurveObject()
-            if g_Out:
-                g_Out_All.extend(g_Out)
+
+        # PointObjects.
+        if rdObj_In.ObjectType == rd.ObjectType.Point:
+            rgPt0 = rdObj_In.Geometry
+
+            gPts_from1Pt_Out = []
+
+            for rdB, rgB in zip(rdBs_In, rgBs_In):
+                if iOutputLayer == Opts.listValues['iOutputLayer'].index('TargetObject'):
+                    attr_Out.LayerIndex = rdB.Attributes.LayerIndex
+
+                pts_Proj = rg.Intersect.Intersection.ProjectPointsToBreps(
+                    breps=[rgB],
+                    points=[rgPt0.Location],
+                    direction=vect,
+                    tolerance=fTol_Proj)
+                if not pts_Proj: continue
+
+                for pt in pts_Proj:
+                    gPt_Out = sc.doc.Objects.AddPoint(pt, attributes=attr_Out)
+                    if gPt_Out != Guid.Empty:
+                        gPts_from1Pt_Out.append(gPt_Out)
+
+            if gPts_from1Pt_Out:
+                g_Out_All.extend(gPts_from1Pt_Out)
             if bDeleteInput:
-                sc.doc.Objects.Delete(item=rdObj0)
-        elif rdObj0.ObjectType == rd.ObjectType.Brep:
-            rgC0 = rhinoscript.utility.coercecurve(rhObj_toProj)
-            g_Out = processCurveObject()
-            if g_Out:
-                g_Out_All.extend(g_Out)
-                # BrepObject is not deleted.
-        elif rdObj0.ObjectType == rd.ObjectType.Point:
-            rgPt0 = rdObj0.Geometry
-            g_Out = processPointObject()
-            if g_Out:
-                g_Out_All.extend(g_Out)
-            if bDeleteInput:
-                sc.doc.Objects.Delete(item=rdObj0)
-        else:
+                sc.doc.Objects.Delete(item=rdObj_In)
+
+
+        if rdObj_In.ObjectType not in (rd.ObjectType.Curve, rd.ObjectType.Brep):
+            raise Exception("{} is not allowed as input to project.".format(rdObj_In.GetType().Name))
+
+
+        # CurveObjects and BrepEdges.
+        if rdObj_In.ObjectType == rd.ObjectType.Curve:
+            rgC_In = rdObj_In.Geometry
+        elif rdObj_In.ObjectType == rd.ObjectType.Brep:
+            # For edges.
+            rgC_In = rs.coercecurve(rhObj_toProj)
+
+
+        # Prepd = Preprocessed
+        rgCs_Prepd_perC_In = duplicateSegments(rgC_In) if bProjectCrvSegs else [rgC_In.DuplicateCurve()]
+
+        rgCs_Res_perC_In = []
+
+        for rgC_Prepd_perC_In in rgCs_Prepd_perC_In:
+            if bLoose:
+                for rdB_In, rgB_In in zip(rdBs_In, rgBs_In):
+                    if iOutputLayer == Opts.listValues['iOutputLayer'].index('TargetObject'):
+                        attr_Out.LayerIndex = rdB_In.Attributes.LayerIndex
+
+                    rgCs_Projctd_from1Prepd_1B = projectCurve_Loose(
+                        rgC_Prepd_perC_In,
+                        rgB_In,
+                        vect,
+                        fTol_Proj=fTol_Proj,
+                        bDebug=bDebug)
+
+                    if rgCs_Projctd_from1Prepd_1B:
+                        rgCs_Res_perC_In.extend(rgCs_Projctd_from1Prepd_1B)
+            else:
+                for rdB_In, rgBs_1Face, rgPlanes in zip(rdBs_In, rgB1s_1F_PerB_In, rgPlanes_PerB_In):
+                    if iOutputLayer == Opts.listValues['iOutputLayer'].index('TargetObject'):
+                        attr_Out.LayerIndex = rdB_In.Attributes.LayerIndex
+
+                    rgCs_Projctd_from1Prepd_1B = projectCurve_NotLoose(
+                        rgC_Prepd_perC_In,
+                        rgBs_1Face,
+                        rgPlanes,
+                        vect,
+                        fTol_Proj=fTol_Proj,
+                        bPostProcess=bPostProcess,
+                        fTol_MinLength=fTol_MinLength,
+                        bOnlyLinesAndCubicNurbs=bOnlyLinesAndCubicNurbs,
+                        bTryGetArcs=bTryGetArcs,
+                        bAcceptRational=bAcceptRational,
+                        bTryRebuildOthersUniform=bTryRebuildOthersUniform,
+                        bDebug=bDebug)
+
+                    if rgCs_Projctd_from1Prepd_1B:
+                        rgCs_Res_perC_In.extend(rgCs_Projctd_from1Prepd_1B)
+
+
+        if not rgCs_Res_perC_In:
             continue
 
-    for rgB in rgB0s: rgB.Dispose()
+        if bJoinPerInputCrv:
+            rgCs_Out = joinCurves(
+                rgCs_Res_perC_In,
+                tolerance=fTol_MinLength,
+                bDebug=bDebug)
+            #map(sc.doc.Objects.AddCurve, rgCs_Out); sc.doc.Views.Redraw(); 1/0
+            if bPostProcess:
+                # TODO: WIP
+                if rgC_In.IsPeriodic:
+                    print("Periodic input curve found.")
+                #    if convertCrvsForPeriodicInList(rgCs_toMod):
+                #        bModified = True
+                #        lenList = len(rgCs_toMod)
 
-    if not bLoose:
-        for rgB1s_1F in rgB1s_1F_PerB0:
+                # Even if removeShortSegmentsInEachCrv_inList was previously run,
+                # new short segments may have been produced by JoinCurves.
+                # This problem also occurs using _Project.
+                if removeShortSegmentsInEachCrv_inList(rgCs_Out, fTol_MinLength):
+                    if bDebug:
+                        print("Short segment(s) removed.")
+        else:
+            rgCs_Out = rgCs_Res_perC_In
+
+        gCs_Res_fromC_In = []
+
+        for rgC in rgCs_Out:
+            gC_Out = sc.doc.Objects.AddCurve(rgC, attributes=attr_Out)
+            if gC_Out != Guid.Empty:
+                gCs_Res_fromC_In.append(gC_Out)
+
+        g_Out_All.extend(gCs_Res_fromC_In)
+
+        if bDeleteInput and (rdObj_In.ObjectType == rd.ObjectType.Curve):
+            # Skips deleting BreObjects.
+            sc.doc.Objects.Delete(item=rdObj_In)
+
+        # End of loop through rhObjs_toProj.
+
+
+    for rgB in rgBs_In:
+        if not rgB.IsDocumentControlled:
+            # Brep was created from a subobject-selected face.
+            rgB.Dispose()
+
+    if rgB1s_1F_PerB_In:
+        for rgB1s_1F in rgB1s_1F_PerB_In:
             for rgB in rgB1s_1F:
                 rgB.Dispose()
 
@@ -1414,39 +1548,46 @@ def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
 
 
 def getDirectionVector(iDirection):
-    if sOpts_Direction[iDirection] == 'CPlaneX':
+    if Opts.listValues['iDirection'][iDirection] == 'CPlaneX':
         return sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane().XAxis
-    if sOpts_Direction[iDirection] == 'CPlaneY':
+    if Opts.listValues['iDirection'][iDirection] == 'CPlaneY':
         return sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane().YAxis
-    if sOpts_Direction[iDirection] == 'CPlaneZ':
+    if Opts.listValues['iDirection'][iDirection] == 'CPlaneZ':
         return sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane().ZAxis
-    elif sOpts_Direction[iDirection] == 'WorldX':
+    elif Opts.listValues['iDirection'][iDirection] == 'WorldX':
         return rg.Vector3d.XAxis
-    elif sOpts_Direction[iDirection] == 'WorldY':
+    elif Opts.listValues['iDirection'][iDirection] == 'WorldY':
         return rg.Vector3d.YAxis
-    elif sOpts_Direction[iDirection] == 'WorldZ':
+    elif Opts.listValues['iDirection'][iDirection] == 'WorldZ':
         return rg.Vector3d.ZAxis
-    elif sOpts_Direction[iDirection] == 'View':
+    elif Opts.listValues['iDirection'][iDirection] == 'View':
         return sc.doc.Views.ActiveView.ActiveViewport.GetCameraFrame()[1].ZAxis
-    elif sOpts_Direction[iDirection] == 'Custom':
+    elif Opts.listValues['iDirection'][iDirection] == 'Custom':
         return Opts.values['vectCustom']
 
 
 def main():
     
-    rc = getInput(
+    objrefs_Crvs_Pts = getInput(
         [],
         "Select curves and points to project",
         rd.ObjectType.Curve | rd.ObjectType.Point)
-    if rc is None: return
-    objrefs_Crvs_Pts = rc[0]
+    if objrefs_Crvs_Pts is None: return
 
-    #for o in objrefs_Crvs_Pts:
-    #    geomCompIdx = o.GeometryComponentIndex
-    #    rdCompIdxType = geomCompIdx.ComponentIndexType
-    #    if  geomCompIdx.ComponentIndexType == rg.ComponentIndexType.BrepEdge:
-    #        o.Object().HighlightSubObject(geomCompIdx, highlight=True)
-    #sc.doc.Views.Redraw()
+    #bProjectCrvSegs = Opts.values['bProjectCrvSegs']
+    #fTol_MinLength = Opts.values['fTol_MinLength']
+    #bLoose = Opts.values['bLoose']
+    #fTol_Proj = Opts.values['fTol_Proj']
+    #bPostProcess = Opts.values['bPostProcess']
+    #bOnlyLinesAndCubicNurbs = Opts.values['bOnlyLinesAndCubicNurbs']
+    #bTryGetArcs = Opts.values['bTryGetArcs']
+    #bAcceptRational = Opts.values['bAcceptRational']
+    #bTryRebuildOthersUniform = Opts.values['bTryRebuildOthersUniform']
+    #bDeleteInput = Opts.values['bDeleteInput']
+    #iOutputLayer = Opts.values['iOutputLayer']
+    #iDirection = Opts.values['iDirection']
+    #bEcho = Opts.values['bEcho']
+    #bDebug = Opts.values['bDebug']
 
     sc.doc.Objects.UnselectAll()
 
@@ -1454,26 +1595,24 @@ def main():
 
     print("Now, select breps and faces ...")
 
-    rc = getInput(
+    objrefs_Breps = getInput(
         rdCrvs_toHighlight,
         "Select surfaces and polysurfaces to project onto",
         rd.ObjectType.Brep)
-    if rc is None: return
-    objrefs_Breps = rc[0]
-    iDirection = rc[6]
+    if objrefs_Breps is None: return
 
     # Determine vector before main routine.
     vect = getDirectionVector(Opts.values['iDirection'])
-    #if sOpts_Direction[iDirection] == 'CPlaneZ':
+    #if Opts.listValues['iDirection'][iDirection] == 'CPlaneZ':
     #    vect = sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane().ZAxis
-    #elif sOpts_Direction[iDirection] == 'WorldZ':
+    #elif Opts.listValues['iDirection'][iDirection] == 'WorldZ':
     #    vect = rg.Vector3d.ZAxis
-    #elif sOpts_Direction[iDirection] == 'View':
+    #elif Opts.listValues['iDirection'][iDirection] == 'View':
     #    rc = sc.doc.Views.ActiveView.ActiveViewport.GetCameraFrame()
     #    if not rc[0]: return
     #    vect = rc[1].ZAxis
-    #elif sOpts_Direction[iDirection] == 'Custom':
-    #    rc = rhinoscript.userinterface.GetLine(
+    #elif Opts.listValues['iDirection'][iDirection] == 'Custom':
+    #    rc = rs.GetLine(
     #        mode=1, point=None,
     #        message1='Projection direction',
     #        message3='Second direction point',
@@ -1481,24 +1620,83 @@ def main():
     #    if not rc: return
     #    vect = rg.Vector3d(rc[1] - rc[0])
 
-    if Opts.values['bDebug']:
-        pass
-    else:
-        pass
 
-    g_Res = processDocObjects(objrefs_Crvs_Pts, objrefs_Breps, vect)
+    bProjectCrvSegs = Opts.values['bProjectCrvSegs']
+    iDirection = Opts.values['iDirection']
+    fTol_Proj = Opts.values['fTol_Proj']
+    bLoose = Opts.values['bLoose']
+    bPostProcess = Opts.values['bPostProcess']
+    fTol_MinLength = Opts.values['fTol_MinLength']
+    bOnlyLinesAndCubicNurbs = Opts.values['bOnlyLinesAndCubicNurbs']
+    bTryGetArcs = Opts.values['bTryGetArcs']
+    bAcceptRational = Opts.values['bAcceptRational']
+    bTryRebuildOthersUniform = Opts.values['bTryRebuildOthersUniform']
+    bJoinPerInputCrv = Opts.values['bJoinPerInputCrv']
+    bDeleteInput = Opts.values['bDeleteInput']
+    iOutputLayer = Opts.values['iOutputLayer']
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
+
+
+    if not Opts.values['bDebug']:
+        sc.doc.Views.RedrawEnabled = False
+
+    gs_Res = processDocObjects(
+        objrefs_Crvs_Pts,
+        objrefs_Breps,
+        vect,
+        bProjectCrvSegs=bProjectCrvSegs,
+        fTol_Proj=fTol_Proj,
+        bLoose=bLoose,
+        bPostProcess=bPostProcess,
+        fTol_MinLength=fTol_MinLength,
+        bOnlyLinesAndCubicNurbs=bOnlyLinesAndCubicNurbs,
+        bTryGetArcs=bTryGetArcs,
+        bAcceptRational=bAcceptRational,
+        bTryRebuildOthersUniform=bTryRebuildOthersUniform,
+        bJoinPerInputCrv=bJoinPerInputCrv,
+        bDeleteInput=bDeleteInput,
+        iOutputLayer=iOutputLayer,
+        iDirection=iDirection,
+        bEcho=bEcho,
+        bDebug=bDebug,
+        )
 
     if Opts.values['bEcho']:
-        if len(objrefs_Crvs_Pts) == len(g_Res):
+        if len(objrefs_Crvs_Pts) == len(gs_Res) == 1:
+            print("Object projected to one object.".format(
+                len(objrefs_Crvs_Pts)))
+        elif len(objrefs_Crvs_Pts) == len(gs_Res):
             print("{} objects projected to same number of objects.".format(
                 len(objrefs_Crvs_Pts)))
+        elif len(gs_Res) == 0:
+            print("The projection missed the selected objects.".format(
+                len(objrefs_Crvs_Pts), len(gs_Res)))
         else:
             print("{} objects projected to {} objects.".format(
-                len(objrefs_Crvs_Pts), len(g_Res)))
+                len(objrefs_Crvs_Pts), len(gs_Res)))
 
-    if g_Res:
+        iCt_Crvs = 0
+        iCt_Closed = 0
+
+        for gRes in gs_Res:
+            if rs.IsCurve(gRes):
+                iCt_Crvs += 1
+                if rs.IsCurveClosed(gRes):
+                    iCt_Closed += 1
+
+        if iCt_Crvs:
+            if iCt_Closed == iCt_Crvs:
+                print("All curves are closed.")
+            elif iCt_Closed == 0:
+                print("All curves are open.")
+            else:
+                print("{} curves are open. {} are closed.".format(iCt_Crvs-iCt_Closed, iCt_Closed))
+
+
+    if gs_Res:
         sc.doc.Objects.UnselectAll()
-        sc.doc.Objects.Select(objectIds=g_Res)
+        sc.doc.Objects.Select(objectIds=gs_Res)
         sc.doc.Views.Redraw()
 
 

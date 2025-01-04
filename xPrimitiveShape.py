@@ -1,8 +1,14 @@
 """
+"""
+
+"""
 190522-24: Started from another module.
-190721: Parameter name change.
-191119: Converted and imported functions into class methods.
-191126: Corrected starting tolerance in iterations in Surface.tryGetPlane and Surface.tryGetRoundPrimitive.
+...
+220831: Modified tolerance range in shape searching.
+241231: Bug fix in tolerances in tolerance loop after cylinder search.
+        Added check to quickly eliminate some iterative searches for shapes.
+
+Notes: Surface.IsTorus, etc., has trouble finding shapes for NurbSurfaces converted from RevSurfaces.
 """
 
 import Rhino
@@ -432,10 +438,15 @@ class Surface():
             On success: (rg.Plane instance), (float: tolerance actually used to obtain shape)
             On fail: None, None
         """
-    
-        if fTolerance <= 0.0: return None, None
-        elif fTolerance < 1e-12: fTolerance = 1e-12
-    
+
+        exp = -52
+        m_eps = 2**exp # 2.22044604925e-16
+
+        if fTolerance <= 0.0:
+            return None, None
+        elif fTolerance < m_eps:
+            fTolerance = m_eps
+
         if isinstance(rgSrf0, rg.BrepFace):
             rgSrf0 = rgSrf0.UnderlyingSurface()
     
@@ -445,20 +456,22 @@ class Surface():
             rgNurbsSrf1 = rgSrf0.ToNurbsSurface()
     
         # Start tolerance to use at a low value and iterate up to input tolerance.
-        fTol_Attempting = fTolerance if fTolerance < 1e-9 else 1e-9
+        fTol_Attempting = m_eps
 
         while fTol_Attempting <= fTolerance:
             sc.escape_test()
+
             b, plane = rgNurbsSrf1.TryGetPlane(fTol_Attempting)
             if b:
                 rgNurbsSrf1.Dispose()
                 return plane, fTol_Attempting
-    
+
             if fTol_Attempting == fTolerance:
                 break
-    
-            fTol_Attempting *= 10.0
-    
+
+            exp += 1
+            fTol_Attempting = 2**exp
+
             if fTol_Attempting > fTolerance:
                 fTol_Attempting = fTolerance
     
@@ -477,10 +490,17 @@ class Surface():
         Tolerance up to fTolerance parameter is first tested for a Cylinder
         Then the other 3 shapes are tested together each tolerance trial at a time.
         """
-    
-        if fTolerance <= 0.0: return None, None
-        elif fTolerance < 1e-12: fTolerance = 1e-12
-    
+
+        if not any((bCylinder, bCone, bSphere, bTorus)):
+            return None, None
+
+        if fTolerance <= 0.0:
+            return None, None
+
+        exp = -52
+        m_eps = 2**exp # 2.22044604925e-16
+
+
         if isinstance(rgSrf0, rg.BrepFace):
             rgSrf0 = rgSrf0.UnderlyingSurface()
     
@@ -488,89 +508,126 @@ class Surface():
             rgNurbsSrf1 = rgSrf0.Duplicate()
         else:
             rgNurbsSrf1 = rgSrf0.ToNurbsSurface()
+
+        # If initially True, these may later be set to False when either
+        #   1. The shape cannot be found at fTolerance.
+        #   2. The relative shape is found but not at an acceptable size
+        bCone_WIP = bCone
+        bSphere_WIP = bSphere
+        bTorus_WIP = bTorus
     
-        bConeSkipped = False
-        bSphereSkipped = False
-        bTorusSkipped = False
-    
+        if fTolerance < m_eps:
+            fTolerance = m_eps
+
         # Start tolerance to use at a low value and iterate up to input tolerance.
-        fTol_Attempting = fTolerance if fTolerance < 1e-9 else 1e-9
+        fTol_Attempting = m_eps
 
         # Cylinder has preference, so all tolerances will be iterated, trying for that shape.
         if bCylinder:
-            while fTol_Attempting <= fTolerance:
-                sc.escape_test()
-                b, cylinder = rgNurbsSrf1.TryGetCylinder(fTol_Attempting)
-                if b:
-                    if Cylinder.isSizeAcceptable(cylinder, bDebug=bDebug):
-                        rgNurbsSrf1.Dispose()
-                        return cylinder, fTol_Attempting
-                    else:
+            # Check max. tolerance first.
+            b, cylinder = rgNurbsSrf1.TryGetCylinder(fTolerance)
+            if b:
+                cylinder = None
+                while fTol_Attempting <= fTolerance:
+                    sc.escape_test()
+                    b, cylinder = rgNurbsSrf1.TryGetCylinder(fTol_Attempting)
+                    if b:
+                        if Cylinder.isSizeAcceptable(cylinder, bDebug=bDebug):
+                            rgNurbsSrf1.Dispose()
+                            return cylinder, fTol_Attempting
+                        else:
+                            break
+            
+                    if fTol_Attempting == fTolerance:
                         break
-        
-                if fTol_Attempting == fTolerance:
-                    break
-        
-                fTol_Attempting *= 10.0
-        
-                if fTol_Attempting > fTolerance:
-                    fTol_Attempting = fTolerance
+    
+                    exp += 1
+                    fTol_Attempting = 2**exp
+    
+                    #fTol_Attempting *= 10.0
+    
+                    if fTol_Attempting > fTolerance:
+                        fTol_Attempting = fTolerance
 
-        fTol_Attempting = fTolerance if fTolerance < 1e-9 else 1e-9
+        if bCone_WIP:
+            b, cone = rgNurbsSrf1.TryGetCone(fTolerance)
+            if b:
+                cone = None
+            else:
+                bCone_WIP = False
+        if bSphere_WIP:
+            b, sphere = rgNurbsSrf1.TryGetSphere(fTolerance)
+            if b:
+                sphere = None
+            else:
+                bSphere_WIP = False
+        if bTorus_WIP:
+            b, torus = rgNurbsSrf1.TryGetTorus(fTolerance)
+            if b:
+                torus = None
+            else:
+                bTorus_WIP = False
+
+        if not any((bCone_WIP, bSphere_WIP, bTorus_WIP)):
+            return None, None
+
+        # Reset starting tolerance for non-cylinder search.
+        exp = -52
+        fTol_Attempting = m_eps
 
         while fTol_Attempting <= fTolerance:
             sc.escape_test()
         
-            if not bConeSkipped:
-                if bCone:
-                    b, cone = rgNurbsSrf1.TryGetCone(fTol_Attempting)
-                    if b:
-                        for pt in (
-                                rgNurbsSrf1.PointAt(
-                                        rgNurbsSrf1.Domain(0).T0,
-                                        rgNurbsSrf1.Domain(1).T0),
-                                rgNurbsSrf1.PointAt(
-                                        rgNurbsSrf1.Domain(0).T1,
-                                        rgNurbsSrf1.Domain(1).T1)
-                        ):
-                            rc = Cone.isSizeAcceptableAtPoint(
-                                    cone,
-                                    point=pt,
-                                    bDebug=bDebug)
-                            if rc is None:
-                                continue
-                            elif rc is False:
-                                bConeSkipped = True
-                                break
-                        else:
-                            # Size is acceptable.
-                            rgNurbsSrf1.Dispose()
-                            return cone, fTol_Attempting
-            if not bSphereSkipped:
-                if bSphere:
-                    b, sphere = rgNurbsSrf1.TryGetSphere(fTol_Attempting)
-                    if b:
-                        if Sphere.isSizeAcceptable(sphere, bDebug=bDebug):
-                            rgNurbsSrf1.Dispose()
-                            return sphere, fTol_Attempting
-                        else:
-                            bSphereSkipped = True
-            if not bTorusSkipped:
-                if bTorus:
-                    b, torus = rgNurbsSrf1.TryGetTorus(fTol_Attempting)
-                    if b:
-                        if Torus.isSizeAcceptable(torus, bDebug=bDebug):
-                            rgNurbsSrf1.Dispose()
-                            return torus, fTol_Attempting
-                        else:
-                            bTorusSkipped = True
+            if bCone_WIP:
+                b, cone = rgNurbsSrf1.TryGetCone(fTol_Attempting)
+                if b:
+                    for pt in (
+                            rgNurbsSrf1.PointAt(
+                                    rgNurbsSrf1.Domain(0).T0,
+                                    rgNurbsSrf1.Domain(1).T0),
+                            rgNurbsSrf1.PointAt(
+                                    rgNurbsSrf1.Domain(0).T1,
+                                    rgNurbsSrf1.Domain(1).T1)
+                    ):
+                        rc = Cone.isSizeAcceptableAtPoint(
+                                cone,
+                                point=pt,
+                                bDebug=bDebug)
+                        if rc is None:
+                            continue
+                        elif rc is False:
+                            bCone_WIP = False
+                            break
+                    else:
+                        # Size is acceptable.
+                        rgNurbsSrf1.Dispose()
+                        return cone, fTol_Attempting
+            if bSphere_WIP:
+                b, sphere = rgNurbsSrf1.TryGetSphere(fTol_Attempting)
+                if b:
+                    if Sphere.isSizeAcceptable(sphere, bDebug=bDebug):
+                        rgNurbsSrf1.Dispose()
+                        return sphere, fTol_Attempting
+                    else:
+                        bSphere_WIP = False
+            if bTorus_WIP:
+                b, torus = rgNurbsSrf1.TryGetTorus(fTol_Attempting)
+                if b:
+                    if Torus.isSizeAcceptable(torus, bDebug=bDebug):
+                        rgNurbsSrf1.Dispose()
+                        return torus, fTol_Attempting
+                    else:
+                        bTorus_WIP = False
         
             if fTol_Attempting == fTolerance:
                 rgNurbsSrf1.Dispose()
                 return None, None
-        
-            fTol_Attempting *= 10.0
-        
+
+            exp += 1
+            fTol_Attempting = 2**exp
+
+            #fTol_Attempting *= 10.0
+
             if fTol_Attempting > fTolerance:
                 fTol_Attempting = fTolerance
 

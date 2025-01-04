@@ -1,10 +1,17 @@
 """
-Alternative to _Fair:
-  1. When LimitDev=Yes, results closer to the distance tolerance are achieved.
-  2. The clamp order is not limited to 0, a la Rhino 7, or 2, a la Rhino 8.
-  3. When LimitDev=No, NURBS curve structures for degrees other than 3 are preserved.
+This script is an alternative to _Fair.
+
+1. When LimitDev=Yes, the results are often closer to the distance tolerance than _Fair.
+2. The end preservation type is only limited by the number of control points in the curves.
+    Rhino 7's _Fair changes all point locations except the ends.
+    Rhino 8's _Fair can presure up to 3 control points from each end.
+3. When LimitDev=No, NURBS curve structures for degrees other than 3 are preserved.
+
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums, https://discourse.mcneel.com/
 """
 
+#! python 2  Must be on a line number less than 32.
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
@@ -14,7 +21,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 221229-30: Modified main function routine.  Refactored.
         Clamp order is no longer limited to 2.  (It was discovered today that
         Curve.Fair clamp parameters doesn't have that limit.)
-230707: Relabeled some options.
+230107: Relabeled some options.
+240103: Relabeled some options. Modified the notes above. Modified some printed text.
 
 TODO: Investigate results of non-3-degree input.
 """
@@ -52,26 +60,25 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key], setLowerLimit=True, limit=0.0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'bEqualEndClamps'; keys.append(key)
+    key = 'bEqualEndPreservations'; keys.append(key)
     values[key] = True
-    riOpts[key] = ri.Custom.OptionToggle(initialValue=values[key], offValue='No', onValue='Yes')
+    names[key] = 'SetEndPreservations'
+    riOpts[key] = ri.Custom.OptionToggle(initialValue=values[key], offValue='Separate', onValue='Same')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iClampsDerivOrder'; keys.append(key)
+    key = 'iEndsContinuityOrder'; keys.append(key)
     values[key] = 1
-    names[key] = 'EndsCContinuity'
     riOpts[key] = ri.Custom.OptionInteger(initialValue=values[key], setLowerLimit=True, limit=0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iClampStartDerivOrder'; keys.append(key)
+    key = 'iStartContinuityOrder'; keys.append(key)
     values[key] = 1
-    names[key] = 'StartCContinuity'
     riOpts[key] = ri.Custom.OptionInteger(initialValue=values[key], setLowerLimit=True, limit=0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iClampEndDerivOrder'; keys.append(key)
+    key = 'iEndContinuityOrder'; keys.append(key)
     values[key] = 1
-    names[key] = 'EndC'
+    names[key] = 'EndOrder'
     riOpts[key] = ri.Custom.OptionInteger(initialValue=values[key], setLowerLimit=True, limit=0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -146,7 +153,7 @@ class Opts:
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
             return
 
-        if key == 'iClampsDerivOrder':
+        if key == 'iEndsContinuityOrder':
             if cls.riOpts[key].CurrentValue < 0:
                 cls.riOpts[key].CurrentValue = 0
 
@@ -186,10 +193,8 @@ def getInput():
 
     bPreselectedObjsChecked = False
     
-    print("For ClampOrder(s), value represents maximum index"
-          " (from relative end) of control points whose locations are not modified."
-          "\nFor example, 2 means that first 3 controls point locations are preserved.")
-
+    print("The ContinuityOrder is the value found after 'G'.","For example, 1 is for G1, or tangency continuity.")
+    
     idxs_Opt = {}
 
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
@@ -203,12 +208,12 @@ def getInput():
         if Opts.values['bLimitDev']:
             addOption('fDevTol')
             addOption('fAngleTol_Deg')
-        addOption('bEqualEndClamps')
-        if Opts.values['bEqualEndClamps']:
-            addOption('iClampsDerivOrder')
+        addOption('bEqualEndPreservations')
+        if Opts.values['bEqualEndPreservations']:
+            addOption('iEndsContinuityOrder')
         else:
-            addOption('iClampStartDerivOrder')
-            addOption('iClampEndDerivOrder')
+            addOption('iStartContinuityOrder')
+            addOption('iEndContinuityOrder')
         addOption('bReplace_NotAdd')
         addOption('bEcho')
         addOption('bDebug')
@@ -235,8 +240,8 @@ def getInput():
         if res == ri.GetResult.Number:
             if Opts.values['bLimitDev']:
                 key = 'fDevTol'
-            elif Opts.values['bEqualEndClamps']:
-                key = 'iClampsDerivOrder'
+            elif Opts.values['bEqualEndPreservations']:
+                key = 'iEndsContinuityOrder'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
@@ -294,7 +299,7 @@ def formatDistance(fDistance, iPrecision=None):
         return "{:.{}f}".format(fDistance, iPrecision)
 
 
-def fairCurve_NoDevLimit(rgCrv_In, iClampStartDerivOrder, iClampEndDerivOrder, bDebug=False):
+def fairCurve_NoDevLimit(rgCrv_In, iStartContinuityOrder, iEndContinuityOrder, bDebug=False):
     """
     """
 
@@ -303,15 +308,15 @@ def fairCurve_NoDevLimit(rgCrv_In, iClampStartDerivOrder, iClampEndDerivOrder, b
     if bDebug:
         sEval = "nc_Start.Points.Count"; print("{}: {}".format(sEval, eval(sEval)))
         sEval = "nc_Start.Degree"; print("{}: {}".format(sEval, eval(sEval)))
-        sEval = "iClampStartDerivOrder"; print("{}: {}".format(sEval, eval(sEval)))
-        sEval = "iClampEndDerivOrder"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "iStartContinuityOrder"; print("{}: {}".format(sEval, eval(sEval)))
+        sEval = "iEndContinuityOrder"; print("{}: {}".format(sEval, eval(sEval)))
 
 
-    if nc_Start.Points.Count < (iClampStartDerivOrder + iClampEndDerivOrder + 2):
+    if nc_Start.Points.Count < (iStartContinuityOrder + iEndContinuityOrder + 2):
         nc_Start.Dispose()
         return None, "Clamping continuity is too high for curve's point count."
 
-    #if nc_Start.Points.Count < (iClampStartDerivOrder + iClampEndDerivOrder) + 2*nc_Start.Degree:
+    #if nc_Start.Points.Count < (iStartContinuityOrder + iEndContinuityOrder) + 2*nc_Start.Degree:
     #    nc_Start.Dispose()
     #    return None, "Clamping continuity is too high for curve's point count."
 
@@ -339,8 +344,8 @@ def fairCurve_NoDevLimit(rgCrv_In, iClampStartDerivOrder, iClampEndDerivOrder, b
         nc_Res = nc_Prev.Fair(
             distanceTolerance=1000*distanceTolerance,
             angleTolerance=angleTolerance,
-            clampStart=iClampStartDerivOrder,
-            clampEnd=iClampEndDerivOrder,
+            clampStart=iStartContinuityOrder,
+            clampEnd=iEndContinuityOrder,
             iterations=1000)
 
         if nc_Res is None:
@@ -374,17 +379,17 @@ def fairCurve_NoDevLimit(rgCrv_In, iClampStartDerivOrder, iClampEndDerivOrder, b
         return nc_Out, None
 
 
-def fairCurve_DevLimit(rgCrv_In, fDevTol, fAngleTol_Deg, iClampStartDerivOrder, iClampEndDerivOrder, bDebug=False):
+def fairCurve_DevLimit(rgCrv_In, fDevTol, fAngleTol_Deg, iStartContinuityOrder, iEndContinuityOrder, bDebug=False):
     """
     """
 
     nc_Start = rgCrv_In.ToNurbsCurve()
 
-    if nc_Start.Points.Count < (iClampStartDerivOrder + iClampEndDerivOrder + 2):
+    if nc_Start.Points.Count < (iStartContinuityOrder + iEndContinuityOrder + 2):
         nc_Start.Dispose()
         return None, "Clamping continuity is too high for curve's point count."
 
-    #if nc_Start.Points.Count < (iClampStartDerivOrder + iClampEndDerivOrder) + 2*nc_Start.Degree:
+    #if nc_Start.Points.Count < (iStartContinuityOrder + iEndContinuityOrder) + 2*nc_Start.Degree:
     #    nc_Start.Dispose()
     #    return None, "Clamping continuity is too high for curve's point count."
 
@@ -398,8 +403,8 @@ def fairCurve_DevLimit(rgCrv_In, fDevTol, fAngleTol_Deg, iClampStartDerivOrder, 
     nc_Res = nc_Start.Fair(
         distanceTolerance=2.0*fDevTol,
         angleTolerance=angleTolerance,
-        clampStart=iClampStartDerivOrder,
-        clampEnd=iClampEndDerivOrder,
+        clampStart=iStartContinuityOrder,
+        clampEnd=iEndContinuityOrder,
         iterations=1)
 
     if nc_Res is None:
@@ -445,8 +450,8 @@ def fairCurve_DevLimit(rgCrv_In, fDevTol, fAngleTol_Deg, iClampStartDerivOrder, 
             nc_Res = nc_Start.Fair(
                 distanceTolerance=distanceTolerance,
                 angleTolerance=angleTolerance,
-                clampStart=iClampStartDerivOrder,
-                clampEnd=iClampEndDerivOrder,
+                clampStart=iStartContinuityOrder,
+                clampEnd=iEndContinuityOrder,
                 iterations=iter_M)
 
             if nc_Res is None:
@@ -491,8 +496,8 @@ def fairCurve_DevLimit(rgCrv_In, fDevTol, fAngleTol_Deg, iClampStartDerivOrder, 
     nc_Res = nc_Start.Fair(
         distanceTolerance=dist_H,
         angleTolerance=angleTolerance,
-        clampStart=iClampStartDerivOrder,
-        clampEnd=iClampEndDerivOrder,
+        clampStart=iStartContinuityOrder,
+        clampEnd=iEndContinuityOrder,
         iterations=1)
 
 
@@ -524,8 +529,8 @@ def fairCurve_DevLimit(rgCrv_In, fDevTol, fAngleTol_Deg, iClampStartDerivOrder, 
         nc_Res = nc_Start.Fair(
             distanceTolerance=dist_M,
             angleTolerance=angleTolerance,
-            clampStart=iClampStartDerivOrder,
-            clampEnd=iClampEndDerivOrder,
+            clampStart=iStartContinuityOrder,
+            clampEnd=iEndContinuityOrder,
             iterations=1)
 
         if nc_Res is None:
@@ -548,8 +553,8 @@ def fairCurve_DevLimit(rgCrv_In, fDevTol, fAngleTol_Deg, iClampStartDerivOrder, 
     nc_Res = nc_Start.Fair(
         distanceTolerance=distanceTolerance,
         angleTolerance=angleTolerance,
-        clampStart=iClampStartDerivOrder,
-        clampEnd=iClampEndDerivOrder,
+        clampStart=iStartContinuityOrder,
+        clampEnd=iEndContinuityOrder,
         iterations=iterations)
 
     return nc_Res, None
@@ -623,12 +628,12 @@ def main(bEcho=False, bDebug=False):
 
     fDevTol = Opts.values['fDevTol'] if Opts.values['bLimitDev'] else None
     fAngleTol_Deg = Opts.values['fAngleTol_Deg']
-    if Opts.values['bEqualEndClamps']:
-        iClampStartDerivOrder = Opts.values['iClampsDerivOrder']
-        iClampEndDerivOrder = Opts.values['iClampsDerivOrder']
+    if Opts.values['bEqualEndPreservations']:
+        iStartContinuityOrder = Opts.values['iEndsContinuityOrder']
+        iEndContinuityOrder = Opts.values['iEndsContinuityOrder']
     else:
-        iClampStartDerivOrder = Opts.values['iClampStartDerivOrder']
-        iClampEndDerivOrder = Opts.values['iClampEndDerivOrder']
+        iStartContinuityOrder = Opts.values['iStartContinuityOrder']
+        iEndContinuityOrder = Opts.values['iEndContinuityOrder']
     bReplace_NotAdd = Opts.values['bReplace_NotAdd']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -658,16 +663,16 @@ def main(bEcho=False, bDebug=False):
         if fDevTol is None:
             nc_Res, sLog = fairCurve_NoDevLimit(
                 rgCrv_In=nc_Start,
-                iClampStartDerivOrder=iClampStartDerivOrder,
-                iClampEndDerivOrder=iClampEndDerivOrder,
+                iStartContinuityOrder=iStartContinuityOrder,
+                iEndContinuityOrder=iEndContinuityOrder,
                 bDebug=bDebug)
         else:
             nc_Res, sLog = fairCurve_DevLimit(
                 rgCrv_In=nc_Start,
                 fDevTol=fDevTol,
                 fAngleTol_Deg=fAngleTol_Deg,
-                iClampStartDerivOrder=iClampStartDerivOrder,
-                iClampEndDerivOrder=iClampEndDerivOrder,
+                iStartContinuityOrder=iStartContinuityOrder,
+                iEndContinuityOrder=iEndContinuityOrder,
                 bDebug=bDebug)
 
         if sLog is not None:

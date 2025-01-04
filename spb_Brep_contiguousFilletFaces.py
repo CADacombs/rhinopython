@@ -21,6 +21,7 @@
 191010,1101: Import-related update.
 191118: Moved a function from another module to this script.
 191205: Bug fix.
+210612, 221108: Import-related update.
 """
 
 import Rhino
@@ -32,7 +33,7 @@ from System import Guid
 from System.Collections.Generic import List
 
 import xBrepObject
-import xSurface_radius
+import spb_Srf_radius
 
 
 sOpts = (
@@ -204,7 +205,10 @@ def getInput(bDebug=False):
         print "Planar face selected."
         return
     
-    fFaceRad0 = xSurface_radius.constantRadiusOfSurface(rgFace, Opts.values['fRadTol'], bEcho=bDebug)
+    fFaceRad0 = spb_Srf_radius.constantRadiusOfSurface(
+        rgFace,
+        Opts.values['fRadTol'],
+        bDebug=bDebug)
     if bDebug: sPrint = 'fFaceRad0'; print sPrint + ':', eval(sPrint)
     if fFaceRad0 is None:
         print "Non-fillet face selected."
@@ -265,7 +269,7 @@ def indicesOfContiguousFilletFaces(rgBrep0, idxFace0, bSameConcavityType=True, b
     
     rgFace0 = rgBrep0.Faces[idxFace0]
     
-    fFaceRad0 = xSurface_radius.constantRadiusOfSurface(rgFace0, fRadTol)
+    fFaceRad0 = spb_Srf_radius.constantRadiusOfSurface(rgFace0, fRadTol)
     if fFaceRad0 is None: return
     
     if bSameConcavityType:
@@ -289,7 +293,7 @@ def indicesOfContiguousFilletFaces(rgBrep0, idxFace0, bSameConcavityType=True, b
                     idxFaces_Fail.append(j)
                     continue
                 
-                fRadFace = xSurface_radius.constantRadiusOfSurface(rgFaceX, fRadTol)
+                fRadFace = spb_Srf_radius.constantRadiusOfSurface(rgFaceX, fRadTol)
                 if fRadFace is None:
                     idxFaces_Fail.append(j)
                     continue

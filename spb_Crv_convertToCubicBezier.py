@@ -1,4 +1,6 @@
 """
+This script replaces a curve with a cubic 1-span (Bezier) NURBS curve
+and reports the distance deviation.
 End conditions must be G1-matched to input curve and/or reference curve(s).
 """
 
@@ -6,6 +8,9 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 """
 221005-06: Created.
+250104: Modified a prompt message, some notes, and variable names.
+
+TODO: If both curves for G1 reference are not selected, try the remaining for 
 """
 
 import Rhino
@@ -102,7 +107,7 @@ def getInput_DistDevRef():
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select reference curve")
+    go.SetCommandPrompt("Select curve to convert")
 
     go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve
 
@@ -232,7 +237,7 @@ def getDataForEndCondition(objrefs_MatchTanCrvs):
     return pts, tans
 
 
-def matchG1DataToDistDevCrv(objrefs_MatchTanCrvs, crv_In_DistDev):
+def matchG1DataToDistDevCrv(objrefs_MatchTanCrvs, crv_ToConvert_In):
     """
     Returns:
         tuple(rg.Point3d or None), tuple(rg.Vector3d or None)
@@ -246,8 +251,8 @@ def matchG1DataToDistDevCrv(objrefs_MatchTanCrvs, crv_In_DistDev):
 
     pts, tans = rc
 
-    dist_to_start = pts[0].DistanceTo(crv_In_DistDev.PointAtStart)
-    dist_to_end = pts[0].DistanceTo(crv_In_DistDev.PointAtEnd)
+    dist_to_start = pts[0].DistanceTo(crv_ToConvert_In.PointAtStart)
+    dist_to_end = pts[0].DistanceTo(crv_ToConvert_In.PointAtEnd)
 
     if len(pts) == 1:
         if dist_to_start <= dist_to_end:
@@ -279,7 +284,7 @@ def _getMaxDev(rgCrvA, rgCrvB):
         return rc[1]
 
 
-def createCurveIfSpecialCase(crv_In, **kwargs):
+def createCurve_NoG1Matching(crv_In, **kwargs):
     """
     returns:
         Success: New NurbsCurve
@@ -602,8 +607,8 @@ def main():
     """
     """
 
-    objref_DistDevCrv = getInput_DistDevRef()
-    if objref_DistDevCrv is None: return
+    objref_CrvToConvert = getInput_DistDevRef()
+    if objref_CrvToConvert is None: return
 
     bReplace = Opts.values['bReplace']
     bEcho = Opts.values['bEcho']
@@ -613,7 +618,11 @@ def main():
     objrefs_MatchTanCrvs = getInput_Tan()
     if objrefs_MatchTanCrvs is None: return
 
-    crv_In_DistDev = objref_DistDevCrv.Curve()
+    bReplace = Opts.values['bReplace']
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
+
+    crv_ToConvert_In = objref_CrvToConvert.Curve()
 
 
     #if bDebug:
@@ -625,13 +634,13 @@ def main():
     if objrefs_MatchTanCrvs:
         nc_Res = None
     else:
-        nc_Res = createCurveIfSpecialCase(crv_In_DistDev)
+        nc_Res = createCurve_NoG1Matching(crv_ToConvert_In)
 
 
     if nc_Res is None:
-        pts, tans = matchG1DataToDistDevCrv(objrefs_MatchTanCrvs, crv_In_DistDev)
+        pts, tans = matchG1DataToDistDevCrv(objrefs_MatchTanCrvs, crv_ToConvert_In)
         nc_Res = createCurve(
-            crv_In_DistDev,
+            crv_ToConvert_In,
             pts,
             tans,
             bEcho=bEcho,
@@ -643,7 +652,7 @@ def main():
         return
 
 
-    if objref_DistDevCrv.Edge() or not bReplace:
+    if objref_CrvToConvert.Edge() or not bReplace:
         gOut = sc.doc.Objects.AddCurve(nc_Res)
         if gOut != gOut.Empty:
             print("Curve was added.")
@@ -654,7 +663,7 @@ def main():
             return
 
 
-    if sc.doc.Objects.Replace(objref_DistDevCrv, curve=nc_Res):
+    if sc.doc.Objects.Replace(objref_CrvToConvert, curve=nc_Res):
         print("Curve was replaced.")
         sc.doc.Views.Redraw()
     else:

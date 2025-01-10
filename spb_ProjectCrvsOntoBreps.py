@@ -24,6 +24,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 240712-15: Refactored and modified behavior of simplification routines.
 241107, 241225: Fixed bugs created during 240712-15 refactoring.
 241226-28: Fixed bugs, added another tolerance option, and refactored.
+250101: Bug fix. Modified some hard-coded tolerance values.
+250105: Removed wait after preselection (was only for objects to project).
 
 TODO:
     Reviewing tolerance values passed to:
@@ -268,7 +270,7 @@ def getInput(rdObjs_toHighlight, sPrompt, rdGeomFilter):
     idxs_Opt = {}
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
-    bPreselectedObjsChecked = False
+    #bPreselectedObjsChecked = False
     go.EnablePreSelect(True, ignoreUnacceptablePreselectedObjects=True)
 
     while True:
@@ -299,11 +301,11 @@ def getInput(rdObjs_toHighlight, sPrompt, rdGeomFilter):
 
         # Use bPreselectedObjsChecked so that only objects before the
         # first call to go.GetMultiple is considered.
-        if not bPreselectedObjsChecked:
-            go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
-            bPreselectedObjsChecked = True
-            if go.ObjectsWerePreselected:
-                continue
+        #if not bPreselectedObjsChecked:
+        #    go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
+        #    bPreselectedObjsChecked = True
+        #    if go.ObjectsWerePreselected:
+        #        continue
 
         if res == ri.GetResult.Cancel:
             go.Dispose()
@@ -587,7 +589,7 @@ def trimCurves_to_brep_edges(rgC_fromProjectLoose, rgB, fTol_Proj):
         dist = midDomainPt.DistanceTo(closestPt)
         #print(dist)
 
-        if dist <= 1e-6:
+        if dist <= 1e-5:
             rgCs_Out.append(rgC)
 
     return rgCs_Out
@@ -651,10 +653,10 @@ def cleanProjectedCrvs_inList(rgCs_toMod, fTol_MinLength, bDebug=False):
 
     lenList = len(rgCs_toMod)
 
-    if removeShortCrvsInList(rgCs_toMod, tolerance=1e-6):
+    if removeShortCrvsInList(rgCs_toMod, tolerance=1e-5):
         bModified = True
         lenList = len(rgCs_toMod)
-    if removeShortSegmentsInEachCrv_inList(rgCs_toMod, tolerance=1e-6):
+    if removeShortSegmentsInEachCrv_inList(rgCs_toMod, tolerance=1e-5):
         bModified = True
         if bDebug: print("Short segments removed before exploding polycurves.")
     if explodePolyCrvsInList(rgCs_toMod):
@@ -1218,7 +1220,7 @@ def joinCurves(rgCs_In, tolerance, bDebug=False):
             if iCt_EndsProcessed == 2:
                 break # for loop to next joint.
 
-    return list(rg.Curve.JoinCurves(rgCrvs_toJoin, joinTolerance=1e-6))
+    return list(rg.Curve.JoinCurves(rgCrvs_toJoin, joinTolerance=1e-5))
 
 
 def projectCurve_NotLoose(rgC_In, rgBs_1Face, rgPlanes, vectDir, **kwargs):
@@ -1435,6 +1437,7 @@ def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
             if bDeleteInput:
                 sc.doc.Objects.Delete(item=rdObj_In)
 
+            continue
 
         if rdObj_In.ObjectType not in (rd.ObjectType.Curve, rd.ObjectType.Brep):
             raise Exception("{} is not allowed as input to project.".format(rdObj_In.GetType().Name))
@@ -1494,7 +1497,7 @@ def processDocObjects(rhObjs_toProj, rhBreps, vect, **kwargs):
         if not rgCs_Res_perC_In:
             continue
 
-        if bJoinPerInputCrv:
+        if bJoinPerInputCrv and len(rgCs_Res_perC_In) > 1:
             rgCs_Out = joinCurves(
                 rgCs_Res_perC_In,
                 tolerance=fTol_MinLength,
@@ -1569,9 +1572,10 @@ def getDirectionVector(iDirection):
 def main():
     
     objrefs_Crvs_Pts = getInput(
-        [],
-        "Select curves and points to project",
-        rd.ObjectType.Curve | rd.ObjectType.Point)
+        rdObjs_toHighlight=[],
+        sPrompt="Select curves and points to project",
+        rdGeomFilter = (rd.ObjectType.Curve | rd.ObjectType.Point),
+        )
     if objrefs_Crvs_Pts is None: return
 
     #bProjectCrvSegs = Opts.values['bProjectCrvSegs']
@@ -1596,9 +1600,10 @@ def main():
     print("Now, select breps and faces ...")
 
     objrefs_Breps = getInput(
-        rdCrvs_toHighlight,
-        "Select surfaces and polysurfaces to project onto",
-        rd.ObjectType.Brep)
+        rdObjs_toHighlight=rdCrvs_toHighlight,
+        sPrompt="Select surfaces and polysurfaces to project onto",
+        rdGeomFilter=rd.ObjectType.Brep,
+        )
     if objrefs_Breps is None: return
 
     # Determine vector before main routine.

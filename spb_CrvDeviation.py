@@ -1,18 +1,21 @@
 """
-This script is an alternative to _CrvDeviation.
+This script is an alternative to _CrvDeviation and
+RhinoCommon's Curve.GetDistancesBetweenCurves; it is used by other scripts.
 
-'0' for LwrLimit, UprLimit, or MaxMinDistToRegard will disable the option.
+Example of erroneous results from Curve.GetDistancesBetweenCurves:
+https://discourse.mcneel.com/t/function-of-curve-getdistancesbetweencurves-tolerance-parameter/190553
 
-MaxMinDistToRegard is the lowest value, over which the distances will be ignored.
+Setting LwrLimit, UprLimit, or MaxDistToRegard to 0 will disable that option.
+
+MaxDistToRegard is the lowest value, over which the distances will be ignored.
 
 
 Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums, https://discourse.mcneel.com/
 """
 
+#! python 2  Must be on a line number less than 32.
 from __future__ import absolute_import, division, print_function, unicode_literals
-
-#! python 2
 
 """
 170927: Created.
@@ -25,6 +28,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
             Add display conduit similar to _CrvDeviation for when Mode=Abs.
             Trialing a UX different than _CrvDeviation for when Mode=Abs,
             that gives the user the option to skip leaving marks.
+241212: Updated notes, comments, and some option default values.
 
 TODO:
     Clean code in spb_GDBCs_1Way that eliminates false positives at curve ends.
@@ -61,7 +65,7 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fLocAlongCrvTol'; keys.append(key)
-    values[key] = sc.doc.ModelAbsoluteTolerance
+    values[key] = 10.0 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
     # Using ModelUnitSystem in case sc.doc.Name is None.
     stickyKeys[key] = '{}({})({})({})'.format(key, __file__, sc.doc.Name, sc.doc.ModelUnitSystem)
@@ -565,7 +569,7 @@ def isMaxClosestDistBtwn2CrvsWithinTol(rgCrv_A, rgCrv_B, tolerance):
     return max(fDevs)
 
 
-def spb_GDBCs_1Way(curve_TestPts, curve_ClosestPt, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False):
+def spb_GDBC_1Way(curve_TestPts, curve_ClosestPt, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False):
     """
     Alternative to Curve.GetDistancesBetweenCurves for more accuracy.
 
@@ -586,7 +590,8 @@ def spb_GDBCs_1Way(curve_TestPts, curve_ClosestPt, fLocAlongCrvTol, bOnlyPerp=Tr
             float: minDistanceParameterB
     """
 
-    segmentLength = 1000.0 * fLocAlongCrvTol
+    # Segment lengths for the first iteration of distances to check.
+    segmentLength = 1000.0 * min((fLocAlongCrvTol, sc.doc.ModelAbsoluteTolerance))
 
     if bDebug:
         sEval = "curve_TestPts.Domain.T0"; print(sEval, '=', eval(sEval))
@@ -768,7 +773,7 @@ def spb_GDBCs_1Way(curve_TestPts, curve_ClosestPt, fLocAlongCrvTol, bOnlyPerp=Tr
 
             segmentLength *= 0.1
 
-            if segmentLength < (fLocAlongCrvTol - 1e-6):
+            if segmentLength < (fLocAlongCrvTol - 1e-7):
                 break
 
             if bDebug: sEval = "segmentLength"; print(sEval, '=', eval(sEval))
@@ -909,10 +914,11 @@ def spb_GDBCs_1Way(curve_TestPts, curve_ClosestPt, fLocAlongCrvTol, bOnlyPerp=Tr
         )
 
 
-def spb_GDBCs_BothWays(curveA, curveB, fLocAlongCrvTol=None, bOnlyPerp=True, bDebug=False):
+def spb_GDBC_BothWays(curveA, curveB, fLocAlongCrvTol=None, bOnlyPerp=True, bDebug=False):
     """
     Alternative to Curve.GetDistancesBetweenCurves for more accurate results when
     curves contain loops, etc.
+    'BothWays" refers to checking test points on one curve against the other curve and vice versa.
     Returns:
         The same as Curve.GetDistancesBetweenCurves:
             bool: success
@@ -930,7 +936,7 @@ def spb_GDBCs_BothWays(curveA, curveB, fLocAlongCrvTol=None, bOnlyPerp=True, bDe
     if bDebug: sEval = "fLocAlongCrvTol"; print(sEval, '=', eval(sEval))
 
     Rhino.RhinoApp.Wait()
-    rc = spb_GDBCs_1Way(
+    rc = spb_GDBC_1Way(
         curve_TestPts=curveA,
         curve_ClosestPt=curveB,
         fLocAlongCrvTol=fLocAlongCrvTol,
@@ -950,7 +956,7 @@ def spb_GDBCs_BothWays(curveA, curveB, fLocAlongCrvTol=None, bOnlyPerp=True, bDe
     Rhino.RhinoApp.Wait()
 
     # Notice that curveA and curveB are reversed.
-    rc = spb_GDBCs_1Way(
+    rc = spb_GDBC_1Way(
         curve_TestPts=curveB,
         curve_ClosestPt=curveA,
         fLocAlongCrvTol=fLocAlongCrvTol,
@@ -1136,7 +1142,7 @@ def getDevsBtwn2Sets(rgCrvs_SetA, rgCrvs_SetB, **kwargs):
         for i_cB, cB in enumerate(rgCs_B):
             sc.escape_test()
 
-            rc = spb_GDBCs_BothWays(
+            rc = spb_GDBC_BothWays(
                 cA,
                 cB,
                 fLocAlongCrvTol=fLocAlongCrvTol,

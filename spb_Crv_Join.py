@@ -19,7 +19,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 180316: Added support for brep edge curves.
 ...
 190513: Fixed bug where breps of selected edges were being joined.
-250109: Reenabled the RhinoCommon method.
+250109-10: Reenabled the RhinoCommon method.
         Disabled support for BrepEdges until script is working properly for just wires.
         Refactored.
 
@@ -55,7 +55,7 @@ class Opts():
 
 
     key = 'fJoinTol'; keys.append(key)
-    values[key] = max((1.8 * sc.doc.ModelAbsoluteTolerance, 1e-6))
+    values[key] = max((0.1 * sc.doc.ModelAbsoluteTolerance, 1e-6)) # Default in _Join is 1.8 * sc.doc.ModelAbsoluteTolerance.
     names[key] = 'Tolerance'
     riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
@@ -166,7 +166,7 @@ def _isCurveJoinable(rdCrv):
     return not rgC.IsClosed
 
 
-def getAllNormalJoinableWires():
+def _getAllNormalJoinableWires():
     oes = rd.ObjectEnumeratorSettings()
     oes.LockedObjects = False # Default is True.
     oes.ObjectTypeFilter = rd.ObjectType.Curve
@@ -255,7 +255,7 @@ def getInput():
 
         if res == ri.GetResult.Nothing:
             go.Dispose()
-            return getAllNormalJoinableWires()
+            return _getAllNormalJoinableWires()
 
         if res == ri.GetResult.Object:
             if go.ObjectCount < 2:
@@ -330,38 +330,12 @@ def join_Curve_RhinoCommon(rgCrvs_In, fJoinTol=None, bSimpleJoin=False, bDebug=F
     if fJoinTol is None:
         fJoinTol = 1.8 * sc.doc.ModelAbsoluteTolerance # The same as _Join for curves (per Rhino 8.14).
 
-    #rgCs_Res = rg.Curve.JoinCurves(
-    #    rgCrvs_In,
-    #    joinTolerance=fJoinTol)
-    # Also returns non-joined curves.
-
-    #for rgC_Res in rgCs_Res:
-    #    sc.doc.Objects.AddCurve(rgC_Res)
-    #sc.doc.Views.Redraw()
-    #return
-
-
-    #if len(rgCs_Res) == len(rgCrvs_In):
-    #    for _ in rgCs_Res: _.Dispose()
-    #    return None, "No curves were joined in set."
-
-    #if len(rgCs_Res) == 1:
-    #    return rgCs_Res
-
-    #rgCs_Out =[]
-    #for rgC in rgCs_Res:
-    #    if isinstance(rgC, (rg.ArcCurve, rg.LineCurve)):
-    #        rgC.Dispose()
-
-    #    rgCs_Out.append(rgC)
-
-    #return rgCs_Out, None
-
     rgCs_Joined, idxs_Out_per_In = rg.Curve.JoinCurves(
         rgCrvs_In,
         joinTolerance=fJoinTol,
         preserveDirection=False,
         simpleJoin=bSimpleJoin)
+
     #sEval = "len(rgCs_Joined)"; print(sEval, '=', eval(sEval))
     #sEval = "max(idxs_Out_per_In) + 1"; print(sEval, '=', eval(sEval))
     #sEval = "idxs_Out_per_In"; print(sEval, '=', eval(sEval))
@@ -430,146 +404,6 @@ def join_Cmd(gCrvs0, fJoinTol=None, bEcho=False, bDebug=False):
     sc.doc.Objects.UnselectAll()
 
 
-def joinByColor(gCrvs0, bUseUiJoinCmd, fJoinTol, bEcho=False, bDebug=False):
-    
-    gCrvs_ToJoin_Remaining = gCrvs0[:]
-    
-    rgCrvs1_All = []
-    
-    sc.doc.Objects.UnselectAll()
-    
-    while len(gCrvs_ToJoin_Remaining) > 0:
-        sc.escape_test(False)
-        
-        colorToJoin = rs.ObjectColor(gCrvs_ToJoin_Remaining[0])
-        
-        gCrvs_ToJoin_Next = [g for g in gCrvs_ToJoin_Remaining
-                if rs.ObjectColor(g) == colorToJoin]
-        
-        nToJoinCt = len(gCrvs_ToJoin_Next)
-        
-        if nToJoinCt == 0:
-            print("Error!  Next curves to join not found.  Command stopped.")
-            return
-        
-        if bDebug:
-            print('-'*60 + "\n{}:".format(colorToJoin))
-        
-        if nToJoinCt == 1:
-            print("Only 1 curve. Join skipped.")
-            gCrvs_ToJoin_Remaining.remove(gCrvs_ToJoin_Next[0])
-            continue
-        
-        if bUseUiJoinCmd:
-            if rs.SelectObjects(gCrvs_ToJoin_Next) == 0:
-                print("Error!  Crvs should be selected.  Command stopped.")
-                return
-            
-            fModelTol_Start = sc.doc.ModelAbsoluteTolerance
-            fModelTol_ForJoin = sc.doc.ModelAbsoluteTolerance = fJoinTol / 1.8
-            if bDebug:
-                print("ModelAbsoluteTolerance changed from {:.15f} to {:.15f}" \
-                      " to use {:.15f} ({:.15f} / 1.8) join tolerance.".format(
-                        fModelTol_Start,
-                        sc.doc.ModelAbsoluteTolerance,
-                        fJoinTol,
-                        fJoinTol))
-            
-            rs.Command("_Join", bEcho)
-            
-            sc.doc.ModelAbsoluteTolerance = fModelTol_Start
-            if bDebug:
-                print("ModelAbsoluteTolerance changed from {:.15f} to {:.15f}.".format(
-                        fModelTol_ForJoin,
-                        sc.doc.ModelAbsoluteTolerance))
-            
-            sc.doc.Objects.UnselectAll()
-        
-        else:
-            rgCrvs1 = join_Curve_RhinoCommon(gCrvs_ToJoin_Next, fJoinTol)
-            if rgCrvs1:
-                rgCrvs1_All.extend(rgCrvs1)
-        
-        # Remove objects joined from gCrvs_ToJoin_Remaining.
-        for g in gCrvs_ToJoin_Next:
-            gCrvs_ToJoin_Remaining.remove(g)
-    
-    if not bUseUiJoinCmd: return rgCrvs1_All
-
-
-def joinByLayer(gCrvs0, bByColor, bUseUiJoinCmd, fJoinTol, bEcho=False, bDebug=False):
-    
-    gCrvs_ToJoin_Remaining = gCrvs0[:]
-    
-    rgCrvs1_All = []
-    
-    sc.doc.Objects.UnselectAll()
-    
-    while len(gCrvs_ToJoin_Remaining) > 0:
-        sc.escape_test(False)
-        
-        layer_ToJoin = rs.ObjectLayer(gCrvs_ToJoin_Remaining[0])
-        
-        gCrvs_ToJoin_SameLayer = [g for g in gCrvs_ToJoin_Remaining
-                if rs.ObjectLayer(g) == layer_ToJoin]
-        
-        nToJoinCt = len(gCrvs_ToJoin_SameLayer)
-        
-        if nToJoinCt == 0:
-            print("Error!  Next curves to join not found.  Command stopped.")
-            return
-        
-        if bDebug:
-            print('-'*60 + "\n{}:".format(layer_ToJoin))
-        
-        if nToJoinCt == 1:
-            if bDebug:
-                print("Only 1 curve.  Join skipped.")
-            gCrvs_ToJoin_Remaining.remove(gCrvs_ToJoin_SameLayer[0])
-            continue
-        
-        if bUseUiJoinCmd:
-            if bByColor:
-                joinByColor(gCrvs_ToJoin_SameLayer, bUseUiJoinCmd, fJoinTol, bEcho, bDebug)
-            else:
-                if rs.SelectObjects(gCrvs_ToJoin_SameLayer) == 0:
-                    print("Error!  Crvs should be selected.  Command stopped.")
-                    return
-                
-                fModelTol_Start = sc.doc.ModelAbsoluteTolerance
-                fModelTol_ForJoin = sc.doc.ModelAbsoluteTolerance = fJoinTol / 1.8
-                if bDebug:
-                    print("ModelAbsoluteTolerance changed from {:.15f} to {:.15f}" \
-                          " to use {:.15f} ({:.15f} / 1.8) join tolerance.".format(
-                            fModelTol_Start,
-                            sc.doc.ModelAbsoluteTolerance,
-                            fJoinTol,
-                            fJoinTol))
-                
-                rs.Command("_Join", bEcho)
-                
-                sc.doc.ModelAbsoluteTolerance = fModelTol_Start
-                if bDebug:
-                    print("\nModelAbsoluteTolerance changed from {:.15f} to {:.15f}.".format(
-                            fModelTol_ForJoin,
-                            sc.doc.ModelAbsoluteTolerance))
-                
-                sc.doc.Objects.UnselectAll()
-        
-        else:
-            if bByColor:
-                rgCrvs1 = joinByColor(gCrvs_ToJoin_SameLayer, bUseUiJoinCmd, fJoinTol, bEcho, bDebug)
-            else:
-                rgCrvs1 = join_Curve_RhinoCommon(gCrvs_ToJoin_SameLayer, fJoinTol)
-            if rgCrvs1:
-                rgCrvs1_All.extend(rgCrvs1)
-        
-        # Remove objects joined from gCrvs_ToJoin_Remaining.
-        for g in gCrvs_ToJoin_SameLayer: gCrvs_ToJoin_Remaining.remove(g)
-    
-    if not bUseUiJoinCmd: return rgCrvs1_All
-
-
 def _getCurveObjects(rhCrvs):
     if all((isinstance(rhC, rd.CurveObject) for rhC in rhCrvs)): return rhCrvs
 
@@ -579,7 +413,6 @@ def _getCurveObjects(rhCrvs):
             rdCs_In.append(rhC)
         else:
             rdC = rs.coercerhinoobject(rhC)
-            print(rdC.ObjectType)
             if rdC.ObjectType != rd.ObjectType.Curve:
                 raise Exception("{} passed to separateInputIntoJoiningSets.".format(
                     rdC.GetType().Name))
@@ -587,7 +420,7 @@ def _getCurveObjects(rhCrvs):
     return rdCs_In
 
 
-def _separateInputIntoJoiningSets(rhCrvs, bByLayer=True, bByColor=True):
+def _separateInputIntoJoiningSets(rhCrvs, bByLayer=True, bByColor=True, bDebug=False):
 
     rdCs_In = _getCurveObjects(rhCrvs)
 
@@ -622,9 +455,13 @@ def _separateInputIntoJoiningSets(rhCrvs, bByLayer=True, bByColor=True):
                 rdCs_Per_to_join[idx_Match].append(rdC)
             else:
                 raise Exception("Multiple layer and color matches.")
-        print(sLayers)
-        print(colors)
+
+        if bDebug:
+            sEval = "sLayers"; print(sEval, '=', eval(sEval))
+            sEval = "colors"; print(sEval, '=', eval(sEval))
+
         return rdCs_Per_to_join
+
 
     if bByLayer:
         rdCs_Per_to_join = [] # Nested 1-level.
@@ -637,8 +474,11 @@ def _separateInputIntoJoiningSets(rhCrvs, bByLayer=True, bByColor=True):
             else:
                 rdCs_Per_to_join.append([rdC])
                 sLayers.append(sLayer)
-        print(sLayers)
+
+        if bDebug: sEval = "sLayers"; print(sEval, '=', eval(sEval))
+
         return rdCs_Per_to_join
+
 
     if bByColor:
         rdCs_Per_to_join = [] # Nested 1-level.
@@ -653,24 +493,17 @@ def _separateInputIntoJoiningSets(rhCrvs, bByLayer=True, bByColor=True):
             else:
                 rdCs_Per_to_join.append([rdC])
                 colors.append(color)
-        print(colors)
+
+        if bDebug: sEval = "colors"; print(sEval, '=', eval(sEval))
+
         return rdCs_Per_to_join
 
-        #if bByLayer or bByColor:
-        #    #attr = rdC.Attributes
-        #attr.LayerIndex
-        #    pass
+    raise Exception("What happened?")
 
 
 def join_CurveObjects(rhCrvs_In, bByLayer=True, bByColor=True, bUseUiJoinCmd=False, bSimpleJoin=False, fJoinTol=None, bEcho=False, bDebug=False):
 
     rdCrvs_Separated = _separateInputIntoJoiningSets(rhCrvs_In, bByLayer, bByColor)
-
-    #if bByLayer:
-    #    return joinByLayer(rhCrvs_In, bByColor, bUseUiJoinCmd, fJoinTol, bEcho, bDebug)
-    #elif bByColor:
-    #    return joinByColor(rhCrvs_In, bUseUiJoinCmd, fJoinTol, bEcho, bDebug)
-    #elif bUseUiJoinCmd:
 
     gCs_Out = []
     iCt_gCs_Closed = 0
@@ -694,6 +527,11 @@ def join_CurveObjects(rhCrvs_In, bByLayer=True, bByColor=True, bUseUiJoinCmd=Fal
                 continue
 
             rgCs_Joined, idxs_rgCrvs_perSet, sLog = rvs
+
+            if not rgCs_Joined:
+                if bDebug and sLog:
+                    print(sLog)
+                continue
 
 
             for idx_Joined, rgC_Joined in enumerate(rgCs_Joined):

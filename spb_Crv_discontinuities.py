@@ -3,6 +3,32 @@ This script does not use Curve.GetNextDiscontinuity.
 This is mainly because the offered tolerance type for G2-discontinuity
 is not satifactory to the script author's own design work.
 
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums, https://discourse.mcneel.com/
+
+"""
+
+#! python 2  Must be on a line number less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
+180905-10: Created.
+...
+220320: Finished implementing my own discontinuity evaluation instead of Curve.GetNextDiscontinuity.
+        G2 now shares the angle tolerance with G1.
+        The absolute radius difference is now evaluated as the other component for G2.
+220401: Now checks whether both sides are tiny, and if so, passes G2 continuity.
+220717: Now, closed, but not periodic, curves are checked at start/end.
+220913: Now, modified option display.
+221027: Bug fix in output of edge curve split.
+230407: Modified behavior when tolerance command options are modified.
+230505: Numeric option input is now more robust.
+230818: Now, options can be set when curves are preselected.
+240106: Bug fix.
+240107: Changed input for G2 check from radius delta to
+        curvature relative delta (per cent) and curvature vector delta.
+250113: Added printed output of the quantity of curves from split.
+        Added printed feedback comparing SPB's routine vs. GetNextDiscontinuity(non-overloaded).
 
 At no angular difference, control point distance tolerance is about 1e-8.
 At no control point distance difference, angular tolerance is about 2.0e-8 radians.
@@ -26,26 +52,6 @@ In comparison, CATIA uses defaults of:
     G1: 0.01 degree
     G2: 0.02 for ratio of curvature |C1 -  C2| / max(C1, C2)  (Is the angle between the curvature vectors not considered?)
 http://catiadoc.free.fr/online/cfyugfss_C2/cfyugfssut_implicitmode_0311.htm
-"""
-
-from __future__ import absolute_import, division, print_function, unicode_literals
-
-"""
-180905-10: Created.
-...
-220320: Finished implementing my own discontinuity evaluation instead of Curve.GetNextDiscontinuity.
-        G2 now shares the angle tolerance with G1.
-        The absolute radius difference is now evaluated as the other component for G2.
-220401: Now checks whether both sides are tiny, and if so, passes G2 continuity.
-220717: Now, closed, but not periodic, curves are checked at start/end.
-220913: Now, modified option display.
-221027: Bug fix in output of edge curve split.
-230407: Modified behavior when tolerance command options are modified.
-230505: Numeric option input is now more robust.
-230818: Now, options can be set when curves are preselected.
-240106: Bug fix.
-240107: Changed input for G2 check from radius delta to
-        curvature relative delta (per cent) and curvature vector delta.
 """
 
 import Rhino
@@ -183,7 +189,7 @@ class Opts():
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-def getPreselected(objectType=rd.ObjectType.Curve):
+def _getPreselected(objectType=rd.ObjectType.Curve):
     gObjs_Preselected = [rdObj.Id for rdObj in sc.doc.Objects.GetSelectedObjects(includeLights=False, includeGrips=False)]
     if gObjs_Preselected:
         gCrvs_Preselected = []
@@ -277,7 +283,7 @@ def getInput():
                 break
 
 
-def createSpanCurvesEachSideOfParameter(rgCrv0, t):
+def _createSpanCurvesEachSideOfParameter(rgCrv0, t):
 
     ts_SpanDomainEnds = [rgCrv0.SpanDomain(i).T1 for i in xrange(rgCrv0.SpanCount)]
 
@@ -295,7 +301,48 @@ def createSpanCurvesEachSideOfParameter(rgCrv0, t):
     return crv_Below, crv_Above
 
 
-def getDiscontinuities_OLD(rgCrv0, sContinuity, fG1AngleTol_Deg, fRadiusTol=None, bDebug=False):
+def getDiscontinuities_using_GetNextDiscontinuity_method_simple(rgCrv, sContinuity, bDebug=False):
+    """
+    Parameters:
+        rgCrv0: 
+        sContinuity: str = 'G1', 'G2', 'C1', or 'C2'
+    Returns: list(float(parameters of discontinuities))
+    """
+
+    t0 = rgCrv.Domain.Min
+    t1 = rgCrv.Domain.Max
+    
+    if sContinuity not in ('G1', 'G2', 'C1', 'C2'):
+        print("Continuity type, {}, not supported.".format(sContinuity))
+    
+    if rgCrv.IsClosed:
+        if sContinuity == 'G1' or sContinuity == 'C1':
+            continuityType = rg.Continuity.C1_locus_continuous
+        elif sContinuity == 'G2':
+            continuityType = rg.Continuity.G2_locus_continuous
+        elif sContinuity == 'C2':
+            continuityType = rg.Continuity.C2_locus_continuous
+    else:
+        if sContinuity == 'G1' or sContinuity == 'C1':
+            continuityType = rg.Continuity.C1_continuous
+        elif sContinuity == 'G2':
+            continuityType = rg.Continuity.G2_continuous
+        elif sContinuity == 'C2':
+            continuityType = rg.Continuity.C2_continuous
+
+    ts = []
+
+    while True:
+        sc.escape_test()
+        bSuccess, t = rgCrv.GetNextDiscontinuity(continuityType, t0, t1)
+        if not bSuccess:
+            return ts
+
+        ts.append(t)
+        t0 = t # Advance to the next parameter.
+
+
+def getDiscontinuities_RC_method(rgCrv0, sContinuity, fG1AngleTol_Deg, fRadiusTol=None, bDebug=False):
     """
     Returns: list(float(parameters of discontinuities))
     """
@@ -306,7 +353,7 @@ def getDiscontinuities_OLD(rgCrv0, sContinuity, fG1AngleTol_Deg, fRadiusTol=None
     t0 = rgCrv0.Domain.Min
     t1 = rgCrv0.Domain.Max
     
-    if sContinuity not in sContinuities:
+    if sContinuity not in ('G1', 'G2', 'C1', 'C2'):
         print("Continuity type, {}, not supported.".format(sContinuity))
     
     if rgCrv0.IsClosed:
@@ -332,7 +379,7 @@ def getDiscontinuities_OLD(rgCrv0, sContinuity, fG1AngleTol_Deg, fRadiusTol=None
         get_next, t = rgCrv0.GetNextDiscontinuity(continuityType, t0, t1)
         if get_next:
             
-            rc = createSpanCurvesEachSideOfParameter(rgCrv0, t)
+            rc = _createSpanCurvesEachSideOfParameter(rgCrv0, t)
             if not rc: return []
             
             rgCrv_SingleSpan_Below, rgCrv_SingleSpan_Above = rc
@@ -432,7 +479,7 @@ def continuityVectorsAt(nc, t, side=rg.CurveEvaluationSide.Default):
     return vs[0], vTangency, vCurvature, vG3_Condition
 
 
-def getDiscontinuities(rgCrv_In, bG2_NotG1, fG1AngleTol_Deg, fG2AngleTol_Deg, fCrvDelta, bDebug=False):
+def getDiscontinuities_SPB(rgCrv_In, bG2_NotG1, fG1AngleTol_Deg, fG2AngleTol_Deg, fCrvDelta, bDebug=False):
     """
     Parameters:
         fCrvDelta: Percentage of relative difference in curvature: 100.0 * abs(k0-k1)/max(k0, k1)
@@ -781,7 +828,7 @@ def processCurves(curvesAndEdges0, **kwargs):
             if bEcho: print("Not CurveObject or BrepEdge.")
             continue
     
-        ts_discontinuities = getDiscontinuities(
+        ts_discontinuities = getDiscontinuities_SPB(
                 rgCrv_In=rgCrv_In,
                 bG2_NotG1=bG2_NotG1,
                 fG1AngleTol_Deg=fG1AngleTol_Deg,
@@ -795,6 +842,19 @@ def processCurves(curvesAndEdges0, **kwargs):
                 gCrvs_with_discont.append(gCrv_In)
             else:
                 i_Edges_with_discont_ct += 1
+
+
+        ts_discontinuities_RC_method = getDiscontinuities_using_GetNextDiscontinuity_method_simple(
+             rgCrv=rgCrv_In,
+             sContinuity='G2',
+             bDebug=bDebug)
+        if len(ts_discontinuities_RC_method) == len(ts_discontinuities):
+            print("Curve.GetNextDiscontinuity found the same number of discontinuities.")
+        else:
+            print("Discontinuity counts are different between Curve.GetNextDiscontinuity(non-overload):{} vs SPB:{}".format(
+                len(ts_discontinuities_RC_method),
+                len(ts_discontinuities)))
+
 
         # Testing.
         #for t in ts_discontinuities:
@@ -847,6 +907,10 @@ def processCurves(curvesAndEdges0, **kwargs):
                 if gCrvs_with_discont: s += ","
                 s += ", {} edges(s)".format(len(i_Edges_with_discont_ct))
             s += "."
+
+            if gCrvs_Split:
+                s += " Input was split into {} curves.".format(len(gCrvs_Split))
+
             print(s)
         else:
             print("No {} discontinuities found.".format(sContinuity))
@@ -860,7 +924,7 @@ def processCurves(curvesAndEdges0, **kwargs):
 
 def main():
     
-    gCrvs0_Preselected = getPreselected(objectType=rd.ObjectType.Curve)
+    gCrvs0_Preselected = _getPreselected(objectType=rd.ObjectType.Curve)
     
     objrefs = getInput()
     if objrefs is None: return

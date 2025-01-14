@@ -15,7 +15,11 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 """
 250106-07: Created.
-250112: Added routine to support curves that already overlap. Refactored.
+250112-13: Added routine to support curves that already overlap. Refactored.
+
+TODO:
+    Add routine to lengthen each curve when length to PlaneSurface fails for both curves.
+    Add coincident tolerance, e.g., max((0.1*sc.ModelDistanceTolerance, 1e-4))
 
 Typically, do not use
 Curve Extend(CurveEnd side, CurveExtensionStyle style, Point3d endPoint)
@@ -167,20 +171,39 @@ def _formatDistance(fDistance, iPrecision=6):
     return "{:.{}g}".format(fDistance, iPrecision)
 
 
+def _createWorkingHalf(rgC_In, curveEnd):
+
+    t_MidLength = rgC_In.DivideByCount(segmentCount=2, includeEnds=False)[0]
+
+    return rgC_In.Trim(
+        rgC_In.Domain.T0 if curveEnd==rg.CurveEnd.Start else t_MidLength,
+        t_MidLength if curveEnd==rg.CurveEnd.Start else rgC_In.Domain.T1)
+
+
 def _createWorkingSegment(rgC_In, curveEnd):
-    seg = rgC_In.Duplicate()
-    if isinstance(seg, rg.PolyCurve):
-        seg.RemoveNesting()
-        idx_Seg = seg.SegmentCount-1 if curveEnd==rg.CurveEnd.End else 0
-        seg = seg.SegmentCurve(idx_Seg) # Shouldn't be a PolyCurve.
+    if isinstance(rgC_In, (rg.ArcCurve, rg.LineCurve)):
+        return rgC_In.Duplicate()
+
+    if isinstance(rgC_In, rg.PolyCurve):
+        pc_WIP = rgC_In.Duplicate()
+        pc_WIP.RemoveNesting()
+        idx_Seg = pc_WIP.SegmentCount-1 if curveEnd==rg.CurveEnd.End else 0
+        seg = pc_WIP.SegmentCurve(idx_Seg) # Shouldn't be a PolyCurve.
         if isinstance(seg, rg.PolyCurve):
             raise Exception("Shouldn't be a PolyCurve.")
         #sEval = "rgC_WIP.GetType().Name"; print(sEval,'=', eval(sEval))
-    if isinstance(seg, rg.NurbsCurve):
+        if isinstance(seg, (rg.ArcCurve, rg.LineCurve)):
+            return seg
+
+    if isinstance(rgC_In, rg.PolylineCurve):
+        return rgC_In.DuplicateSegments()[-1]
+
+    if isinstance(rgC_In, rg.NurbsCurve):
         if seg.SpanCount > 1:
             idx_Span = seg.SpanCount-1 if curveEnd==rg.CurveEnd.End else 0
             domain = seg.SpanDomain(idx_Span)
             seg = seg.Trim(domain)
+
     return seg
 
 
@@ -263,7 +286,8 @@ def processCurves(rgCrvs_In, curveEnds, tolerance=1e-6, bDebug=False):
     rgCs_WIP = [None, None]
 
     for i in 0,1:
-        rgCs_WIP[i] = _createWorkingSegment(rgCs_In[i], curveEnds[i])
+        #rgCs_WIP[i] = _createWorkingSegment(rgCs_In[i], curveEnds[i])
+        rgCs_WIP[i] = _createWorkingHalf(rgCs_In[i], curveEnds[i])
         #sc.doc.Objects.AddCurve(rgCs_WIP[i])
 
 
@@ -308,8 +332,11 @@ def processCurves(rgCrvs_In, curveEnds, tolerance=1e-6, bDebug=False):
             style=rg.CurveExtensionStyle.Smooth,
             geometry=(ps,))
         #sc.doc.Objects.AddCurve(rgC_WIP_Extnsn)
-        #sEval = "rgC_WIP_Extnsn"; print(sEval,'=', eval(sEval))
+        sEval = "rgC_WIP_Extnsn"; print(sEval,'=', eval(sEval))
         rgCs_Extnsn[i] = rgC_WIP_Extnsn
+
+    if not any(rgCs_Extnsn):
+        print("Neither curve was extended. TODO: Create new routine for this condition, e.g., measure from end to opposite curve and Curve.Extend by a multiple of that distance.")
 
     pts = [None, None]
 
@@ -428,7 +455,9 @@ def _curveEnd_closestToPick(objref_Crv):
     if not bSuccess:
         return
 
-    return rg.CurveEnd.End if t >= rgCrv.Domain.Mid else rg.CurveEnd.Start
+    t_MidLength = rgCrv.DivideByCount(segmentCount=2, includeEnds=False)[0]
+
+    return rg.CurveEnd.End if t >= t_MidLength else rg.CurveEnd.Start
 
 
 def main():

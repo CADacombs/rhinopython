@@ -16,9 +16,9 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 """
 250106-07: Created.
 250112-13: Added routine to support curves that already overlap. Refactored.
+250114: Added routine to lengthen each curve when length to PlaneSurface fails for both curves.
 
 TODO:
-    Add routine to lengthen each curve when length to PlaneSurface fails for both curves.
     Add coincident tolerance, e.g., max((0.1*sc.ModelDistanceTolerance, 1e-4))
 
 Typically, do not use
@@ -212,15 +212,31 @@ def _arePtsWithinTolerance(pts, tolerance=1e-6):
     return fDistBetweenEnd_and_ClosestPt <= tolerance
 
 
+def _pt_atWorkingEnd(rgCrv, curveEnd):
+    if curveEnd == rg.CurveEnd.Start:
+        return rgCrv.PointAtStart
+    if curveEnd == rg.CurveEnd.End:
+        return rgCrv.PointAtEnd
+    raise Exception("Wrong argument(s) passed to _pt_atWorkingEnd?")
+
+
+def _vector_atWorkingEnd(rgCrv, curveEnd):
+    if curveEnd == rg.CurveEnd.Start:
+        return rgCrv.TangentAtStart
+    if curveEnd == rg.CurveEnd.End:
+        return rgCrv.TangentAtEnd
+    raise Exception("Wrong argument(s) passed to _pt_atWorkingEnd?")
+
+
 def _distanceBetweenEnds(rgCrvs, curveEnds):
-    ptA = rgCrvs[0].PointAtEnd if curveEnds[0] == rg.CurveEnd.End else rgCrvs[0].PointAtStart
-    ptB = rgCrvs[1].PointAtEnd if curveEnds[1] == rg.CurveEnd.End else rgCrvs[1].PointAtStart
+    ptA = _pt_atWorkingEnd(rgCrvs[0], curveEnds[0])
+    ptB = _pt_atWorkingEnd(rgCrvs[1], curveEnds[1])
     return ptA.DistanceTo(ptB)
 
 
 def _isPtAtEndOfCrv(rgCrv, curveEnd, pt, tolerance=1e-6):
-    ptEnd = rgCrv.PointAtEnd if curveEnd == rg.CurveEnd.End else rgCrv.PointAtStart
-    return _arePtsWithinTolerance((pt, ptEnd), tolerance=tolerance)
+    pt_WorkingEnd = _pt_atWorkingEnd(rgCrv, curveEnd)
+    return _arePtsWithinTolerance((pt, pt_WorkingEnd), tolerance=tolerance)
 
 
 def _currentClosestPtParameters(rgCrvs, curveEnds, tolerance=1e-6):
@@ -258,6 +274,62 @@ def _trimCurveToParameter(rgCrv_In, curveEnd, t):
 
     if curveEnd == rg.CurveEnd.End:
         return rgCrv_In.Trim(rgCrv_In.Domain.T0, t)
+
+
+def _dist_pt_to_closestPt_on_Crv(pt, crv):
+    bSuccess, t = crv.ClosestPoint(pt)
+    if not bSuccess:
+        raise Exception("Closest point not found!")
+    pt_Closest = rg.Curve.PointAt(crv, t)
+    #sc.doc.Objects.AddPoint(pt_Closest)
+    return pt.DistanceTo(pt_Closest)
+
+
+def _extendByLength(rgCrv_toExtend, curveEnd_toExtend, rgCrv_Ref):
+    # Closest points between end of curve and opposite curve.
+    pt_End = _pt_atWorkingEnd(rgCrv_toExtend, curveEnd_toExtend)
+    #sc.doc.Objects.AddPoint(pt_End)
+
+    fDistFromCrvAEnd_toCrvB = _dist_pt_to_closestPt_on_Crv(pt_End, rgCrv_Ref)
+    sEval = "fDistFromCrvAEnd_toCrvB"; print(sEval,'=', eval(sEval))
+    #sEval = "curveEnd_toExtend"; print(sEval,'=', eval(sEval))
+
+
+    rgC_Extended = rg.Curve.Extend(
+        rgCrv_toExtend,
+        side=curveEnd_toExtend,
+        length=2.0*fDistFromCrvAEnd_toCrvB,
+        style=rg.CurveExtensionStyle.Smooth)
+
+    return rgC_Extended
+
+
+
+    #line = rg.Line(
+    #    start=pt_End,
+    #    span=fDistFromCrvAEnd_toCrvB*_vector_atWorkingEnd(rgCrv_toExtend, curveEnd_toExtend))
+    #lc = rg.LineCurve(line)
+    #sc.doc.Objects.AddCurve(lc)
+    #sc.doc.Views.Redraw(); 1/0
+
+    # Extend by line.
+    #rgC_LineExtended = rg.Curve.Extend(
+    #    rgCrv_toExtend,
+    #    side=curveEnd_toExtend,
+    #    length=2.0*fDistFromCrvAEnd_toCrvB,
+    #    style=rg.CurveExtensionStyle.Line)
+    #sc.doc.Objects.AddCurve(rgC_LineExtended)
+    #sc.doc.Views.Redraw(); 1/0
+
+    # Closest points with line and opposite curve.
+
+
+
+    # Use the distance between closest point on line to lengthen its origin curve. (1.5*distance)
+    # Return the curve.
+    #pass
+
+    pass # In Visual Studio, a non-comment below comments allows code folding.
 
 
 def processCurves(rgCrvs_In, curveEnds, tolerance=1e-6, bDebug=False):
@@ -316,7 +388,9 @@ def processCurves(rgCrvs_In, curveEnds, tolerance=1e-6, bDebug=False):
     fDistBetweenEnds_In = planes[0].Origin.DistanceTo(planes[1].Origin)
     sEval = "fDistBetweenEnds_In"; print(sEval,'=', eval(sEval))
 
-    rgCs_Extnsn = [None, None]
+    rgCs_PostExtend = [None, None]
+    # PostExtend just means after either or both have been extended.
+    # If not both, a duplicate of the working half of the original is used instead.
 
     for i in 0,1:
         curveEnd = curveEnds[i]
@@ -333,40 +407,49 @@ def processCurves(rgCrvs_In, curveEnds, tolerance=1e-6, bDebug=False):
             geometry=(ps,))
         #sc.doc.Objects.AddCurve(rgC_WIP_Extnsn)
         sEval = "rgC_WIP_Extnsn"; print(sEval,'=', eval(sEval))
-        rgCs_Extnsn[i] = rgC_WIP_Extnsn
+        rgCs_PostExtend[i] = rgC_WIP_Extnsn
 
-    if not any(rgCs_Extnsn):
-        print("Neither curve was extended. TODO: Create new routine for this condition, e.g., measure from end to opposite curve and Curve.Extend by a multiple of that distance.")
+
+    if not any(rgCs_PostExtend):
+        print("Neither curve was extended. WIP: Creating new routine for this condition, e.g., measure from end to opposite curve and Curve.Extend by a multiple of that distance.")
+
+    if not all(rgCs_PostExtend):
+        for i in 0,1:
+            if not rgCs_PostExtend[i]:
+                rgCs_PostExtend[i] = _extendByLength(rgCs_WIP[i], curveEnds[i], rgCs_WIP[(i+1)%2])
 
     pts = [None, None]
 
-    bSuccess, pts[0], pts[1] = rgCs_Extnsn[0].ClosestPoints(rgCs_Extnsn[1])
+    bSuccess, pts[0], pts[1] = rgCs_PostExtend[0].ClosestPoints(rgCs_PostExtend[1])
     if not bSuccess:
         return None, "Closest points not found."
 
     ts = [None, None]
 
     for i in 0,1:
-        bSuccess, t = rgCs_Extnsn[i].ClosestPoint(pts[i])
+        bSuccess, t = rgCs_PostExtend[i].ClosestPoint(pts[i])
         if bSuccess:
             ts[i] = t
 
-    for _ in rgCs_Extnsn: _.Dispose()
+    for _ in rgCs_PostExtend: _.Dispose()
 
     rgCs_Out = [None, None]
 
     for i in 0,1:
-        #sEval = "rgCs_In[i].Domain"; print(sEval,'=', eval(sEval))
-        domain_Ext = rg.Interval(rgCs_In[i].Domain)
-        #sEval = "ts[iC]"; print(sEval,'=', eval(sEval))
-        domain_Ext.Grow(ts[i])
-        #sEval = "domain_Ext"; print(sEval,'=', eval(sEval))
-        rgC_Final_Extnsn = rgCs_In[i].Extend(domain=domain_Ext)
-        #rgC_Final_Extnsn = rgCs_In[i].Extend(
-        #    side=curveEnds[iC],
-        #    style=rg.CurveExtensionStyle.Smooth,
-        #    endPoint=pts[iC])
-        rgCs_Out[i] = rgC_Final_Extnsn
+        if rgCs_In[i].Domain.IncludesParameter(ts[i]):
+            rgCs_Out[i] = _trimCurveToParameter(rgCs_In[i], curveEnds[i], ts[i])
+        else:
+            #sEval = "rgCs_In[i].Domain"; print(sEval,'=', eval(sEval))
+            domain_Ext = rg.Interval(rgCs_In[i].Domain)
+            #sEval = "ts[iC]"; print(sEval,'=', eval(sEval))
+            domain_Ext.Grow(ts[i])
+            #sEval = "domain_Ext"; print(sEval,'=', eval(sEval))
+            rgC_Final_Extnsn = rgCs_In[i].Extend(domain=domain_Ext)
+            #rgC_Final_Extnsn = rgCs_In[i].Extend(
+            #    side=curveEnds[iC],
+            #    style=rg.CurveExtensionStyle.Smooth,
+            #    endPoint=pts[iC])
+            rgCs_Out[i] = rgC_Final_Extnsn
 
 
     #sEval = "rvs"; print(sEval,'=', eval(sEval))

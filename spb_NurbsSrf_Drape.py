@@ -2,6 +2,9 @@
 This script is an alternative to _Drape. It uses Greville point locations for fitting to
 the target object and allows selection of a starting surface.
 
+Starting surface's control points' X and Y are maintained.
+Starting surface's Greville points are used for fitting analysis.
+
 Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums, https://discourse.mcneel.com/
 """
@@ -16,14 +19,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210730-0808: Reduced wavy output along elevation transitions of target.
 210808: Now, active CPlane's Z axis is used for drape direction.
 250115: Added support for meshes as objects over which to drape. Refactored.
-
-Starting surface's control points' X and Y are maintained.
-Starting surface's Greville points are used for measurement.
-
-WIP:
-    Fix bug for highest elevation in ...HighToLow function.
-    Add option to 'ledge' neighbors more than 1 point beyond target.
-    Add support for mesh targets.
+250116: Fixed bug for highest elevation in ...HighToLow function.
+        Replaced the command option for extrapolation from an int (count) to a bool. Refactored.
 """
 
 import Rhino
@@ -50,6 +47,11 @@ class Opts:
     listValues = {}
     stickyKeys = {}
 
+    key = 'fTolerance'; keys.append(key)
+    values[key] = 10.0 * sc.doc.ModelAbsoluteTolerance
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
     key = 'bFlipCPlane'; keys.append(key)
     values[key] = False
     names[key] = 'DrapeDir'
@@ -63,25 +65,36 @@ class Opts:
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fPointSpacing'; keys.append(key)
-    values[key] = 1.0
+    if sc.doc.ModelUnitSystem.Inches:
+        values[key] = 1.0
+    else:
+        values[key] = 25.0 * Rhino.RhinoMath.UnitScale(
+            Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'fTolerance'; keys.append(key)
-    values[key] = 1.0 * sc.doc.ModelAbsoluteTolerance
-    riOpts[key] = ri.Custom.OptionDouble(values[key])
-    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+    key = 'bDrapeAtMisses'; keys.append(key)
+    values[key] = True
+    names[key] = 'AtTargetPtMisses'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Fix', 'Drape')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iExtrapolationCt'; keys.append(key)
-    values[key] = 1
-    riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=0)
+    key = 'bExtrapolateMisses'; keys.append(key)
+    values[key] = True
+    names[key] = 'DrapeStyle'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'LowestTargetPt', 'Extrapolate')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bDeleteStartingSrf'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
+
     key = 'bDebug'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
@@ -138,9 +151,14 @@ class Opts:
                 cls.riOpts[key].CurrentValue = cls.values[key]
 
         if key == 'fTolerance':
-            if cls.riOpts[key].CurrentValue <= 0.0:
-                print("Invalid input for tolerance.")
-                cls.riOpts[key].CurrentValue = cls.values[key]
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.values[key] = cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
+                cls.values[key] = cls.riOpts[key].CurrentValue = Rhino.RhinoMath.ZeroTolerance
+            else:
+                cls.values[key] = cls.riOpts[key].CurrentValue
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+            return
 
         if key in cls.riOpts:
             cls.values[key] = cls.riOpts[key].CurrentValue
@@ -173,11 +191,15 @@ def getInput_ObjsToDrapeOver():
         def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
         addOption('bFlipCPlane')
+        addOption('fTolerance')
         addOption('bUserProvidesStartingSrf')
         if not Opts.values['bUserProvidesStartingSrf']:
             addOption('fPointSpacing')
-        addOption('fTolerance')
-        addOption('iExtrapolationCt')
+        addOption('bDrapeAtMisses')
+        if Opts.values['bDrapeAtMisses']:
+            addOption('bExtrapolateMisses')
+        if Opts.values['bUserProvidesStartingSrf']:
+            addOption('bDeleteStartingSrf')
         addOption('bEcho')
         addOption('bDebug')
 
@@ -189,28 +211,18 @@ def getInput_ObjsToDrapeOver():
 
         if res == ri.GetResult.Object:
             objrefs = go.Objects()
-            cPlane = go.View().ActiveViewport.ConstructionPlane()
-            if Opts.values['bFlipCPlane']:
-                cPlane.Flip()
             go.Dispose()
-            rdBreps = [rs.coercerhinoobject(o) for o in objrefs]
-            return (
-                rdBreps,
-                cPlane,
-                Opts.values['bUserProvidesStartingSrf'],
-                Opts.values['fPointSpacing'],
-                Opts.values['fTolerance'],
-                Opts.values['iExtrapolationCt'],
-                Opts.values['bEcho'],
-                Opts.values['bDebug']
-                )
+            #rdBreps = [rs.coercerhinoobject(o) for o in objrefs]
+            return objrefs
 
-        if not Opts.values['bUserProvidesStartingSrf']:
-            if res == ri.GetResult.Number:
-                key = 'fPointSpacing'
-                Opts.riOpts[key].CurrentValue = go.Number()
-                Opts.setValue(key)
+        if res == ri.GetResult.Number:
+            if Opts.values['bUserProvidesStartingSrf']:
+                print("Numeric input ignored.")
                 continue
+            key = 'fPointSpacing'
+            Opts.riOpts[key].CurrentValue = go.Number()
+            Opts.setValue(key)
+            continue
 
         # An option was selected.
         for key in idxs_Opt:
@@ -219,32 +231,20 @@ def getInput_ObjsToDrapeOver():
                 break
 
 
-def getInput_StartingSurface(rdObjs_toFit):
+def getInput_StartingSurface(gObjs_toDrapeOver):
     """
     Get Surface with optional input.
     """
 
-    sc.doc.Objects.UnselectAll()
-    sc.doc.Views.Redraw()
+    if sc.doc.Objects.SelectedObjectsExist(objectType=rd.ObjectType.AnyObject, checkSubObjects=True):
+        sc.doc.Objects.UnselectAll()
+        sc.doc.Views.Redraw()
 
     go = ri.Custom.GetObject()
     go.SetCommandPrompt("Select starting surface")
     go.GeometryFilter = rd.ObjectType.Surface
 
-    idxs_Opt = {}
-
     while True:
-        go.ClearCommandOptions()
-
-        idxs_Opt.clear()
-
-        def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
-
-        addOption('fTolerance')
-        addOption('iExtrapolationCt')
-        addOption('bEcho')
-        addOption('bDebug')
-
         res = go.Get()
 
         if res == ri.GetResult.Cancel:
@@ -255,7 +255,7 @@ def getInput_StartingSurface(rdObjs_toFit):
             objref = go.Object(0)
             go.Dispose()
 
-            if objref.ObjectId in [o.Id for o in rdObjs_toFit]:
+            if objref.ObjectId in gObjs_toDrapeOver:
                 print("Starting surface cannot be one of the objects to fit")
                 sc.doc.Objects.UnselectAll()
                 go = ri.Custom.GetObject()
@@ -267,19 +267,7 @@ def getInput_StartingSurface(rdObjs_toFit):
             #rgF = objref.Surface()
             #rgS = rgF.UnderlyingSurface()
 
-            return (
-                objref,
-                Opts.values['fTolerance'],
-                Opts.values['iExtrapolationCt'],
-                Opts.values['bEcho'],
-                Opts.values['bDebug']
-                )
-
-        # An option was selected.
-        for key in idxs_Opt:
-            if go.Option().Index == idxs_Opt[key]:
-                Opts.setValue(key, go.Option().CurrentListOptionIndex)
-                break
+            return objref
 
 
 def _prompt(sPrompt, bDebug=False):
@@ -459,17 +447,17 @@ def _getBorderPointIndices(pts_Target):
     return idxs_borderPts
 
 
-    def _createZAxisLinesAtGrevilles(pts_Greville_toProject):
-        lines = []
-        for iU in range(len(pts_Greville_toProject)):
-            lines.append([])
-            for iV in range(len(pts_Greville_toProject[0])):
-                line = rg.Line(
-                        start=pts_Greville_toProject[iU][iV],
-                        span=rg.Vector3d.ZAxis)
-                #sc.doc.Objects.AddLine(line)
-                lines[-1].append(line)
-        return lines
+def _createZAxisLinesAtGrevilles(pts_Greville_toProject):
+    lines = []
+    for iU in range(len(pts_Greville_toProject)):
+        lines.append([])
+        for iV in range(len(pts_Greville_toProject[0])):
+            line = rg.Line(
+                    start=pts_Greville_toProject[iU][iV],
+                    span=rg.Vector3d.ZAxis)
+            #sc.doc.Objects.AddLine(line)
+            lines[-1].append(line)
+    return lines
 
 
 def _hasMissingPoints(pts):
@@ -485,7 +473,7 @@ def _flattenNestedList(pts_in):
     return pts_out
 
 
-def _sortAndGroupTargetsByElevation(ns, pts_In, fElevTol, bDebug=False):
+def _sortAndGroupTargetsByElevation_High_to_low(ns, pts_In, fElevTol, bDebug=False):
     """
     Returns:
         list(lists of u and vN index tuples whose z's are within fElevTol)
@@ -563,30 +551,43 @@ def _getNeighborsPerElevationGroup(ns, uvs_Target_Groups, zs_Targets, zs_Min_Adj
     return uvs_Neighbors_PerElevGroup
 
 
-def _iterativelyFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTolerance, bDebug=False):
+def _highestElevation(pts):
+    zMax = -float('inf')
+    for us in pts:
+        for v in us:
+            if v is None:
+                continue
+            if v.Z > zMax:
+                zMax = v.Z
+    return zMax
+
+
+def _fit_Iteratively_translate_individual_pts_High_to_low(pts_Target, ns_In, fTolerance, bDebug=False):
     """
     """
 
     ns_Out = ns_In.Duplicate()
 
 
-    #map(sc.doc.Objects.AddPoint, [pt for pts_V in pts_Target for pt in pts_V]); sc.doc.Views.Redraw(); return
+    #map(sc.doc.Objects.AddPoint, [pt for pts_V in pts_Target for pt in pts_V]); sc.doc.Views.Redraw()
 
 
-    uvs_Targets_InElevGroups = _sortAndGroupTargetsByElevation(
+    uvs_Targets_InElevGroups = _sortAndGroupTargetsByElevation_High_to_low(
         ns_In,
         pts_Target,
         10.0*fTolerance,
         bDebug=bDebug)
 
-    if bDebug:
-        print('-'*20)
-        sEval = "uvs_Targets_InElevGroups[8][22:27]"; print(sEval,'=',eval(sEval))
-        sEval = "uvs_Targets_InElevGroups[9][22:29]"; print(sEval,'=',eval(sEval))
-        sEval = "uvs_Targets_InElevGroups[9][22:27]"; print(sEval,'=',eval(sEval))
+    #if bDebug:
+    #    print('-'*20)
+    #    sEval = "uvs_Targets_InElevGroups[8][22:27]"; print(sEval,'=',eval(sEval))
+    #    sEval = "uvs_Targets_InElevGroups[9][22:29]"; print(sEval,'=',eval(sEval))
+    #    sEval = "uvs_Targets_InElevGroups[9][22:27]"; print(sEval,'=',eval(sEval))
 
 
     if bDebug: sEval = 'len(uvs_Targets_InElevGroups)'; print(sEval+':',eval(sEval))
+    if bDebug: sEval = 'uvs_Targets_InElevGroups'; print(sEval+':',eval(sEval))
+    #return
 
     zs_HighestPerElevGroup = []
     for uvsGroup in uvs_Targets_InElevGroups:
@@ -595,15 +596,15 @@ def _iterativelyFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTo
             zs.append(pts_Target[u][v].Z)
         zs_HighestPerElevGroup.append(max(zs))
 
-    if bDebug:
-        print('-'*20)
-        sEval = "zs_HighestPerElevGroup"; print(sEval,'=',eval(sEval))
-        sEval = "len(zs_HighestPerElevGroup)"; print(sEval,'=',eval(sEval))
+    #if bDebug:
+    #    print('-'*20)
+    #    sEval = "zs_HighestPerElevGroup"; print(sEval,'=',eval(sEval))
+    #    sEval = "len(zs_HighestPerElevGroup)"; print(sEval,'=',eval(sEval))
 
-        print('-'*20)
-        sEval = "uvs_Targets_InElevGroups[8][22:27]"; print(sEval,'=',eval(sEval))
-        sEval = "uvs_Targets_InElevGroups[9][22:29]"; print(sEval,'=',eval(sEval))
-        sEval = "uvs_Targets_InElevGroups[9][22:27]"; print(sEval,'=',eval(sEval))
+    #    print('-'*20)
+    #    sEval = "uvs_Targets_InElevGroups[8][22:27]"; print(sEval,'=',eval(sEval))
+    #    sEval = "uvs_Targets_InElevGroups[9][22:29]"; print(sEval,'=',eval(sEval))
+    #    sEval = "uvs_Targets_InElevGroups[9][22:27]"; print(sEval,'=',eval(sEval))
 
     #for pts_V in pts_Target:
     #    for pt in pts_V:
@@ -626,11 +627,11 @@ def _iterativelyFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTo
 
     zs_Targets = [[pt.Z for pt in ptsV] for ptsV in pts_Target]
 
-    if bDebug:
-        print('-'*20)
-        sEval = "zs_Targets[8][22:27]"; print(sEval,'=',eval(sEval))
-        sEval = "zs_Targets[9][22:29]"; print(sEval,'=',eval(sEval))
-        sEval = "zs_Targets[9][22:27]"; print(sEval,'=',eval(sEval))
+    #if bDebug:
+    #    print('-'*20)
+    #    sEval = "zs_Targets[8][22:27]"; print(sEval,'=',eval(sEval))
+    #    sEval = "zs_Targets[9][22:29]"; print(sEval,'=',eval(sEval))
+    #    sEval = "zs_Targets[9][22:27]"; print(sEval,'=',eval(sEval))
 
 
     # Set zs_Targets in elevation groups to highest elevation.
@@ -639,19 +640,19 @@ def _iterativelyFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTo
         for u, v in uvsGroup:
             zs_Targets[u][v] = zs_HighestPerElevGroup[iGroup]
 
-    if bDebug:
-        print('-'*20)
-        sEval = "zs_Targets[8][22:27]"; print(sEval,'=',eval(sEval))
-        sEval = "zs_Targets[9][22:29]"; print(sEval,'=',eval(sEval))
-        sEval = "zs_Targets[9][22:27]"; print(sEval,'=',eval(sEval))
+    #if bDebug:
+    #    print('-'*20)
+    #    sEval = "zs_Targets[8][22:27]"; print(sEval,'=',eval(sEval))
+    #    sEval = "zs_Targets[9][22:29]"; print(sEval,'=',eval(sEval))
+    #    sEval = "zs_Targets[9][22:27]"; print(sEval,'=',eval(sEval))
 
     zs_Min_AdjustedPerNeighbors = [zsV[:] for zsV in zs_Targets]
 
-    if bDebug:
-        print('-'*20)
-        sEval = "zs_Min_AdjustedPerNeighbors[8][22:27]"; print(sEval,'=',eval(sEval))
-        sEval = "zs_Min_AdjustedPerNeighbors[9][22:29]"; print(sEval,'=',eval(sEval))
-        sEval = "zs_Min_AdjustedPerNeighbors[9][22:27]"; print(sEval,'=',eval(sEval))
+    #if bDebug:
+    #    print('-'*20)
+    #    sEval = "zs_Min_AdjustedPerNeighbors[8][22:27]"; print(sEval,'=',eval(sEval))
+    #    sEval = "zs_Min_AdjustedPerNeighbors[9][22:29]"; print(sEval,'=',eval(sEval))
+    #    sEval = "zs_Min_AdjustedPerNeighbors[9][22:27]"; print(sEval,'=',eval(sEval))
 
 
     uvs_Neighbors_PerElevGroup = _getNeighborsPerElevationGroup(
@@ -661,21 +662,56 @@ def _iterativelyFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTo
         zs_Min_AdjustedPerNeighbors,
         bDebug=bDebug)
 
-    if bDebug:
-        print('-'*20)
-        sEval = "zs_Min_AdjustedPerNeighbors[8][22:27]"; print(sEval,'=',eval(sEval))
-        sEval = "zs_Min_AdjustedPerNeighbors[9][22:29]"; print(sEval,'=',eval(sEval))
-        sEval = "zs_Min_AdjustedPerNeighbors[9][22:27]"; print(sEval,'=',eval(sEval))
+    #if bDebug:
+    #    print('-'*20)
+    #    sEval = "zs_Min_AdjustedPerNeighbors[8][22:27]"; print(sEval,'=',eval(sEval))
+    #    sEval = "zs_Min_AdjustedPerNeighbors[9][22:29]"; print(sEval,'=',eval(sEval))
+    #    sEval = "zs_Min_AdjustedPerNeighbors[9][22:27]"; print(sEval,'=',eval(sEval))
 
 
     #print(uvs_Targets_InElevGroups[:10])
     if bDebug: sEval = 'len(uvs_Neighbors_PerElevGroup)'; print(sEval+':',eval(sEval))
 
 
-    # Do not allow first neighber group to be lowered.
-    for (uN, vN) in uvs_Neighbors_PerElevGroup[0]:
-        cp = ns_In.Points.GetControlPoint(uN, vN)
-        zs_Min_AdjustedPerNeighbors[uN][vN] = cp.Location.Z
+    # TESTING: TODO: Remove this comment if this block of code is successful.
+    #zMax = _highestElevation(pts_Target)
+    #sEval = 'zMax'; print(sEval+':',eval(sEval))
+
+    #for iU in range(ns_Out.Points.CountU):
+    #    for iV in range(ns_Out.Points.CountV):
+    #        cp = ns_Out.Points.GetControlPoint(iU, iV)
+    #        cp.Z = zMax
+    #        ns_Out.Points.SetControlPoint(iU, iV, cp)
+
+    #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw()
+
+
+    # Set highest elevation group
+
+
+    zMax = _highestElevation(pts_Target)
+
+
+    # Set highest elevation group to max Z.
+    for (iU, iV) in uvs_Targets_InElevGroups[0]:
+        #sEval = 'iU,iV'; print(sEval+':',eval(sEval))
+        cp = ns_In.Points.GetControlPoint(iU, iV)
+        cp.Z = zMax
+        ns_Out.Points.SetControlPoint(iU, iV, cp)
+
+
+    # Set highest elevation group neighbors to max Z.
+    for (iU, iV) in uvs_Neighbors_PerElevGroup[0]:
+        #sEval = 'iU,iV'; print(sEval+':',eval(sEval))
+        cp = ns_In.Points.GetControlPoint(iU, iV)
+        #zs_Min_AdjustedPerNeighbors[iU][iV] = cp.Location.Z
+        cp.Z = zMax #z_Low
+        ns_Out.Points.SetControlPoint(iU, iV, cp)
+
+
+    if bDebug: sEval = 'len(zs_Min_AdjustedPerNeighbors)'; print(sEval+':',eval(sEval))
+    if bDebug: sEval = 'zs_Min_AdjustedPerNeighbors'; print(sEval+':',eval(sEval))
+    #return
 
 
     # Start loop at level 1, not 0, because
@@ -732,8 +768,8 @@ def _iterativelyFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTo
         for uT,vT in uvs_Target_Group:
             uG,vG = ns_Out.Points.GetGrevillePoint(uT, vT)
             #print(uT, vT)
-            if (uT,vT) == (6,5):
-                pass
+            #if (uT,vT) == (6,5):
+            #    pass
             #    sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); return
             zG = ns_Out.PointAt(uG, vG).Z
             zT = pts_Target[uT][vT].Z
@@ -742,10 +778,12 @@ def _iterativelyFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTo
             #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); 1/0
             break
         else:
+            # No change to zs_Min_AdjustedPerNeighbors.
+
             #if bDebug:
             #    _prompt("All Grevilles are on or above target.", bDebug=False)
-            # No change to zs_Min_AdjustedPerNeighbors.
             #sc.doc.Objects.AddPoint(pts_Target[u][vN])
+
             continue # to next elevation group.
         #sc.doc.Views.Redraw(); 1/0
 
@@ -847,7 +885,7 @@ def _iterativelyFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTo
     return ns_Out
 
 
-def _iterativelyFit_TranslatePointsIndividually(pts, ns_In, fTolerance):
+def _fit_Iteratively_translate_individual_pts(pts, ns_In, fTolerance):
     """
     """
 
@@ -890,7 +928,7 @@ def _iterativelyFit_TranslatePointsIndividually(pts, ns_In, fTolerance):
     return ns_Out
 
 
-def _iterativelyFit_TranslatePoints_GroupedByDegree(pts_Target, ns_In, fTolerance):
+def _fit_Iteratively_translate_individual_pts_Grouped_by_degree(pts_Target, ns_In, fTolerance):
     """
     """
 
@@ -1032,14 +1070,286 @@ def _addObject(rgObj, xform):
             sc.doc.Objects.AddPoint(rgPt3d_Dup)
 
 
-def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, fTolerance=None, iExtrapolationCt=1, bDebug=False):
+def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNeighborCt=1, bDiag=True, bLineExts=True):
+    """
+    bLineExts:
+        When True: If neighbor's point and its neighbor's point in the same
+        direction are both available, create a line through those points
+        and get the ClosestPoint of that line on the normal line.
+    """
+
+    lines_thruStartingSrfNormals = _createZAxisLinesAtGrevilles(pts_Greville)
+    #for line in lines_thruStartingSrfNormals: sc.doc.Objects.AddLine(line)
+    #sc.doc.Views.Redraw(); 1/0
+
+
+    pts_Out = []
+
+    idx_MaxU = len(pts_In)-1
+    idx_MaxV = len(pts_In[0])-1
+
+    #attr.ObjectColor = Color.FromArgb(
+    #        red=random.randint(0, 255),
+    #        green=random.randint(0, 255),
+    #        blue=random.randint(0, 255))
+
+    # West (Previous U).
+    if iU-1 >= 0 and pts_In[iU-1][iV] is not None:
+        pt = None
+        if bLineExts and iU-2 >= 0 and pts_In[iU-2][iV] is not None:
+            line_ThruNeighbors = rg.Line(pts_In[iU-2][iV], pts_In[iU-1][iV])
+            line_ThruNeighbors.Length *= 2.0
+            #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
+            rc = rg.Intersect.Intersection.LineLine(
+                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineB=line_ThruNeighbors)
+            if rc[0]:
+                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+        else:
+            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+                    pts_In[iU-1][iV],
+                    limitToFiniteSegment=False)
+        if pt: pts_Out.append(pt)
+
+    # East (Next U).
+    if iU+1 <= idx_MaxU and pts_In[iU+1][iV] is not None:
+        pt = None
+        if bLineExts and iU+2 <= idx_MaxU and pts_In[iU+2][iV] is not None:
+            line_ThruNeighbors = rg.Line(pts_In[iU+2][iV], pts_In[iU+1][iV])
+            line_ThruNeighbors.Length *= 2.0
+            #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
+            rc = rg.Intersect.Intersection.LineLine(
+                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineB=line_ThruNeighbors)
+            if rc[0]:
+                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+        else:
+            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+                    pts_In[iU+1][iV],
+                    limitToFiniteSegment=False)
+        if pt: pts_Out.append(pt)
+
+    # South (Previous V).
+    if iV-1 >= 0 and pts_In[iU][iV-1] is not None:
+        pt = None
+        if bLineExts and iV-2 >= 0 and pts_In[iU][iV-2] is not None:
+            line_ThruNeighbors = rg.Line(pts_In[iU][iV-2], pts_In[iU][iV-1])
+            line_ThruNeighbors.Length *= 2.0
+            #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
+            rc = rg.Intersect.Intersection.LineLine(
+                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineB=line_ThruNeighbors)
+            if rc[0]:
+                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+        else:
+            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+                    pts_In[iU][iV-1],
+                    limitToFiniteSegment=False)
+        if pt: pts_Out.append(pt)
+
+    # North (Next V).
+    if iV+1 <= idx_MaxV and pts_In[iU][iV+1] is not None:
+        pt = None
+        if bLineExts and iV+2 <= idx_MaxV and pts_In[iU][iV+2] is not None:
+            line_ThruNeighbors = rg.Line(pts_In[iU][iV+2], pts_In[iU][iV+1])
+            line_ThruNeighbors.Length *= 2.0
+            #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
+            rc = rg.Intersect.Intersection.LineLine(
+                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineB=line_ThruNeighbors)
+            if rc[0]:
+                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+        else:
+            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+                    pts_In[iU][iV+1],
+                    limitToFiniteSegment=False)
+        if pt: pts_Out.append(pt)
+
+    # Southwest (Previous U, Previous V).
+    if (
+            bDiag and
+            iU-1 >= 0 and
+            iV-1 >= 0 and
+            pts_In[iU-1][iV-1] is not None
+    ):
+        pt = None
+        if (
+                bLineExts and
+                iU-2 >= 0 and
+                iV-2 >= 0 and
+                pts_In[iU-2][iV-2] is not None
+        ):
+            line_ThruNeighbors = rg.Line(pts_In[iU-2][iV-2], pts_In[iU-1][iV-1])
+            line_ThruNeighbors.Length *= 2.0
+            #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
+            rc = rg.Intersect.Intersection.LineLine(
+                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineB=line_ThruNeighbors)
+            if rc[0]:
+                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+        else:
+            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+                    pts_In[iU-1][iV-1],
+                    limitToFiniteSegment=False)
+        if pt: pts_Out.append(pt)
+
+    # Southeast (Next U, Previous V).
+    if (
+            bDiag and
+            iU+1 <= idx_MaxU and
+            iV-1 >= 0 and
+            pts_In[iU+1][iV-1] is not None
+    ):
+        pt = None
+        if (
+                bLineExts and
+                iU+2 <= idx_MaxU and
+                iV-2 >= 0 and
+                pts_In[iU+2][iV-2] is not None
+        ):
+            line_ThruNeighbors = rg.Line(pts_In[iU+2][iV-2], pts_In[iU+1][iV-1])
+            line_ThruNeighbors.Length *= 2.0
+            #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
+            rc = rg.Intersect.Intersection.LineLine(
+                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineB=line_ThruNeighbors)
+            if rc[0]:
+                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+        else:
+            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+                    pts_In[iU+1][iV-1],
+                    limitToFiniteSegment=False)
+        if pt: pts_Out.append(pt)
+
+    # Northwest (Previous U, Next V).
+    if (
+            bDiag and
+            iU-1 >= 0 and
+            iV+1 <= idx_MaxV and
+            pts_In[iU-1][iV+1] is not None
+    ):
+        pt = None
+        if (
+                bLineExts and
+                iU-2 >= 0 and
+                iV+2 <= idx_MaxV and
+                pts_In[iU-2][iV+2] is not None
+        ):
+            line_ThruNeighbors = rg.Line(pts_In[iU-2][iV+2], pts_In[iU-1][iV+1])
+            line_ThruNeighbors.Length *= 2.0
+            #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
+            rc = rg.Intersect.Intersection.LineLine(
+                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineB=line_ThruNeighbors)
+            if rc[0]:
+                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+        else:
+            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+                    pts_In[iU-1][iV+1],
+                    limitToFiniteSegment=False)
+        if pt: pts_Out.append(pt)
+
+    # Northeast (Next U, Next V).
+    if (
+            bDiag and
+            iU+1 <= idx_MaxU and
+            iV+1 <= idx_MaxV and
+            pts_In[iU+1][iV+1] is not None
+    ):
+        pt = None
+        if (
+                bLineExts and
+                iU+2 <= idx_MaxU and
+                iV+2 <= idx_MaxV and
+                pts_In[iU+2][iV+2] is not None
+        ):
+            line_ThruNeighbors = rg.Line(pts_In[iU+2][iV+2], pts_In[iU+1][iV+1])
+            line_ThruNeighbors.Length *= 2.0
+            #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
+            rc = rg.Intersect.Intersection.LineLine(
+                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineB=line_ThruNeighbors)
+            if rc[0]:
+                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+        else:
+            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+                    pts_In[iU+1][iV+1],
+                    limitToFiniteSegment=False)
+        if pt: pts_Out.append(pt)
+
+    if len(pts_Out) < iMinNeighborCt:
+        return []
+
+    return pts_Out
+
+
+def _addMissingPointsAlongBorder(pts, pts_Greville, idxs_pt_filter=None, iMinNeighborCt=1, bDiag=False, bLineExts=True):
+    """
+    Parameters
+        pts: list of lists of Point3d  This will be modified.
+
+    Returns
+        bool  Indicating whether pts was modified.
+    """
+
+    pts0 = pts
+
+    # Modify a copy of the list so that new points do not affect subsequent ones in this function call.
+    pts_WIP = [ptsV[:] for ptsV in pts0]
+
+    bModificationOccured = False
+
+    for iU in range(len(pts0)):
+        for iV in range(len(pts0[0])):
+            if idxs_pt_filter and not (iU, iV) in idxs_pt_filter: continue
+
+            if pts0[iU][iV] is not None: continue
+
+            pts = _closestPointsOfNeighborsOnNormalLines(
+                    pts0,
+                    pts_Greville,
+                    iU,
+                    iV,
+                    iMinNeighborCt=iMinNeighborCt,
+                    bDiag=bDiag,
+                    bLineExts=bLineExts)
+            if not pts: continue
+
+            pt_Sum = None
+            for pt in pts:
+                pt_Sum = pt if pt_Sum is None else pt_Sum + pt
+
+            pt = pt_Sum / float(len(pts))
+            #sc.doc.Objects.AddPoint(pt, attr)
+
+            pts_WIP[iU][iV] = pt
+
+            bModificationOccured = True
+
+    # Modify original list.
+    for iU in range(len(pts0)):
+        for iV in range(len(pts0[0])):
+            pts0[iU][iV] = pts_WIP[iU][iV]
+
+    return bModificationOccured
+
+
+def _addMissingPerStartingSrf(pts, ns_Starting):
+    for iU in range(len(pts)):
+        for iV in range(len(pts[0])):
+            if pts[iU][iV] is None:
+                #print("Missing point found at {}, {}".format(iU, iV))
+                pts[iU][iV] = ns_Starting.Points.GetControlPoint(iU,iV).Location
+
+
+def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, fTolerance=None, bDrapeAtMisses=True, bExtrapolateMisses=True, bDebug=False):
     """
     """
 
     if fTolerance is None:
         fTolerance = sc.doc.ModelAbsoluteTolerance
 
-    ns_Starting = srf_Starting.ToNurbsSurface()
+    ns_Starting_WIP = srf_Starting.ToNurbsSurface()
 
     #sEval = "cPlane"; print(sEval,'=',eval(sEval))
     #return
@@ -1049,23 +1359,23 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
     else:
         xform = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
         [rgObjs_toDrapeOver[i].Transform(xform) for i in range(len(rgObjs_toDrapeOver))]
-        ns_Starting.Transform(xform)
+        ns_Starting_WIP.Transform(xform)
 
         # Prepare xform for output.
         xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
         #[sc.doc.Objects.AddBrep(rgBreps_ProjectTo[i]) for i in range(len(rgBreps_ProjectTo))]
-        #sc.doc.Objects.AddSurface(ns_Starting); sc.doc.Views.Redraw()#; return
+        #sc.doc.Objects.AddSurface(ns_Starting_WIP); sc.doc.Views.Redraw()#; return
 
 
     uvs_All = [(u, v)
-               for u in range(ns_Starting.Points.CountU)
-               for v in range(ns_Starting.Points.CountV)]
+               for u in range(ns_Starting_WIP.Points.CountU)
+               for v in range(ns_Starting_WIP.Points.CountV)]
 
 
-    #ns_WIP = addKnotsToSurface(ns_Starting)
+    #ns_WIP = addKnotsToSurface(ns_Starting_WIP)
 
 
-    pts_Greville = _getGrevillePoints(ns_Starting)
+    pts_Greville = _getGrevillePoints(ns_Starting_WIP)
 
     #[sc.doc.Objects.AddPoint(pts_Greville[u][v]) for u, v in uvs_All if pts_Greville[u][v] is not None]
     #sc.doc.Views.Redraw(); return
@@ -1094,271 +1404,18 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
     #sc.doc.Views.Redraw(); return
 
 
-    def closestPointsOfNeighborsOnNormalLines(pts_In, iU, iV, iMinNeighborCt=1, bDiag=True, bLineExts=True):
-        """
-        bLineExts:
-            When True: If neighbor's point and its neighbor's point in the same
-            direction are both available, create a line through those points
-            and get the ClosestPoint of that line on the normal line.
-        """
-        pts_Out = []
-
-        idx_MaxU = len(pts_In)-1
-        idx_MaxV = len(pts_In[0])-1
-
-        #attr.ObjectColor = Color.FromArgb(
-        #        red=random.randint(0, 255),
-        #        green=random.randint(0, 255),
-        #        blue=random.randint(0, 255))
-
-        # West (Previous U).
-        if iU-1 >= 0 and pts_In[iU-1][iV] is not None:
-            pt = None
-            if bLineExts and iU-2 >= 0 and pts_In[iU-2][iV] is not None:
-                line_ThruNeighbors = rg.Line(pts_In[iU-2][iV], pts_In[iU-1][iV])
-                line_ThruNeighbors.Length *= 2.0
-                #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
-                rc = rg.Intersect.Intersection.LineLine(
-                        lineA=lines_thruStartingSrfNormals[iU][iV],
-                        lineB=line_ThruNeighbors)
-                if rc[0]:
-                    pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
-            else:
-                pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
-                        pts_In[iU-1][iV],
-                        limitToFiniteSegment=False)
-            if pt: pts_Out.append(pt)
-
-        # East (Next U).
-        if iU+1 <= idx_MaxU and pts_In[iU+1][iV] is not None:
-            pt = None
-            if bLineExts and iU+2 <= idx_MaxU and pts_In[iU+2][iV] is not None:
-                line_ThruNeighbors = rg.Line(pts_In[iU+2][iV], pts_In[iU+1][iV])
-                line_ThruNeighbors.Length *= 2.0
-                #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
-                rc = rg.Intersect.Intersection.LineLine(
-                        lineA=lines_thruStartingSrfNormals[iU][iV],
-                        lineB=line_ThruNeighbors)
-                if rc[0]:
-                    pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
-            else:
-                pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
-                        pts_In[iU+1][iV],
-                        limitToFiniteSegment=False)
-            if pt: pts_Out.append(pt)
-
-        # South (Previous V).
-        if iV-1 >= 0 and pts_In[iU][iV-1] is not None:
-            pt = None
-            if bLineExts and iV-2 >= 0 and pts_In[iU][iV-2] is not None:
-                line_ThruNeighbors = rg.Line(pts_In[iU][iV-2], pts_In[iU][iV-1])
-                line_ThruNeighbors.Length *= 2.0
-                #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
-                rc = rg.Intersect.Intersection.LineLine(
-                        lineA=lines_thruStartingSrfNormals[iU][iV],
-                        lineB=line_ThruNeighbors)
-                if rc[0]:
-                    pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
-            else:
-                pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
-                        pts_In[iU][iV-1],
-                        limitToFiniteSegment=False)
-            if pt: pts_Out.append(pt)
-
-        # North (Next V).
-        if iV+1 <= idx_MaxV and pts_In[iU][iV+1] is not None:
-            pt = None
-            if bLineExts and iV+2 <= idx_MaxV and pts_In[iU][iV+2] is not None:
-                line_ThruNeighbors = rg.Line(pts_In[iU][iV+2], pts_In[iU][iV+1])
-                line_ThruNeighbors.Length *= 2.0
-                #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
-                rc = rg.Intersect.Intersection.LineLine(
-                        lineA=lines_thruStartingSrfNormals[iU][iV],
-                        lineB=line_ThruNeighbors)
-                if rc[0]:
-                    pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
-            else:
-                pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
-                        pts_In[iU][iV+1],
-                        limitToFiniteSegment=False)
-            if pt: pts_Out.append(pt)
-
-        # Southwest (Previous U, Previous V).
-        if (
-                bDiag and
-                iU-1 >= 0 and
-                iV-1 >= 0 and
-                pts_In[iU-1][iV-1] is not None
-        ):
-            pt = None
-            if (
-                    bLineExts and
-                    iU-2 >= 0 and
-                    iV-2 >= 0 and
-                    pts_In[iU-2][iV-2] is not None
-            ):
-                line_ThruNeighbors = rg.Line(pts_In[iU-2][iV-2], pts_In[iU-1][iV-1])
-                line_ThruNeighbors.Length *= 2.0
-                #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
-                rc = rg.Intersect.Intersection.LineLine(
-                        lineA=lines_thruStartingSrfNormals[iU][iV],
-                        lineB=line_ThruNeighbors)
-                if rc[0]:
-                    pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
-            else:
-                pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
-                        pts_In[iU-1][iV-1],
-                        limitToFiniteSegment=False)
-            if pt: pts_Out.append(pt)
-
-        # Southeast (Next U, Previous V).
-        if (
-                bDiag and
-                iU+1 <= idx_MaxU and
-                iV-1 >= 0 and
-                pts_In[iU+1][iV-1] is not None
-        ):
-            pt = None
-            if (
-                    bLineExts and
-                    iU+2 <= idx_MaxU and
-                    iV-2 >= 0 and
-                    pts_In[iU+2][iV-2] is not None
-            ):
-                line_ThruNeighbors = rg.Line(pts_In[iU+2][iV-2], pts_In[iU+1][iV-1])
-                line_ThruNeighbors.Length *= 2.0
-                #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
-                rc = rg.Intersect.Intersection.LineLine(
-                        lineA=lines_thruStartingSrfNormals[iU][iV],
-                        lineB=line_ThruNeighbors)
-                if rc[0]:
-                    pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
-            else:
-                pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
-                        pts_In[iU+1][iV-1],
-                        limitToFiniteSegment=False)
-            if pt: pts_Out.append(pt)
-
-        # Northwest (Previous U, Next V).
-        if (
-                bDiag and
-                iU-1 >= 0 and
-                iV+1 <= idx_MaxV and
-                pts_In[iU-1][iV+1] is not None
-        ):
-            pt = None
-            if (
-                    bLineExts and
-                    iU-2 >= 0 and
-                    iV+2 <= idx_MaxV and
-                    pts_In[iU-2][iV+2] is not None
-            ):
-                line_ThruNeighbors = rg.Line(pts_In[iU-2][iV+2], pts_In[iU-1][iV+1])
-                line_ThruNeighbors.Length *= 2.0
-                #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
-                rc = rg.Intersect.Intersection.LineLine(
-                        lineA=lines_thruStartingSrfNormals[iU][iV],
-                        lineB=line_ThruNeighbors)
-                if rc[0]:
-                    pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
-            else:
-                pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
-                        pts_In[iU-1][iV+1],
-                        limitToFiniteSegment=False)
-            if pt: pts_Out.append(pt)
-
-        # Northeast (Next U, Next V).
-        if (
-                bDiag and
-                iU+1 <= idx_MaxU and
-                iV+1 <= idx_MaxV and
-                pts_In[iU+1][iV+1] is not None
-        ):
-            pt = None
-            if (
-                    bLineExts and
-                    iU+2 <= idx_MaxU and
-                    iV+2 <= idx_MaxV and
-                    pts_In[iU+2][iV+2] is not None
-            ):
-                line_ThruNeighbors = rg.Line(pts_In[iU+2][iV+2], pts_In[iU+1][iV+1])
-                line_ThruNeighbors.Length *= 2.0
-                #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
-                rc = rg.Intersect.Intersection.LineLine(
-                        lineA=lines_thruStartingSrfNormals[iU][iV],
-                        lineB=line_ThruNeighbors)
-                if rc[0]:
-                    pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
-            else:
-                pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
-                        pts_In[iU+1][iV+1],
-                        limitToFiniteSegment=False)
-            if pt: pts_Out.append(pt)
-
-        if len(pts_Out) < iMinNeighborCt:
-            return []
-
-        return pts_Out
-
-
-    def addMissingPointsAlongBorder(pts, idxs_pt_filter=None, iMinNeighborCt=1, bDiag=False, bLineExts=True):
-        """
-        Modify a copy of the list so that new points do not affect
-        subsequent ones in this function call.
-        """
-
-        pts0 = pts
-
-        pts_Out = [ptsV[:] for ptsV in pts0]
-
-        bModificationOccured = False
-
-        for iU in range(len(pts0)):
-            for iV in range(len(pts0[0])):
-                if idxs_pt_filter and not (iU, iV) in idxs_pt_filter: continue
-
-                if pts0[iU][iV] is not None: continue
-
-                pts = closestPointsOfNeighborsOnNormalLines(
-                        pts0,
-                        iU,
-                        iV,
-                        iMinNeighborCt=iMinNeighborCt,
-                        bDiag=bDiag,
-                        bLineExts=bLineExts)
-                if not pts: continue
-
-                pt_Sum = None
-                for pt in pts:
-                    pt_Sum = pt if pt_Sum is None else pt_Sum + pt
-
-                pt = pt_Sum / float(len(pts))
-                #sc.doc.Objects.AddPoint(pt, attr)
-
-                pts_Out[iU][iV] = pt
-
-                bModificationOccured = True
-
-        # Modify original list.
-        for iU in range(len(pts0)):
-            for iV in range(len(pts0[0])):
-                pts0[iU][iV] = pts_Out[iU][iV]
-
-        return bModificationOccured
-
-
 
     if not _hasMissingPoints(pts_Target):
         if len(rgObjs_toDrapeOver) == 1 and rgObjs_toDrapeOver[0].Faces.Count == 1:
-            ns1 = _iterativelyFit_TranslatePointsIndividually(
+            ns1 = _fit_Iteratively_translate_individual_pts(
                 pts_Target,
-                ns_Starting,
+                ns_Starting_WIP,
                 fTolerance,
                 bDebug=bDebug)
         else:
-            ns1 = _iterativelyFit_TranslatePointsIndividually_HighToLow(
+            ns1 = _fit_Iteratively_translate_individual_pts_High_to_low(
                 pts_Target,
-                ns_Starting,
+                ns_Starting_WIP,
                 fTolerance,
                 bDebug=bDebug)
 
@@ -1372,22 +1429,21 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
     pts_Target_HasMissing = [ptsV[:] for ptsV in pts_Target]
 
 
-    if iExtrapolationCt < 1:
+
+    # Target misses exist.
+
+
+    if not bDrapeAtMisses:
 
         # Fill any remaining missing points with the
         # starting surface control point locations.
 
-        def addMissingPerStartingSrf(pts, ns_Starting):
-            for iU in range(len(pts_Target)):
-                for iV in range(len(pts_Target[0])):
-                    if pts_Target[iU][iV] is None:
-                        pts_Target[iU][iV] = ns_Starting.Points.GetControlPoint(iU,iV).Location
 
-        addMissingPerStartingSrf(pts_Target, ns_Starting)
+        _addMissingPerStartingSrf(pts_Target, ns_Starting_WIP)
 
-        ns1 = _iterativelyFit_TranslatePointsIndividually_HighToLow(
+        ns1 = _fit_Iteratively_translate_individual_pts_High_to_low(
                     pts_Target,
-                    ns_Starting,
+                    ns_Starting_WIP,
                     fTolerance)
 
         if cPlane != rg.Plane.WorldXY:
@@ -1397,15 +1453,22 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
         return ns1
 
 
+    # Set all the control points of the output surface to the highest elevation.
+    # It is to simulate flattening then dropping the material onto the objects.
+    zMax = _highestElevation(pts_Target)
+
+    for iU in range(ns_Starting_WIP.Points.CountU):
+        for iV in range(ns_Starting_WIP.Points.CountV):
+            cp = ns_Starting_WIP.Points.GetControlPoint(iU, iV)
+            cp.Z = zMax
+            ns_Starting_WIP.Points.SetControlPoint(iU, iV, cp)
+
+
 
     # Extrapolate missing points.
 
     idxs_borderPts = _getBorderPointIndices(pts_Target)
     #print(idxs_borderPts); 1/0
-
-    lines_thruStartingSrfNormals = _createZAxisLinesAtGrevilles(pts_Greville)
-    #for line in lines_thruStartingSrfNormals: sc.doc.Objects.AddLine(line)
-    #sc.doc.Views.Redraw(); 1/0
 
     attr = rd.ObjectAttributes()
     attr.ColorSource = rd.ObjectColorSource.ColorFromObject
@@ -1432,20 +1495,16 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
         #        break
 
 
-        i = 2 # For 2nd iteration (not index) to be relevant with iExtrapolationCt.
-
-        while (
-            _hasMissingPoints(pts_Target) and
-            ((iExtrapolationCt == 0) or (i < iExtrapolationCt))
-        ):
+        while _hasMissingPoints(pts_Target):
             sc.escape_test()
 
-            addMissingPointsAlongBorder(
-                    pts_Target,
-                    bDiag=False,
-                    bLineExts=bLineExts2)
-            i += 1
+            bPointsWereAdded = _addMissingPointsAlongBorder(
+                pts_Target,
+                pts_Greville,
+                bDiag=False,
+                bLineExts=bLineExts2)
 
+            #sEval = "bPointsWereAdded"; print(sEval,'=',eval(sEval))
 
 
         # Fill any remaining missing points with the
@@ -1465,15 +1524,16 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
             for iV in range(len(pts_Target[0])):
                 if pts_Target[iU][iV] is None:
                     pts_Target[iU][iV] = rg.Point3d(
-                        ns_Starting.Points.GetControlPoint(iU,iV).X,
-                        ns_Starting.Points.GetControlPoint(iU,iV).Y,
-                        ns_Starting.Points.GetControlPoint(0,0).Z)
+                        ns_Starting_WIP.Points.GetControlPoint(iU,iV).X,
+                        ns_Starting_WIP.Points.GetControlPoint(iU,iV).Y,
+                        ns_Starting_WIP.Points.GetControlPoint(0,0).Z)
 
 
-        ns_Res3 = _iterativelyFit_TranslatePointsIndividually_HighToLow(
+        ns_Res3 = _fit_Iteratively_translate_individual_pts_High_to_low(
             pts_Target,
-            ns_Starting,
-            fTolerance)
+            ns_Starting_WIP,
+            fTolerance=fTolerance,
+            bDebug=bDebug)
         if not ns_Res3: continue
 
         if cPlane != rg.Plane.WorldXY:
@@ -1591,21 +1651,23 @@ def _createStartingSurface(rgObjs_Ref, cPlane=rg.Plane.WorldXY, fPointSpacing=1.
     return ns
 
 
-def processDocObject(rdObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Plane.WorldXY, **kwargs):
+def processDocObject(rhObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Plane.WorldXY, **kwargs):
     """
+    Parameters
+        rhObjs_toDrapeOver: rd.ObjRef[] or rd.RhinoObject[]
     """
-
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    fPointSpacing = getOpt('fPointSpacing')
     fTolerance = getOpt('fTolerance')
-    iExtrapolationCt = getOpt('iExtrapolationCt')
+    fPointSpacing = getOpt('fPointSpacing')
+    bDrapeAtMisses = getOpt('bDrapeAtMisses')
+    bExtrapolateMisses = getOpt('bExtrapolateMisses')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
     rgObjs_toDrapeOver = []
-    for rhObj in rdObjs_toDrapeOver:
+    for rhObj in rhObjs_toDrapeOver:
         rgObj_toDrapeOver = rs.coercegeometry(rhObj)
         if not isinstance(rgObj_toDrapeOver, (rg.Brep, rg.Mesh)):
             print("{} is not supported for an object to drape over.".format(rgObj_toDrapeOver.GetType().Name))
@@ -1634,7 +1696,8 @@ def processDocObject(rdObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Pla
         srf_Starting=ns_Starting,
         cPlane=cPlane,
         fTolerance=fTolerance,
-        iExtrapolationCt=iExtrapolationCt,
+        bDrapeAtMisses=bDrapeAtMisses,
+        bExtrapolateMisses=bExtrapolateMisses,
         bDebug=bDebug
         )
 
@@ -1657,43 +1720,47 @@ def processDocObject(rdObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Pla
 
 def main():
 
-    rc = getInput_ObjsToDrapeOver()
-    if rc is None: return
-    (
-        rdObjs_toDrapeOver,
-        cPlane,
-        bUserProvidesStartingSrf,
-        fPointSpacing,
-        fTolerance,
-        iExtrapolationCt,
-        bEcho,
-        bDebug,
-        ) = rc
+    objrefs_toDrapeOver = getInput_ObjsToDrapeOver()
+    if objrefs_toDrapeOver is None: return
+
+    cPlane = sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane()
+
+    bFlipCPlane = Opts.values['bFlipCPlane']
+    fTolerance = Opts.values['fTolerance']
+    bUserProvidesStartingSrf = Opts.values['bUserProvidesStartingSrf']
+    fPointSpacing = Opts.values['fPointSpacing']
+    bDrapeAtMisses = Opts.values['bDrapeAtMisses']
+    bExtrapolateMisses = Opts.values['bExtrapolateMisses']
+    bDeleteStartingSrf = Opts.values['bDeleteStartingSrf']
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
+
+    if bFlipCPlane:
+        cPlane.Flip()
 
     if not bUserProvidesStartingSrf:
         objref_srf_Starting = None
     else:
-        rc = getInput_StartingSurface(rdObjs_toDrapeOver)
-        if rc is None: return
-        (
-            objref_srf_Starting,
-            fTolerance,
-            iExtrapolationCt,
-            bEcho,
-            bDebug,
-            ) = rc
+        gObjs_toDrapeOver = [_.ObjectId for _ in objrefs_toDrapeOver]
+
+        sc.doc.Objects.UnselectAll()
+        sc.doc.Views.Redraw()
+
+        objref_srf_Starting = getInput_StartingSurface(gObjs_toDrapeOver)
+        if objref_srf_Starting is None: return
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
 
     Rhino.RhinoApp.CommandPrompt = "Working ..."
 
     processDocObject(
-        rdObjs_toDrapeOver=rdObjs_toDrapeOver,
+        rhObjs_toDrapeOver=objrefs_toDrapeOver,
         objref_srf_Starting=objref_srf_Starting,
         cPlane=cPlane,
-        fPointSpacing=fPointSpacing,
         fTolerance=fTolerance,
-        iExtrapolationCt=iExtrapolationCt,
+        fPointSpacing=fPointSpacing,
+        bDrapeAtMisses=bDrapeAtMisses,
+        bExtrapolateMisses=bExtrapolateMisses,
         bEcho=bEcho,
         bDebug=bDebug)
 

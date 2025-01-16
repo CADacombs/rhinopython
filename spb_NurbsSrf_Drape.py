@@ -1,14 +1,27 @@
 """
+This script is an alternative to _Drape. It uses Greville point locations for fitting to
+the target object and allows selection of a starting surface.
+
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums, https://discourse.mcneel.com/
+"""
+
+#! python 2  Must be on a line number less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
 191018-19: Created.
 ...
 210718: Starting surface can no longer be selected from one of the breps to fit.
 210730-0808: Reduced wavy output along elevation transitions of target.
 210808: Now, active CPlane's Z axis is used for drape direction.
+250115: Added support for meshes as objects over which to drape. Refactored.
 
 Starting surface's control points' X and Y are maintained.
 Starting surface's Greville points are used for measurement.
 
 WIP:
+    Fix bug for highest elevation in ...HighToLow function.
     Add option to 'ledge' neighbors more than 1 point beyond target.
     Add support for mesh targets.
 """
@@ -46,7 +59,7 @@ class Opts:
     key = 'bUserProvidesStartingSrf'; keys.append(key)
     values[key] = False
     names[key] = 'StartingSrf'
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'AutoCreate', 'UserProvides')
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Create', 'UserProvides')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fPointSpacing'; keys.append(key)
@@ -111,7 +124,7 @@ class Opts:
                 listValues=cls.listValues[key],
                 listCurrentIndex=cls.values[key])
 
-        if not idxOpt: print "Add option for {} failed.".format(key)
+        if not idxOpt: print("Add option for {} failed.".format(key))
 
         return idxOpt
 
@@ -121,12 +134,12 @@ class Opts:
 
         if key == 'fPointSpacing':
             if cls.riOpts[key].CurrentValue <= 10.0*sc.doc.ModelAbsoluteTolerance:
-                print "Invalid input for tolerance."
+                print("Invalid input for tolerance.")
                 cls.riOpts[key].CurrentValue = cls.values[key]
 
         if key == 'fTolerance':
             if cls.riOpts[key].CurrentValue <= 0.0:
-                print "Invalid input for tolerance."
+                print("Invalid input for tolerance.")
                 cls.riOpts[key].CurrentValue = cls.values[key]
 
         if key in cls.riOpts:
@@ -139,14 +152,14 @@ class Opts:
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-def getInput_TargetBreps():
+def getInput_ObjsToDrapeOver():
     """
     Get breps with optional input.
     """
 
     go = ri.Custom.GetObject()
-    go.SetCommandPrompt("Select target srfs and/or polysrfs")
-    go.GeometryFilter = rd.ObjectType.Brep
+    go.SetCommandPrompt("Select target breps or meshes")
+    go.GeometryFilter = rd.ObjectType.Brep | rd.ObjectType.Mesh
 
     go.AcceptNumber(True, acceptZero=True)
 
@@ -243,7 +256,7 @@ def getInput_StartingSurface(rdObjs_toFit):
             go.Dispose()
 
             if objref.ObjectId in [o.Id for o in rdObjs_toFit]:
-                print "Starting surface cannot be one of the objects to fit"
+                print("Starting surface cannot be one of the objects to fit")
                 sc.doc.Objects.UnselectAll()
                 go = ri.Custom.GetObject()
                 go.SetCommandPrompt("Select starting surface")
@@ -269,7 +282,757 @@ def getInput_StartingSurface(rdObjs_toFit):
                 break
 
 
-def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fTolerance=None, iExtrapolationCt=1, bDebug=False):
+def _prompt(sPrompt, bDebug=False):
+    if bDebug: print(sPrompt)
+    Rhino.RhinoApp.SetCommandPrompt(sPrompt)
+    Rhino.RhinoApp.Wait()
+
+
+def _promptDone(bAddWorking=True, bDebug=False):
+    if bDebug: print(Rhino.RhinoApp.CommandPrompt + " done.")
+    if bAddWorking:
+        Rhino.RhinoApp.SetCommandPrompt("Working ...")
+        Rhino.RhinoApp.Wait()
+
+
+def _addKnotsToSurface(ns_In):
+    """
+    Returns: rg.NurbsSurface
+    """
+
+    ns_Out = ns_In.Duplicate()
+
+    iK = ns_In.KnotsU.Count-1-ns_In.Degree(0)
+    k_M = ns_In.KnotsU[iK]
+    k_L = ns_In.KnotsU[iK-1]
+    ns_Out.KnotsU.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
+
+    for iK in range(ns_In.KnotsU.Count-2-ns_In.Degree(0), ns_In.Degree(0), -1):
+        k_M = ns_In.KnotsU[iK]
+        k_L = ns_In.KnotsU[iK-1]
+        k_R = ns_In.KnotsU[iK+1]
+        ns_Out.KnotsU.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
+        ns_Out.KnotsU.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
+
+    iK = ns_In.Degree(0)
+    k_M = ns_In.KnotsU[iK]
+    k_R = ns_In.KnotsU[iK+1]
+    ns_Out.KnotsU.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
+
+    iK = ns_In.KnotsV.Count-1-ns_In.Degree(1)
+    k_M = ns_In.KnotsV[iK]
+    k_L = ns_In.KnotsV[iK-1]
+    ns_Out.KnotsV.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
+
+    for iK in range(ns_In.KnotsV.Count-2-ns_In.Degree(1), ns_In.Degree(1), -1):
+        k_M = ns_In.KnotsV[iK]
+        k_L = ns_In.KnotsV[iK-1]
+        k_R = ns_In.KnotsV[iK+1]
+        ns_Out.KnotsV.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
+        ns_Out.KnotsV.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
+
+    iK = ns_In.Degree(1)
+    k_M = ns_In.KnotsV[iK]
+    k_R = ns_In.KnotsV[iK+1]
+    ns_Out.KnotsV.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
+
+    return ns_Out
+
+
+def _getGrevillePoints(ns):
+    pts_out = []
+
+    for iU in range(ns.Points.CountU):
+        pts_out.append([])
+        for iV in range(ns.Points.CountV):
+            u, vN = ns.Points.GetGrevillePoint(iU, iV)
+            pt = ns.PointAt(u, vN)
+            pts_out[-1].append(pt)
+
+    return pts_out
+
+
+def _createPointsProjectedToTargets(rgObjs_Targets, pts_toProject, bDebug=False):
+    """
+    rhObjects_Ref can include ObjRefs, DocObjects.RhinoObjects, GUIDS, or Geometry, but must be all the same type.
+    Returns:
+        list(rg.Point3ds)
+    """
+
+    _prompt("Creating target points ...", bDebug=bDebug)
+
+    rgBreps_Targets = []
+    rgMeshes_Targets = []
+    for rgObj in rgObjs_Targets:
+        if isinstance(rgObj, rg.Brep):
+            rgBreps_Targets.append(rgObj)
+        elif isinstance(rgObj, rg.Mesh):
+            rgMeshes_Targets.append(rgObj)
+        else:
+            raise Exception()
+
+    pts_Out = []
+    
+    for iU in range(len(pts_toProject)):
+        pts_Out.append([])
+        for iV in range(len(pts_toProject[0])):
+            if sc.escape_test(throw_exception=False):
+                print("User break.")
+                return
+
+            pts_Projected = []
+
+            if rgMeshes_Targets:
+                rv = rg.Intersect.Intersection.ProjectPointsToMeshes(
+                    meshes=rgMeshes_Targets,
+                    points=[pts_toProject[iU][iV]],
+                    direction=rg.Vector3d.ZAxis,
+                    tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+                if rv:
+                    pts_Projected.extend(rv)
+
+            if rgBreps_Targets:
+                rv = rg.Intersect.Intersection.ProjectPointsToBreps(
+                    breps=rgBreps_Targets,
+                    points=[pts_toProject[iU][iV]],
+                    direction=rg.Vector3d.ZAxis,
+                    tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+                if rv:
+                    pts_Projected.extend(rv)
+
+            if len(pts_Projected) == 0:
+                pt_to = None
+            elif len(pts_Projected) == 1:
+                pt_to = pts_Projected[0]
+            else:
+                pts = pts_Projected
+                zs = []
+                for pt in pts:
+                    zs.append(pt.Z)
+                    dist = pt.DistanceTo(pts_toProject[iU][iV])
+                winning_Z = max(zs)
+                pt_to = pts[zs.index(winning_Z)]
+
+            pts_Out[-1].append(pt_to)
+
+    _promptDone(bDebug=bDebug)
+
+    return pts_Out
+
+
+def _get_orthogonal_neighbor_count_of_point(pts, iU, iV):
+    """
+    Parameters:
+        pts: u list of v lists of pts
+        iU: int Index in u (top-level list)
+        iV: int Index of v (nested list)
+    Returns:
+        int (0, 1, 2, 3, or 4)
+    """
+
+    idx_MaxU = len(pts)-1
+    idx_MaxV = len(pts[0])-1
+
+    ct = 0
+
+    if iU-1 >= 0 and pts[iU-1][iV] is not None:
+        ct += 1
+    if iU+1 <= idx_MaxU and pts[iU+1][iV] is not None:
+        ct += 1
+    if iV-1 >= 0 and pts[iU][iV-1] is not None:
+        ct += 1
+    if iV+1 <= idx_MaxV and pts[iU][iV+1] is not None:
+        ct += 1
+
+    return ct
+
+
+def _getBorderPointIndices(pts_Target):
+    idxs_borderPts = []
+    for iU in range(len(pts_Target)):
+        for iV in range(len(pts_Target[0])):
+            if (
+                pts_Target[iU][iV] is None and
+                _get_orthogonal_neighbor_count_of_point(pts_Target, iU, iV) > 0
+            ):
+                idxs_borderPts.append((iU,iV))
+    return idxs_borderPts
+
+
+    def _createZAxisLinesAtGrevilles(pts_Greville_toProject):
+        lines = []
+        for iU in range(len(pts_Greville_toProject)):
+            lines.append([])
+            for iV in range(len(pts_Greville_toProject[0])):
+                line = rg.Line(
+                        start=pts_Greville_toProject[iU][iV],
+                        span=rg.Vector3d.ZAxis)
+                #sc.doc.Objects.AddLine(line)
+                lines[-1].append(line)
+        return lines
+
+
+def _hasMissingPoints(pts):
+    return any([pt is None for ptsV in pts for pt in ptsV])
+
+
+def _flattenNestedList(pts_in):
+    """Returns: Flattened list of 1-level nested lists"""
+    pts_out = []
+    for iU in range(len(pts_in)):
+        for iV in range(len(pts_in[iU])):
+            pts_out.append(pts_in[iU][iV])
+    return pts_out
+
+
+def _sortAndGroupTargetsByElevation(ns, pts_In, fElevTol, bDebug=False):
+    """
+    Returns:
+        list(lists of u and vN index tuples whose z's are within fElevTol)
+    """
+
+    _prompt("Sorting target points by elevation ...", bDebug=bDebug)
+
+    pts_Flat = _flattenNestedList(pts_In)
+    zs_Flat_FlatOrder = [pt.Z for pt in pts_Flat]
+    zs_Flat_HiToLo = sorted(zs_Flat_FlatOrder, reverse=True)
+    iZs_Used = []
+    iZs_Sorted_Grouped_Flat = []
+    z_LastTolStart = None
+    for i, z in enumerate(zs_Flat_HiToLo):
+        if zs_Flat_FlatOrder.index(z) in iZs_Used:
+            continue
+        iZs_NewElevation = [j for j, x in enumerate(zs_Flat_FlatOrder) if x == z]
+        if z_LastTolStart is None or abs(z_LastTolStart-z) > fElevTol:
+            iZs_Sorted_Grouped_Flat.append(iZs_NewElevation)
+            z_LastTolStart = z
+        else:
+            iZs_Sorted_Grouped_Flat[-1].extend(iZs_NewElevation)
+        iZs_Used.extend(iZs_NewElevation)
+
+    iUiVs_Sorted = []
+    for z_Group in iZs_Sorted_Grouped_Flat:
+        iUiVs_Sorted.append([])
+        for iZ in z_Group:
+            iUiVs_Sorted[-1].append(
+                (iZ // ns.Points.CountV, iZ % ns.Points.CountV))
+            #sc.doc.Objects.AddPoint(pts_In[iU][iV])
+
+    _promptDone(bDebug=False)
+
+    return iUiVs_Sorted
+
+
+def _getNeighborsPerElevationGroup(ns, uvs_Target_Groups, zs_Targets, zs_Min_AdjustedPerNeighbors, bDebug=False):
+    """
+    """
+
+    _prompt("Determining neighbors of targets ...", bDebug=bDebug)
+
+    iUiVs_Sorted_Flat = _flattenNestedList(uvs_Target_Groups)
+    uvs_WithTarget = []
+    iDirs = -1, 0, 1
+    # 8 directions from each index location.
+    neighbor_dir_deltas = [[iU_N, iV_N] for iU_N in iDirs for iV_N in iDirs]
+    uvs_Neighbors_PerElevGroup = []
+
+    for iGroup, uvs_Target_Group in enumerate(uvs_Target_Groups):
+        uvs_Neighbors_PerElevGroup.append([])
+        for uT, vT in uvs_Target_Group:
+            #print("T:", uT, vT)
+            for uD, vD in neighbor_dir_deltas:
+                uN = uT + uD
+                vN = vT + vD
+                #print("N:", uN, vN)
+                if (uN, vN) in uvs_Target_Group:
+                    # Neighbor cannot be in current target group.
+                    continue
+                if (uN, vN) in uvs_WithTarget:
+                    continue
+                if not (2 < uN < (ns.Points.CountU-3)):
+                    continue
+                if not (2 < vN < (ns.Points.CountV-3)):
+                    continue
+                uvs_Neighbors_PerElevGroup[-1].append((uN, vN))
+                uvs_WithTarget.append((uN, vN))
+                if zs_Min_AdjustedPerNeighbors[uN][vN] < zs_Targets[uT][vT]:
+                    zs_Min_AdjustedPerNeighbors[uN][vN] = zs_Targets[uT][vT]
+
+    _promptDone(bDebug=bDebug)
+
+    return uvs_Neighbors_PerElevGroup
+
+
+def _iterativelyFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTolerance, bDebug=False):
+    """
+    """
+
+    ns_Out = ns_In.Duplicate()
+
+
+    #map(sc.doc.Objects.AddPoint, [pt for pts_V in pts_Target for pt in pts_V]); sc.doc.Views.Redraw(); return
+
+
+    uvs_Targets_InElevGroups = _sortAndGroupTargetsByElevation(
+        ns_In,
+        pts_Target,
+        10.0*fTolerance,
+        bDebug=bDebug)
+
+    if bDebug:
+        print('-'*20)
+        sEval = "uvs_Targets_InElevGroups[8][22:27]"; print(sEval,'=',eval(sEval))
+        sEval = "uvs_Targets_InElevGroups[9][22:29]"; print(sEval,'=',eval(sEval))
+        sEval = "uvs_Targets_InElevGroups[9][22:27]"; print(sEval,'=',eval(sEval))
+
+
+    if bDebug: sEval = 'len(uvs_Targets_InElevGroups)'; print(sEval+':',eval(sEval))
+
+    zs_HighestPerElevGroup = []
+    for uvsGroup in uvs_Targets_InElevGroups:
+        zs = []
+        for u,v in uvsGroup:
+            zs.append(pts_Target[u][v].Z)
+        zs_HighestPerElevGroup.append(max(zs))
+
+    if bDebug:
+        print('-'*20)
+        sEval = "zs_HighestPerElevGroup"; print(sEval,'=',eval(sEval))
+        sEval = "len(zs_HighestPerElevGroup)"; print(sEval,'=',eval(sEval))
+
+        print('-'*20)
+        sEval = "uvs_Targets_InElevGroups[8][22:27]"; print(sEval,'=',eval(sEval))
+        sEval = "uvs_Targets_InElevGroups[9][22:29]"; print(sEval,'=',eval(sEval))
+        sEval = "uvs_Targets_InElevGroups[9][22:27]"; print(sEval,'=',eval(sEval))
+
+    #for pts_V in pts_Target:
+    #    for pt in pts_V:
+    #        sc.doc.Objects.AddPoint(pt)
+    #    sc.doc.Views.Redraw()
+    #return
+
+
+    #attr = rd.ObjectAttributes()
+    #attr.ColorSource = rd.ObjectColorSource.ColorFromObject
+    #for iUiV_Group in uvs_Targets_InElevGroups:
+    #    attr.ObjectColor = Color.FromArgb(
+    #            red=random.randint(0, 255),
+    #            green=random.randint(0, 255),
+    #            blue=random.randint(0, 255))
+    #    for iU, iV in iUiV_Group:
+    #        sc.doc.Objects.AddPoint(pts_Target[iU][iV], attr)
+    #sc.doc.Views.Redraw(); 1/0
+
+
+    zs_Targets = [[pt.Z for pt in ptsV] for ptsV in pts_Target]
+
+    if bDebug:
+        print('-'*20)
+        sEval = "zs_Targets[8][22:27]"; print(sEval,'=',eval(sEval))
+        sEval = "zs_Targets[9][22:29]"; print(sEval,'=',eval(sEval))
+        sEval = "zs_Targets[9][22:27]"; print(sEval,'=',eval(sEval))
+
+
+    # Set zs_Targets in elevation groups to highest elevation.
+    # This allows better control point selection in resultant surface.
+    for iGroup, uvsGroup in enumerate(uvs_Targets_InElevGroups):
+        for u, v in uvsGroup:
+            zs_Targets[u][v] = zs_HighestPerElevGroup[iGroup]
+
+    if bDebug:
+        print('-'*20)
+        sEval = "zs_Targets[8][22:27]"; print(sEval,'=',eval(sEval))
+        sEval = "zs_Targets[9][22:29]"; print(sEval,'=',eval(sEval))
+        sEval = "zs_Targets[9][22:27]"; print(sEval,'=',eval(sEval))
+
+    zs_Min_AdjustedPerNeighbors = [zsV[:] for zsV in zs_Targets]
+
+    if bDebug:
+        print('-'*20)
+        sEval = "zs_Min_AdjustedPerNeighbors[8][22:27]"; print(sEval,'=',eval(sEval))
+        sEval = "zs_Min_AdjustedPerNeighbors[9][22:29]"; print(sEval,'=',eval(sEval))
+        sEval = "zs_Min_AdjustedPerNeighbors[9][22:27]"; print(sEval,'=',eval(sEval))
+
+
+    uvs_Neighbors_PerElevGroup = _getNeighborsPerElevationGroup(
+        ns_In,
+        uvs_Targets_InElevGroups,
+        zs_Targets,
+        zs_Min_AdjustedPerNeighbors,
+        bDebug=bDebug)
+
+    if bDebug:
+        print('-'*20)
+        sEval = "zs_Min_AdjustedPerNeighbors[8][22:27]"; print(sEval,'=',eval(sEval))
+        sEval = "zs_Min_AdjustedPerNeighbors[9][22:29]"; print(sEval,'=',eval(sEval))
+        sEval = "zs_Min_AdjustedPerNeighbors[9][22:27]"; print(sEval,'=',eval(sEval))
+
+
+    #print(uvs_Targets_InElevGroups[:10])
+    if bDebug: sEval = 'len(uvs_Neighbors_PerElevGroup)'; print(sEval+':',eval(sEval))
+
+
+    # Do not allow first neighber group to be lowered.
+    for (uN, vN) in uvs_Neighbors_PerElevGroup[0]:
+        cp = ns_In.Points.GetControlPoint(uN, vN)
+        zs_Min_AdjustedPerNeighbors[uN][vN] = cp.Location.Z
+
+
+    # Start loop at level 1, not 0, because
+    # top elevations and neighbors stay at highest elevation.
+
+    uvs_Neighbors_Cum_prev_Flat = []
+
+    for iGroup in range(1, len(uvs_Targets_InElevGroups)):
+        if iGroup > 1:
+            _promptDone(False, bDebug=False)
+
+        _prompt("Fitting elevation level {} of {} ...".format(
+            iGroup+1, len(uvs_Targets_InElevGroups)), bDebug=False)
+            
+        uvs_Target_Group = uvs_Targets_InElevGroups[iGroup]
+        uvs_NeighborsOfGroup = uvs_Neighbors_PerElevGroup[iGroup]
+        uvs_Neighbors_Cum_prev_Flat.extend(uvs_Neighbors_PerElevGroup[iGroup-1])
+
+        # Set CP locations of targets only if not already set as a neighbor.
+        for uT,vT in uvs_Target_Group:
+            if (uT, vT) in uvs_Neighbors_Cum_prev_Flat:
+                continue
+            cp = ns_Out.Points.GetControlPoint(uT, vT)
+            cp.Z = pts_Target[uT][vT].Z
+            ns_Out.Points.SetControlPoint(uT, vT, cp)
+
+
+        ## Translate neighbors as low as possible to their target Z.
+
+        # First, translate neighbors to their ? Z.
+        for uN,vN in uvs_NeighborsOfGroup:
+
+            # Do not modify first group.
+            if (uN, vN) in uvs_Neighbors_PerElevGroup[0]:
+                #print("Skipped {} {}".format(uN, vN))
+                continue
+
+            cp = ns_Out.Points.GetControlPoint(uN, vN)
+            #z_Low = pts_Target[uN][vN].Z
+            z_Low = zs_Min_AdjustedPerNeighbors[uN][vN]
+            cp.Z = z_Low
+            ns_Out.Points.SetControlPoint(uN, vN, cp)
+
+            if (uN,vN) == (6,5):
+                pass
+
+            #    for uT,vT in uvs_Target_Group:
+            #        sc.doc.Objects.AddPoint(pts_Target[uT][vT])
+            #    sc.doc.Views.Redraw(); return
+
+
+        # Test whether Greville points of elevation group are still on or above target.
+
+        for uT,vT in uvs_Target_Group:
+            uG,vG = ns_Out.Points.GetGrevillePoint(uT, vT)
+            #print(uT, vT)
+            if (uT,vT) == (6,5):
+                pass
+            #    sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); return
+            zG = ns_Out.PointAt(uG, vG).Z
+            zT = pts_Target[uT][vT].Z
+            if (zG + 0.001*fTolerance) >= zT:
+                continue
+            #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); 1/0
+            break
+        else:
+            #if bDebug:
+            #    _prompt("All Grevilles are on or above target.", bDebug=False)
+            # No change to zs_Min_AdjustedPerNeighbors.
+            #sc.doc.Objects.AddPoint(pts_Target[u][vN])
+            continue # to next elevation group.
+        #sc.doc.Views.Redraw(); 1/0
+
+        ##
+
+
+        #if bDebug:
+        #    _prompt("Binary search the correct elevation.", bDebug=False)
+        fraction_L = 0.0
+        fraction_H = 1.0
+
+        while True:
+            sc.escape_test()
+
+            #if bDebug: print("L,H 'fraction': {}, {}".format(fraction_L, fraction_H))
+
+            fraction_M = 0.5*fraction_L + 0.5*fraction_H
+
+            for uN,vN in uvs_NeighborsOfGroup:
+                # Translate point as low as possible to its target Z.
+                cp = ns_Out.Points.GetControlPoint(uN,vN)
+                z_Lowest = zs_Min_AdjustedPerNeighbors[uN][vN]
+
+                # Instead of starting surface, use elevation of closest
+                # neighbor in uvs_Targets_InElevGroups.
+                #def getElevationOfClosestTarget():
+                #    dists = []
+                #    for (uT, vT) in uvs_Targets_InElevGroups[iGroup]:
+                #        dist = ((float(uN - uT))**2 + (float(vN - vT))**2)**0.5
+                #        dists.append(dist)
+                #        dist_Min = min(dists)
+                #    zs_Winners = []
+                #    for i, dist in enumerate(dists):
+                #        if abs(dist_Min-dist) <= 1e-9:
+                #            zs_Winners.append(zs_PerElevGroup[iGroup][i])
+                #    return sum(zs_Winners) / float(len(zs_Winners))
+
+                # Instead of starting surface, use highest elevation of
+                # neighbors.
+                def getHighestElevationOfNeighbors():
+                    iDirs = -1, 0, 1
+                    # 8 directions from each index location.
+                    delta_dirs = [[u, v] for u in iDirs for v in iDirs]
+
+                    zs_Neighbors = []
+
+                    for uD, vD in delta_dirs:
+                        uNN = uN + uD
+                        vNN = vN + vD
+                        zs_Neighbors.append(zs_Targets[uNN][vNN])
+
+                    return max(zs_Neighbors)
+
+                z_Highest = getHighestElevationOfNeighbors()
+
+
+                cp.Z = z_Lowest + (z_Highest-z_Lowest)*fraction_M
+                ns_Out.Points.SetControlPoint(uN,vN,cp)
+
+            for uT,vT in uvs_Target_Group:
+                uG,vG = ns_Out.Points.GetGrevillePoint(uT, vT)
+                zG = ns_Out.PointAt(uG, vG).Z
+                zT = pts_Target[uT][vT].Z
+                if zG >= zT:
+                    continue
+                # Greville is too low.
+                fraction_L = fraction_M
+                break
+            else:
+                # All Grevilles are on or above target.
+                fraction_H = fraction_M
+
+            if abs(fraction_H - fraction_L) <= 0.001:
+                #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); 1/0
+                break # out of while / binary search.
+
+        for uN,vN in uvs_NeighborsOfGroup:
+            # Translate point as low as possible to its target Z.
+            cp = ns_Out.Points.GetControlPoint(uN,vN)
+            zs_Min_AdjustedPerNeighbors[uN][vN] = cp.Location.Z
+
+        #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); 1/0
+
+
+    if bDebug:
+        print("Iteratived through {} elevation groups.".format(iGroup+1))
+        print("Position points not within 3 from border nor are already translated.")
+
+    uvs_done_Flat = uvs_Targets_InElevGroups[0] + [(uN, vN) for uvs in uvs_Neighbors_PerElevGroup for (uN, vN) in uvs]
+
+    for uN in range(3, ns_In.Points.CountU-3):
+        for vN in range(3, ns_In.Points.CountV-3):
+            if (uN, vN) not in uvs_done_Flat:
+                cp = ns_Out.Points.GetControlPoint(uN,vN)
+                cp.Z = pts_Target[uN][vN].Z
+                ns_Out.Points.SetControlPoint(uN,vN,cp)
+
+
+    return ns_Out
+
+
+def _iterativelyFit_TranslatePointsIndividually(pts, ns_In, fTolerance):
+    """
+    """
+
+    ns_Out = ns_In.Duplicate()
+
+    # Initially, move control points whose Grevilles are not within tolerance of their targets.
+    for iU in range(ns_In.Points.CountU):
+        for iV in range(ns_In.Points.CountV):
+            uv_Gr = ns_Out.Points.GetGrevillePoint(iU, iV)
+            pt_Gr = ns_Out.PointAt(uv_Gr[0], uv_Gr[1])
+            dist = pt_Gr.DistanceTo(pts[iU][iV])
+            vect = pts[iU][iV] - pt_Gr
+            if vect.Length <= fTolerance:
+                continue
+
+            ns_Out.Points.SetControlPoint(iU,iV,pts[iU][iV])
+
+    for i in xrange(200):
+        bTransPts = False
+        for iU in range(ns_In.Points.CountU):
+            for iV in range(ns_In.Points.CountV):
+                uv_Gr = ns_Out.Points.GetGrevillePoint(iU, iV)
+                pt_Gr = ns_Out.PointAt(uv_Gr[0], uv_Gr[1])
+                dist = pt_Gr.DistanceTo(pts[iU][iV])
+                vect = pts[iU][iV] - pt_Gr
+                if vect.Length <= fTolerance:
+                    continue
+                #print(dist, vect)
+                cp = ns_Out.Points.GetControlPoint(iU,iV)
+                ns_Out.Points.SetControlPoint(iU,iV,cp.Location+vect)
+                bTransPts = True
+        if not bTransPts:
+            print("{} iterations for Grevilles to lie on target(s) within {}.".format(
+                i+1, fTolerance))
+            return ns_Out
+
+    print("After {} iterations, Grevilles still do not lie on target(s) within {}.".format(
+        i+1, fTolerance))
+
+    return ns_Out
+
+
+def _iterativelyFit_TranslatePoints_GroupedByDegree(pts_Target, ns_In, fTolerance):
+    """
+    """
+
+    ns_Out = ns_In.Duplicate()
+
+    # Initially, move control points whose Grevilles are not within tolerance of their targets.
+
+    bPos_NotNeg_Z_trans_from_start = None
+    iCt_Neg_Z_trans = 0
+    iCt_Pos_Z_trans = 0
+
+    for iU_Group_SW in range(ns_Out.Degree(0), ns_Out.Points.CountU-ns_Out.Degree(0), ns_Out.Degree(0)):
+        if ((iU_Group_SW + ns_Out.Degree(0)) >= ns_Out.Points.CountU):
+            break
+        for iV_Group_SW in range(ns_Out.Degree(1), ns_Out.Points.CountV-ns_Out.Degree(1), ns_Out.Degree(1)):
+            if ((iV_Group_SW + ns_Out.Degree(1)) >= ns_Out.Points.CountV):
+                continue
+            zs_Trans = []
+            dists = []
+            iUs_dists = []
+            iVs_dists = []
+            for iU_Sub in range(ns_Out.Degree(0)):
+                for iV_Sub in range(ns_Out.Degree(1)):
+                    iU = iU_Group_SW + iU_Sub
+                    iV = iV_Group_SW + iV_Sub
+                    cp = ns_Out.Points.GetControlPoint(iU, iV)
+                    pt_cp = cp.Location
+                    #sc.doc.Objects.AddPoint(pt_cp)
+                    #sc.doc.Objects.AddPoint(pts_Target[iU][iV])
+                    vect = pts_Target[iU][iV] - pt_cp
+                    zs_Trans.append(vect.Z)
+                    dist = abs(vect.Z)
+                    dists.append(dist)
+                    iUs_dists.append(iU)
+                    iVs_dists.append(iV)
+                    if dist > fTolerance:
+                        if bPos_NotNeg_Z_trans_from_start is None:
+                            bPos_NotNeg_Z_trans_from_start = vect.Z > 0
+                        elif bPos_NotNeg_Z_trans_from_start != (vect.Z > 0):
+                            print("Starting surface is not completely on one side of targets.")
+                            return
+
+            goal_dist = max(dists)
+
+            #print(goal_dist)
+
+            if goal_dist <= fTolerance:
+                continue # to next group.
+
+            idx_goal = dists.index(goal_dist)
+
+            z = pts_Target[iUs_dists[idx_goal]][iVs_dists[idx_goal]].Z
+
+            for iU_Sub in range(ns_Out.Degree(0)):
+                for iV_Sub in range(ns_Out.Degree(1)):
+                    iU = iU_Group_SW + iU_Sub
+                    iV = iV_Group_SW + iV_Sub
+                    cp_New = ns_Out.Points.GetControlPoint(iU, iV)
+                    cp_New.Z = z
+                    ns_Out.Points.SetControlPoint(
+                        iU,
+                        iV,
+                        cp_New)
+
+    #attr.ObjectColor = Color.DarkCyan
+    #sc.doc.Objects.AddSurface(ns_Out, attr); sc.doc.Views.Redraw()#; return
+
+
+    for i in xrange(20):
+        sc.escape_test()
+        print(i)
+        bTransPts = False
+
+        for iU_Group_SW in range(0, ns_Out.Points.CountU, ns_Out.Degree(0)):
+            if ((iU_Group_SW + ns_Out.Degree(0)) >= ns_Out.Points.CountU):
+                break
+            for iV_Group_SW in range(0, ns_Out.Points.CountV, ns_Out.Degree(1)):
+                if ((iV_Group_SW + ns_Out.Degree(1)) >= ns_Out.Points.CountV):
+                    continue
+                dists_FromStart = []
+                zs_Trans = []
+                iUs_dists = []
+                iVs_dists = []
+                for iU_Sub in range(ns_Out.Degree(0)):
+                    for iV_Sub in range(ns_Out.Degree(1)):
+                        iU = iU_Group_SW + iU_Sub
+                        iV = iV_Group_SW + iV_Sub
+                        u_Gr, v_Gr = ns_Out.Points.GetGrevillePoint(iU, iV)
+                        pt_Gr = ns_Out.PointAt(u_Gr, v_Gr)
+                        vect = pts_Target[iU][iV] - pt_Gr
+                        zs_Trans.append(vect.Z)
+
+                z_Trans = min(zs_Trans) if bPos_NotNeg_Z_trans_from_start else max(zs_Trans)
+                if abs(z_Trans) <= fTolerance:
+                    continue # to next group.
+
+                for iU_Sub in range(ns_Out.Degree(0)):
+                    for iV_Sub in range(ns_Out.Degree(1)):
+                        iU = iU_Group_SW + iU_Sub
+                        iV = iV_Group_SW + iV_Sub
+                        cp_New = ns_Out.Points.GetControlPoint(iU, iV)
+                        cp_New.Z += z_Trans
+                        ns_Out.Points.SetControlPoint(
+                            iU,
+                            iV,
+                            cp_New)
+
+                bTransPts = True
+
+        #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); #return
+
+        if not bTransPts:
+            print("{} iterations for Grevilles to lie on target(s) within {}.".format(
+                i+1, fTolerance))
+            return ns_Out
+
+    print("After {} iterations, Grevilles still do not lie on target(s) within {}.".format(
+        i+1, fTolerance))
+
+    return ns_Out
+
+
+def _addObject(rgObj, xform):
+    if xform:
+        if isinstance(rgObj, rg.GeometryBase):
+            rgObj_Dup = rgObj.Duplicate()
+            rgObj_Dup.Transform(xform)
+            sc.doc.Objects.Add(rgObj)
+        elif isinstance(rgObj, rg.Point3d):
+            rgPt3d_Dup = rg.Point3d(rgObj)
+            rgPt3d_Dup.Transform(xform)
+            sc.doc.Objects.AddPoint(rgPt3d_Dup)
+        else:
+            raise Exception("{} not supported yet.".format(rgObj.GetType().Name))
+    else:
+        if isinstance(rgObj, rg.GeometryBase):
+            sc.doc.Objects.Add(rgObj)
+        elif isinstance(rgObj, rg.Point3d):
+            sc.doc.Objects.AddPoint(rgPt3d_Dup)
+
+
+def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, fTolerance=None, iExtrapolationCt=1, bDebug=False):
     """
     """
 
@@ -278,10 +1041,18 @@ def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fToler
 
     ns_Starting = srf_Starting.ToNurbsSurface()
 
-    if cPlane != rg.Plane.WorldXY:
+    #sEval = "cPlane"; print(sEval,'=',eval(sEval))
+    #return
+
+    if cPlane == rg.Plane.WorldXY:
+        xform = None
+    else:
         xform = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
-        [rgBreps_ProjectTo[i].Transform(xform) for i in range(len(rgBreps_ProjectTo))]
+        [rgObjs_toDrapeOver[i].Transform(xform) for i in range(len(rgObjs_toDrapeOver))]
         ns_Starting.Transform(xform)
+
+        # Prepare xform for output.
+        xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
         #[sc.doc.Objects.AddBrep(rgBreps_ProjectTo[i]) for i in range(len(rgBreps_ProjectTo))]
         #sc.doc.Objects.AddSurface(ns_Starting); sc.doc.Views.Redraw()#; return
 
@@ -291,158 +1062,36 @@ def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fToler
                for v in range(ns_Starting.Points.CountV)]
 
 
-    def prompt(sPrompt):
-        if bDebug: print sPrompt
-        Rhino.RhinoApp.SetCommandPrompt(sPrompt)
-        Rhino.RhinoApp.Wait()
-
-
-    def promptDone(bAddWorking=True):
-        if bDebug: print Rhino.RhinoApp.CommandPrompt + " done."
-        if bAddWorking:
-            Rhino.RhinoApp.SetCommandPrompt("Working ...")
-            Rhino.RhinoApp.Wait()
-
-
-    def addKnotsToSurface(rgNurbsSrf):
-        """
-        Returns: rg.NurbsSurface
-        """
-
-        ns_In = rgNurbsSrf
-        ns_Out = ns_In.Duplicate()
-
-        iK = ns_In.KnotsU.Count-1-ns_In.Degree(0)
-        k_M = ns_In.KnotsU[iK]
-        k_L = ns_In.KnotsU[iK-1]
-        ns_Out.KnotsU.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
-
-        for iK in range(ns_In.KnotsU.Count-2-ns_In.Degree(0), ns_In.Degree(0), -1):
-            k_M = ns_In.KnotsU[iK]
-            k_L = ns_In.KnotsU[iK-1]
-            k_R = ns_In.KnotsU[iK+1]
-            ns_Out.KnotsU.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
-            ns_Out.KnotsU.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
-
-        iK = ns_In.Degree(0)
-        k_M = ns_In.KnotsU[iK]
-        k_R = ns_In.KnotsU[iK+1]
-        ns_Out.KnotsU.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
-
-        iK = ns_In.KnotsV.Count-1-ns_In.Degree(1)
-        k_M = ns_In.KnotsV[iK]
-        k_L = ns_In.KnotsV[iK-1]
-        ns_Out.KnotsV.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
-
-        for iK in range(ns_In.KnotsV.Count-2-ns_In.Degree(1), ns_In.Degree(1), -1):
-            k_M = ns_In.KnotsV[iK]
-            k_L = ns_In.KnotsV[iK-1]
-            k_R = ns_In.KnotsV[iK+1]
-            ns_Out.KnotsV.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
-            ns_Out.KnotsV.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
-
-        iK = ns_In.Degree(1)
-        k_M = ns_In.KnotsV[iK]
-        k_R = ns_In.KnotsV[iK+1]
-        ns_Out.KnotsV.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
-
-        return ns_Out
-
     #ns_WIP = addKnotsToSurface(ns_Starting)
 
 
-    def getGrevillePoints(ns):
-        pts_out = []
+    pts_Greville = _getGrevillePoints(ns_Starting)
 
-        for iU in range(ns.Points.CountU):
-            pts_out.append([])
-            for iV in range(ns.Points.CountV):
-                u, vN = ns.Points.GetGrevillePoint(iU, iV)
-                pt = ns.PointAt(u, vN)
-                pts_out[-1].append(pt)
+    #[sc.doc.Objects.AddPoint(pts_Greville[u][v]) for u, v in uvs_All if pts_Greville[u][v] is not None]
+    #sc.doc.Views.Redraw(); return
 
-        return pts_out
-
-    pts_Greville = getGrevillePoints(ns_Starting)
-
-
-    def createPointsProjectedToBreps(rgBreps_ProjectTo, pts_toProject):
-        """
-        rhObjects_Ref can include ObjRefs, DocObjects.RhinoObjects, GUIDS, or Geometry, but must be all the same type.
-        Returns:
-            list(rg.Point3ds)
-        """
-
-        prompt("Creating target points ...")
-
-        pts_Out = []
-    
-        for iU in range(len(pts_toProject)):
-            pts_Out.append([])
-            for iV in range(len(pts_toProject[0])):
-                rc = rg.Intersect.Intersection.ProjectPointsToBreps(
-                        breps=rgBreps_ProjectTo,
-                        points=[pts_toProject[iU][iV]],
-                        direction=rg.Vector3d.ZAxis,
-                        tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
-                if len(rc) == 0:
-                    pt_to = None
-                elif len(rc) == 1:
-                    pt_to = rc[0]
-                else:
-                    pts = rc
-                    zs = []
-                    for pt in pts:
-                        zs.append(pt.Z)
-                        dist = pt.DistanceTo(pts_toProject[iU][iV])
-                    winning_Z = max(zs)
-                    pt_to = pts[zs.index(winning_Z)]
-
-                pts_Out[-1].append(pt_to)
-
-        promptDone()
-
-        return pts_Out
-
-    pts_Target = createPointsProjectedToBreps(
-        rgBreps_ProjectTo=rgBreps_ProjectTo,
+    pts_Target = _createPointsProjectedToTargets(
+        rgObjs_Targets=rgObjs_toDrapeOver,
         pts_toProject=pts_Greville,
+        bDebug=bDebug,
         )
     if not pts_Target:
-        print "Projected points were not obtained."
+        print("Projected points were not obtained.")
         return
 
-    #[sc.doc.Objects.AddPoint(pts_Target[u][v]) for u, v in uvs_All if pts_Target[u][v] is not None]; sc.doc.Views.Redraw(); return
 
+    #[_addObject(pts_Target[u][v], xform) for u, v in uvs_All if pts_Target[u][v] is not None]
+    #sc.doc.Views.Redraw(); return
 
     #for iU in range(len(pts_Target)):
     #    for iV in range(len(pts_Target[iU])):
-    #        #print iU, iV, pts_Target[iU][iV]
+    #        #print(iU, iV, pts_Target[iU][iV]))
     #        if pts_Target[iU][iV] is None:
     #            continue
     #        sc.doc.Objects.AddPoint(pts_Target[iU][iV])
             #line = rg.Line(start=pts_Target[iU][iV], span=norms_Projected[iU][iV])
             #sc.doc.Objects.AddLine(line)
     #sc.doc.Views.Redraw(); return
-
-
-    def getNeighborCount(pts, iU, iV):
-
-        idx_MaxU = len(pts)-1
-        idx_MaxV = len(pts[0])-1
-
-        ct = 0
-
-        if iU-1 >= 0 and pts[iU-1][iV] is not None:
-            ct += 1
-        if iU+1 <= idx_MaxU and pts[iU+1][iV] is not None:
-            ct += 1
-        if iV-1 >= 0 and pts[iU][iV-1] is not None:
-            ct += 1
-        if iV+1 <= idx_MaxV and pts[iU][iV+1] is not None:
-            ct += 1
-
-        return ct
 
 
     def closestPointsOfNeighborsOnNormalLines(pts_In, iU, iV, iMinNeighborCt=1, bDiag=True, bLineExts=True):
@@ -698,505 +1347,20 @@ def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fToler
         return bModificationOccured
 
 
-    def hasMissingPoints(pts):
-        return any([pt is None for ptsV in pts for pt in ptsV])
 
-    #def hasMissingPoints(pts):
-    #    for iU in range(len(pts)):
-    #        for iV in range(len(pts[0])):
-    #            if pts[iU][iV] is None:
-    #                return True
-    #    return False
-
-
-    def iterateFit_TranslatePointsIndividually(pts, ns_In, fTolerance):
-        """
-        """
-
-        ns_Out = ns_In.Duplicate()
-
-        # Initially, move control points whose Grevilles are not within tolerance of their targets.
-        for iU in range(ns_In.Points.CountU):
-            for iV in range(ns_In.Points.CountV):
-                uv_Gr = ns_Out.Points.GetGrevillePoint(iU, iV)
-                pt_Gr = ns_Out.PointAt(uv_Gr[0], uv_Gr[1])
-                dist = pt_Gr.DistanceTo(pts[iU][iV])
-                vect = pts[iU][iV] - pt_Gr
-                if vect.Length <= fTolerance:
-                    continue
-
-                ns_Out.Points.SetControlPoint(iU,iV,pts[iU][iV])
-
-        for i in xrange(200):
-            bTransPts = False
-            for iU in range(ns_In.Points.CountU):
-                for iV in range(ns_In.Points.CountV):
-                    uv_Gr = ns_Out.Points.GetGrevillePoint(iU, iV)
-                    pt_Gr = ns_Out.PointAt(uv_Gr[0], uv_Gr[1])
-                    dist = pt_Gr.DistanceTo(pts[iU][iV])
-                    vect = pts[iU][iV] - pt_Gr
-                    if vect.Length <= fTolerance:
-                        continue
-                    #print dist, vect
-                    cp = ns_Out.Points.GetControlPoint(iU,iV)
-                    ns_Out.Points.SetControlPoint(iU,iV,cp.Location+vect)
-                    bTransPts = True
-            if not bTransPts:
-                print "{} iterations for Grevilles to lie on target(s) within {}.".format(
-                    i+1, fTolerance)
-                return ns_Out
-
-        print "After {} iterations, Grevilles still do not lie on target(s) within {}.".format(
-            i+1, fTolerance)
-
-        return ns_Out
-
-
-    def iterateFit_TranslatePoints_GroupedByDegree(pts_Target, ns_In, fTolerance):
-        """
-        """
-
-        ns_Out = ns_In.Duplicate()
-
-        # Initially, move control points whose Grevilles are not within tolerance of their targets.
-
-        bPos_NotNeg_Z_trans_from_start = None
-        iCt_Neg_Z_trans = 0
-        iCt_Pos_Z_trans = 0
-
-        for iU_Group_SW in range(ns_Out.Degree(0), ns_Out.Points.CountU-ns_Out.Degree(0), ns_Out.Degree(0)):
-            if ((iU_Group_SW + ns_Out.Degree(0)) >= ns_Out.Points.CountU):
-                break
-            for iV_Group_SW in range(ns_Out.Degree(1), ns_Out.Points.CountV-ns_Out.Degree(1), ns_Out.Degree(1)):
-                if ((iV_Group_SW + ns_Out.Degree(1)) >= ns_Out.Points.CountV):
-                    continue
-                zs_Trans = []
-                dists = []
-                iUs_dists = []
-                iVs_dists = []
-                for iU_Sub in range(ns_Out.Degree(0)):
-                    for iV_Sub in range(ns_Out.Degree(1)):
-                        iU = iU_Group_SW + iU_Sub
-                        iV = iV_Group_SW + iV_Sub
-                        cp = ns_Out.Points.GetControlPoint(iU, iV)
-                        pt_cp = cp.Location
-                        #sc.doc.Objects.AddPoint(pt_cp)
-                        #sc.doc.Objects.AddPoint(pts_Target[iU][iV])
-                        vect = pts_Target[iU][iV] - pt_cp
-                        zs_Trans.append(vect.Z)
-                        dist = abs(vect.Z)
-                        dists.append(dist)
-                        iUs_dists.append(iU)
-                        iVs_dists.append(iV)
-                        if dist > fTolerance:
-                            if bPos_NotNeg_Z_trans_from_start is None:
-                                bPos_NotNeg_Z_trans_from_start = vect.Z > 0
-                            elif bPos_NotNeg_Z_trans_from_start != (vect.Z > 0):
-                                print "Starting surface is not completely on one side of targets."
-                                return
-
-                goal_dist = max(dists)
-
-                #print goal_dist
-
-                if goal_dist <= fTolerance:
-                    continue # to next group.
-
-                idx_goal = dists.index(goal_dist)
-
-                z = pts_Target[iUs_dists[idx_goal]][iVs_dists[idx_goal]].Z
-
-                for iU_Sub in range(ns_Out.Degree(0)):
-                    for iV_Sub in range(ns_Out.Degree(1)):
-                        iU = iU_Group_SW + iU_Sub
-                        iV = iV_Group_SW + iV_Sub
-                        cp_New = ns_Out.Points.GetControlPoint(iU, iV)
-                        cp_New.Z = z
-                        ns_Out.Points.SetControlPoint(
-                            iU,
-                            iV,
-                            cp_New)
-
-        #attr.ObjectColor = Color.DarkCyan
-        #sc.doc.Objects.AddSurface(ns_Out, attr); sc.doc.Views.Redraw()#; return
-
-
-        for i in xrange(20):
-            sc.escape_test()
-            print i
-            bTransPts = False
-
-            for iU_Group_SW in range(0, ns_Out.Points.CountU, ns_Out.Degree(0)):
-                if ((iU_Group_SW + ns_Out.Degree(0)) >= ns_Out.Points.CountU):
-                    break
-                for iV_Group_SW in range(0, ns_Out.Points.CountV, ns_Out.Degree(1)):
-                    if ((iV_Group_SW + ns_Out.Degree(1)) >= ns_Out.Points.CountV):
-                        continue
-                    dists_FromStart = []
-                    zs_Trans = []
-                    iUs_dists = []
-                    iVs_dists = []
-                    for iU_Sub in range(ns_Out.Degree(0)):
-                        for iV_Sub in range(ns_Out.Degree(1)):
-                            iU = iU_Group_SW + iU_Sub
-                            iV = iV_Group_SW + iV_Sub
-                            u_Gr, v_Gr = ns_Out.Points.GetGrevillePoint(iU, iV)
-                            pt_Gr = ns_Out.PointAt(u_Gr, v_Gr)
-                            vect = pts_Target[iU][iV] - pt_Gr
-                            zs_Trans.append(vect.Z)
-
-                    z_Trans = min(zs_Trans) if bPos_NotNeg_Z_trans_from_start else max(zs_Trans)
-                    if abs(z_Trans) <= fTolerance:
-                        continue # to next group.
-
-                    for iU_Sub in range(ns_Out.Degree(0)):
-                        for iV_Sub in range(ns_Out.Degree(1)):
-                            iU = iU_Group_SW + iU_Sub
-                            iV = iV_Group_SW + iV_Sub
-                            cp_New = ns_Out.Points.GetControlPoint(iU, iV)
-                            cp_New.Z += z_Trans
-                            ns_Out.Points.SetControlPoint(
-                                iU,
-                                iV,
-                                cp_New)
-
-                    bTransPts = True
-
-            #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); #return
-
-            if not bTransPts:
-                print "{} iterations for Grevilles to lie on target(s) within {}.".format(
-                    i+1, fTolerance)
-                return ns_Out
-
-        print "After {} iterations, Grevilles still do not lie on target(s) within {}.".format(
-            i+1, fTolerance)
-
-        return ns_Out
-
-
-    def flattenNestedList(pts_in):
-        """Returns: Flattened list of 1-level nested lists"""
-        pts_out = []
-        for iU in range(len(pts_in)):
-            for iV in range(len(pts_in[iU])):
-                pts_out.append(pts_in[iU][iV])
-        return pts_out
-
-
-    def iterateFit_TranslatePointsIndividually_HighToLow(pts_Target, ns_In, fTolerance):
-        """
-        """
-
-        ns_Out = ns_In.Duplicate()
-
-
-        #map(sc.doc.Objects.AddPoint, [pt for pts_V in pts_Target for pt in pts_V]); sc.doc.Views.Redraw(); return
-
-
-        def sortAndGroupTargetsByElevation(pts, fElevTol):
-            """
-            Returns:
-                list(lists of u and vN index tuples whose z's are within fElevTol)
-            """
-
-            prompt("Sorting target points by elevation ...")
-
-            pts_Flat = flattenNestedList(pts_Target)
-            zs_Flat_FlatOrder = [pt.Z for pt in pts_Flat]
-            zs_Flat_HiToLo = sorted(zs_Flat_FlatOrder, reverse=True)
-            iZs_Used = []
-            iZs_Sorted_Grouped_Flat = []
-            z_LastTolStart = None
-            for i, z in enumerate(zs_Flat_HiToLo):
-                if zs_Flat_FlatOrder.index(z) in iZs_Used:
-                    continue
-                iZs_NewElevation = [j for j, x in enumerate(zs_Flat_FlatOrder) if x == z]
-                if z_LastTolStart is None or abs(z_LastTolStart-z) > fElevTol:
-                    iZs_Sorted_Grouped_Flat.append(iZs_NewElevation)
-                    z_LastTolStart = z
-                else:
-                    iZs_Sorted_Grouped_Flat[-1].extend(iZs_NewElevation)
-                iZs_Used.extend(iZs_NewElevation)
-
-            iUiVs_Sorted = []
-            for z_Group in iZs_Sorted_Grouped_Flat:
-                iUiVs_Sorted.append([])
-                for iZ in z_Group:
-                    iUiVs_Sorted[-1].append(
-                        (iZ // ns_In.Points.CountV, iZ % ns_In.Points.CountV))
-                    #sc.doc.Objects.AddPoint(pts_Target[iU][iV])
-
-            promptDone()
-
-            return iUiVs_Sorted
-
-        uvs_Targets_InElevGroups = sortAndGroupTargetsByElevation(
-            pts_Target, 10.0*fTolerance)
-
-        if bDebug: sEval = 'len(uvs_Targets_InElevGroups)'; print sEval+':',eval(sEval)
-
-        zs_HighestPerElevGroup = []
-        for uvsGroup in uvs_Targets_InElevGroups:
-            zs = []
-            for u,v in uvsGroup:
-                zs.append(pts_Target[u][v].Z)
-            zs_HighestPerElevGroup.append(max(zs))
-
-
-       # for pts_V in pts_Target:
-       #     for pt in pts_V:
-       #         sc.doc.Objects.AddPoint(pt)
-       #     sc.doc.Views.Redraw()
-       # return
-
-
-        #for iUiV_Group in uvs_Targets_InElevGroups:
-        #    attr.ObjectColor = Color.FromArgb(
-        #            red=random.randint(0, 255),
-        #            green=random.randint(0, 255),
-        #            blue=random.randint(0, 255))
-        #    for iU, iV in iUiV_Group:
-        #        sc.doc.Objects.AddPoint(pts_Target[iU][iV], attr)
-
-        zs_Targets = [[pt.Z for pt in ptsV] for ptsV in pts_Target]
-
-
-        # Set zs_Targets in elevation groups to highest elevation.
-        # This allows better control point selection in resultant surface.
-        for iGroup, uvsGroup in enumerate(uvs_Targets_InElevGroups):
-            for u, v in uvsGroup:
-                zs_Targets[u][v] = zs_HighestPerElevGroup[iGroup]
-
-
-        zs_Min_AdjustedPerNeighbors = [zsV[:] for zsV in zs_Targets]
-
-
-        def getNeighborsPerElevationGroup(uvs_Target_Groups):
-            """
-            """
-
-            prompt("Determining neighbors of targets ...")
-
-            iUiVs_Sorted_Flat = flattenNestedList(uvs_Target_Groups)
-            uvs_WithTarget = []
-            iDirs = -1, 0, 1
-            # 8 directions from each index location.
-            neighbor_dir_deltas = [[iU_N, iV_N] for iU_N in iDirs for iV_N in iDirs]
-            uvs_Neighbors_PerElevGroup = []
-
-            for iGroup, uvs_Target_Group in enumerate(uvs_Target_Groups):
-                uvs_Neighbors_PerElevGroup.append([])
-                for uT, vT in uvs_Target_Group:
-                    #print "T:", uT, vT
-                    for uD, vD in neighbor_dir_deltas:
-                        uN = uT + uD
-                        vN = vT + vD
-                        #print "N:", uN, vN
-                        if (uN, vN) in uvs_Target_Group:
-                            # Neighbor cannot be in current target group.
-                            continue
-                        if (uN, vN) in uvs_WithTarget:
-                            continue
-                        if not (2 < uN < (ns_In.Points.CountU-3)):
-                            continue
-                        if not (2 < vN < (ns_In.Points.CountV-3)):
-                            continue
-                        uvs_Neighbors_PerElevGroup[-1].append((uN, vN))
-                        uvs_WithTarget.append((uN, vN))
-                        if zs_Min_AdjustedPerNeighbors[uN][vN] < zs_Targets[uT][vT]:
-                            zs_Min_AdjustedPerNeighbors[uN][vN] = zs_Targets[uT][vT]
-
-            promptDone()
-
-            return uvs_Neighbors_PerElevGroup
-
-        uvs_Neighbors_PerElevGroup = getNeighborsPerElevationGroup(uvs_Targets_InElevGroups)
-
-        if bDebug: sEval = 'len(uvs_Neighbors_PerElevGroup)'; print sEval+':',eval(sEval)
-
-
-        # Do not allow first neighber group to be lowered.
-        for (uN, vN) in uvs_Neighbors_PerElevGroup[0]:
-            cp = ns_In.Points.GetControlPoint(uN, vN)
-            zs_Min_AdjustedPerNeighbors[uN][vN] = cp.Location.Z
-
-
-        # Start loop at level 1, not 0, because
-        # top elevations and neighbors stay at highest elevation.
-
-        uvs_Neighbors_Cum_prev_Flat = []
-
-        for iGroup in range(1, len(uvs_Targets_InElevGroups)):
-            if iGroup > 1:
-                promptDone(False)
-
-            prompt("Fitting elevation level {} of {} ...".format(
-                iGroup+1, len(uvs_Targets_InElevGroups)))
-            
-            uvs_Target_Group = uvs_Targets_InElevGroups[iGroup]
-            uvs_NeighborsOfGroup = uvs_Neighbors_PerElevGroup[iGroup]
-            uvs_Neighbors_Cum_prev_Flat.extend(uvs_Neighbors_PerElevGroup[iGroup-1])
-
-            # Set CP locations of targets only if not already set as a neighbor.
-            for uT,vT in uvs_Target_Group:
-                if (uT, vT) in uvs_Neighbors_Cum_prev_Flat:
-                    continue
-                cp = ns_Out.Points.GetControlPoint(uT, vT)
-                cp.Z = pts_Target[uT][vT].Z
-                ns_Out.Points.SetControlPoint(uT, vT, cp)
-
-
-            ## Translate neighbors as low as possible to their target Z.
-
-            # First, translate neighbors to their ? Z.
-            for uN,vN in uvs_NeighborsOfGroup:
-
-                # Do not modify first group.
-                if (uN, vN) in uvs_Neighbors_PerElevGroup[0]:
-                    #print "Skipped {} {}".format(uN, vN)
-                    continue
-
-                cp = ns_Out.Points.GetControlPoint(uN, vN)
-                #z_Low = pts_Target[uN][vN].Z
-                z_Low = zs_Min_AdjustedPerNeighbors[uN][vN]
-                cp.Z = z_Low
-                ns_Out.Points.SetControlPoint(uN, vN, cp)
-
-                if (uN,vN) == (6,5):
-                    pass
-
-                #    for uT,vT in uvs_Target_Group:
-                #        sc.doc.Objects.AddPoint(pts_Target[uT][vT])
-                #    sc.doc.Views.Redraw(); return
-
-            # Test whether Greville points of elevation group are still on or above target.
-
-            for uT,vT in uvs_Target_Group:
-                uG,vG = ns_Out.Points.GetGrevillePoint(uT, vT)
-                #print uT, vT
-                if (uT,vT) == (6,5):
-                    pass
-                #    sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); return
-                zG = ns_Out.PointAt(uG, vG).Z
-                zT = pts_Target[uT][vT].Z
-                if (zG + 0.001*fTolerance) >= zT:
-                    continue
-                #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); 1/0
-                break
-            else:
-                if bDebug:
-                    print "All Grevilles are on or above target."
-                # No change to zs_Min_AdjustedPerNeighbors.
-                #sc.doc.Objects.AddPoint(pts_Target[u][vN])
-                continue # to next elevation group.
-            #sc.doc.Views.Redraw(); 1/0
-
-            ##
-
-
-            if bDebug: print "Binary search the correct elevation."
-            fraction_L = 0.0
-            fraction_H = 1.0
-
-            while True:
-                sc.escape_test()
-
-                if bDebug: print "L,H 'fraction': {}, {}".format(fraction_L, fraction_H)
-
-                fraction_M = 0.5*fraction_L + 0.5*fraction_H
-
-                for uN,vN in uvs_NeighborsOfGroup:
-                    # Translate point as low as possible to its target Z.
-                    cp = ns_Out.Points.GetControlPoint(uN,vN)
-                    z_Lowest = zs_Min_AdjustedPerNeighbors[uN][vN]
-
-                    # Instead of starting surface, use elevation of closest
-                    # neighbor in uvs_Targets_InElevGroups.
-                    #def getElevationOfClosestTarget():
-                    #    dists = []
-                    #    for (uT, vT) in uvs_Targets_InElevGroups[iGroup]:
-                    #        dist = ((float(uN - uT))**2 + (float(vN - vT))**2)**0.5
-                    #        dists.append(dist)
-                    #        dist_Min = min(dists)
-                    #    zs_Winners = []
-                    #    for i, dist in enumerate(dists):
-                    #        if abs(dist_Min-dist) <= 1e-9:
-                    #            zs_Winners.append(zs_PerElevGroup[iGroup][i])
-                    #    return sum(zs_Winners) / float(len(zs_Winners))
-
-                    # Instead of starting surface, use highest elevation of
-                    # neighbors.
-                    def getHighestElevationOfNeighbors():
-                        iDirs = -1, 0, 1
-                        # 8 directions from each index location.
-                        delta_dirs = [[u, v] for u in iDirs for v in iDirs]
-
-                        zs_Neighbors = []
-
-                        for uD, vD in delta_dirs:
-                            uNN = uN + uD
-                            vNN = vN + vD
-                            zs_Neighbors.append(zs_Targets[uNN][vNN])
-
-                        return max(zs_Neighbors)
-
-                    z_Highest = getHighestElevationOfNeighbors()
-
-
-                    cp.Z = z_Lowest + (z_Highest-z_Lowest)*fraction_M
-                    ns_Out.Points.SetControlPoint(uN,vN,cp)
-
-                for uT,vT in uvs_Target_Group:
-                    uG,vG = ns_Out.Points.GetGrevillePoint(uT, vT)
-                    zG = ns_Out.PointAt(uG, vG).Z
-                    zT = pts_Target[uT][vT].Z
-                    if zG >= zT:
-                        continue
-                    # Greville is too low.
-                    fraction_L = fraction_M
-                    break
-                else:
-                    # All Grevilles are on or above target.
-                    fraction_H = fraction_M
-
-                if abs(fraction_H - fraction_L) <= 0.001:
-                    #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); 1/0
-                    break # out of while / binary search.
-
-            for uN,vN in uvs_NeighborsOfGroup:
-                # Translate point as low as possible to its target Z.
-                cp = ns_Out.Points.GetControlPoint(uN,vN)
-                zs_Min_AdjustedPerNeighbors[uN][vN] = cp.Location.Z
-
-            #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); 1/0
-
-
-        if bDebug:
-            print "Position points not within 3 from border nor are already translated."
-
-        uvs_done_Flat = uvs_Targets_InElevGroups[0] + [(uN, vN) for uvs in uvs_Neighbors_PerElevGroup for (uN, vN) in uvs]
-
-        for uN in range(3, ns_In.Points.CountU-3):
-            for vN in range(3, ns_In.Points.CountV-3):
-                if (uN, vN) not in uvs_done_Flat:
-                    cp = ns_Out.Points.GetControlPoint(uN,vN)
-                    cp.Z = pts_Target[uN][vN].Z
-                    ns_Out.Points.SetControlPoint(uN,vN,cp)
-
-
-        return ns_Out
-
-
-    if not hasMissingPoints(pts_Target):
-        if len(rgBreps_ProjectTo) == 1 and rgBreps_ProjectTo[0].Faces.Count == 1:
-            ns1 = iterateFit_TranslatePointsIndividually(
-                pts_Target, ns_Starting, fTolerance)
+    if not _hasMissingPoints(pts_Target):
+        if len(rgObjs_toDrapeOver) == 1 and rgObjs_toDrapeOver[0].Faces.Count == 1:
+            ns1 = _iterativelyFit_TranslatePointsIndividually(
+                pts_Target,
+                ns_Starting,
+                fTolerance,
+                bDebug=bDebug)
         else:
-            ns1 = iterateFit_TranslatePointsIndividually_HighToLow(
-                        pts_Target,
-                        ns_Starting,
-                        fTolerance)
+            ns1 = _iterativelyFit_TranslatePointsIndividually_HighToLow(
+                pts_Target,
+                ns_Starting,
+                fTolerance,
+                bDebug=bDebug)
 
         if cPlane != rg.Plane.WorldXY:
             xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
@@ -1221,7 +1385,7 @@ def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fToler
 
         addMissingPerStartingSrf(pts_Target, ns_Starting)
 
-        ns1 = iterateFit_TranslatePointsIndividually_HighToLow(
+        ns1 = _iterativelyFit_TranslatePointsIndividually_HighToLow(
                     pts_Target,
                     ns_Starting,
                     fTolerance)
@@ -1233,35 +1397,15 @@ def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fToler
         return ns1
 
 
+
     # Extrapolate missing points.
 
-    def getBorderPointIndices():
-        idxs_borderPts = []
-        for iU in range(len(pts_Target)):
-            for iV in range(len(pts_Target[0])):
-                if (
-                        pts_Target[iU][iV] is None and
-                        getNeighborCount(pts_Target, iU, iV) > 0
-                ):
-                    idxs_borderPts.append((iU,iV))
-        return idxs_borderPts
+    idxs_borderPts = _getBorderPointIndices(pts_Target)
+    #print(idxs_borderPts); 1/0
 
-    idxs_borderPts = getBorderPointIndices()
-
-
-    def createZAxisLinesAtGrevilles(pts_Greville_toProject):
-        lines = []
-        for iU in range(len(pts_Greville_toProject)):
-            lines.append([])
-            for iV in range(len(pts_Greville_toProject[0])):
-                line = rg.Line(
-                        start=pts_Greville_toProject[iU][iV],
-                        span=rg.Vector3d.ZAxis)
-                #sc.doc.Objects.AddLine(line)
-                lines[-1].append(line)
-        return lines
-
-    lines_thruStartingSrfNormals = createZAxisLinesAtGrevilles(pts_Greville)
+    lines_thruStartingSrfNormals = _createZAxisLinesAtGrevilles(pts_Greville)
+    #for line in lines_thruStartingSrfNormals: sc.doc.Objects.AddLine(line)
+    #sc.doc.Views.Redraw(); 1/0
 
     attr = rd.ObjectAttributes()
     attr.ColorSource = rd.ObjectColorSource.ColorFromObject
@@ -1291,8 +1435,8 @@ def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fToler
         i = 2 # For 2nd iteration (not index) to be relevant with iExtrapolationCt.
 
         while (
-                hasMissingPoints(pts_Target) and
-                ((iExtrapolationCt == 0) or (i < iExtrapolationCt))
+            _hasMissingPoints(pts_Target) and
+            ((iExtrapolationCt == 0) or (i < iExtrapolationCt))
         ):
             sc.escape_test()
 
@@ -1301,6 +1445,7 @@ def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fToler
                     bDiag=False,
                     bLineExts=bLineExts2)
             i += 1
+
 
 
         # Fill any remaining missing points with the
@@ -1325,7 +1470,7 @@ def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fToler
                         ns_Starting.Points.GetControlPoint(0,0).Z)
 
 
-        ns_Res3 = iterateFit_TranslatePointsIndividually_HighToLow(
+        ns_Res3 = _iterativelyFit_TranslatePointsIndividually_HighToLow(
             pts_Target,
             ns_Starting,
             fTolerance)
@@ -1338,7 +1483,115 @@ def fit_Surface(rgBreps_ProjectTo, srf_Starting, cPlane=rg.Plane.WorldXY, fToler
         return ns_Res3
 
 
-def processBrepObject(rdBreps_toFit, objref_srf_Starting=None, cPlane=rg.Plane.WorldXY, **kwargs):
+def _coerceSurface(rhObj):
+    if isinstance(rhObj, rg.GeometryBase):
+        geom = rhObj
+    elif isinstance(rhObj, rd.ObjRef):
+        #print(rhObj.GeometryComponentIndex.ComponentIndexType)
+        geom = rhObj.Geometry()
+    elif isinstance(rhObj, Guid):
+        rdObj = sc.doc.Objects.FindId(rhObj) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(rhObj)
+        geom = rdObj.Geometry
+    else:
+        return
+
+    srf = None
+    if isinstance(geom, rg.BrepFace):
+        srf = geom.UnderlyingSurface()
+    elif isinstance(geom, rg.Surface):
+        srf = geom
+    elif isinstance(geom, rg.Brep):
+        if geom.Faces.Count == 1:
+            srf = geom.Faces[0].UnderlyingSurface()
+
+    return srf
+
+
+def _createStartingSurface(rgObjs_Ref, cPlane=rg.Plane.WorldXY, fPointSpacing=1.0, bDebug=False):
+    """
+    Returns:
+        rg.NurbsSurface that is degree 3 and 2 knots beyond the target on each of the 4 sides.
+    """
+
+    bb = rg.BoundingBox.Unset
+
+    if cPlane != rg.Plane.WorldXY:
+        xform = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
+        for rgObj in rgObjs_Ref:
+            rgB_Xd = rgObj.Duplicate()
+            rgB_Xd.Transform(xform)
+            bb.Union(rgB_Xd.GetBoundingBox(accurate=True))
+            rgB_Xd.Dispose()
+    else:
+        for rgObj in rgObjs_Ref:
+            bb.Union(rgObj.GetBoundingBox(accurate=True))
+
+    #sc.doc.Objects.AddBox(rg.Box(bb))
+
+    degree = 3
+
+    # The 6.0 in the following creates 4 rows of planar control points
+    # on each side, thus allowing _ExtendSrf to remain planar for the
+    # degree-3 surface.
+
+    starting_srf_X_dim = math.ceil(bb.Diagonal.X + 6.0*fPointSpacing)
+    uInterval = rg.Interval(0.0, starting_srf_X_dim)
+    uPointCount = int(starting_srf_X_dim / fPointSpacing) + degree
+
+    starting_srf_Y_dim = math.ceil(bb.Diagonal.Y + 6.0*fPointSpacing)
+    vInterval = rg.Interval(0.0, starting_srf_Y_dim)
+    vPointCount = int(starting_srf_Y_dim / fPointSpacing) + degree
+
+    origin = rg.Point3d(
+        bb.Center.X-starting_srf_X_dim/2.0,
+        bb.Center.Y-starting_srf_Y_dim/2.0,
+        bb.Max.Z)
+
+    plane = rg.Plane(origin=origin, normal=rg.Vector3d.ZAxis)
+
+    ns = rg.NurbsSurface.CreateFromPlane(
+        plane=plane,
+        uInterval=uInterval,
+        vInterval=vInterval,
+        uDegree=degree,
+        vDegree=degree,
+        uPointCount=uPointCount,
+        vPointCount=vPointCount)
+
+    # Set perimeter 3 points on each side to "bottom" of target.
+    for iU in range(ns.Points.CountU):
+        for iV in range(ns.Points.CountV):
+            if (
+                (degree <= iU <= ns.Points.CountU - degree - 1) and
+                (degree <= iV <= ns.Points.CountV - degree - 1)
+            ):
+                continue
+            cp_New = ns.Points.GetControlPoint(iU, iV)
+            cp_New.Z = bb.Min.Z
+            ns.Points.SetControlPoint(
+                iU,
+                iV,
+                cp_New)
+
+    #sc.doc.Objects.AddSurface(ns); sc.doc.Views.Redraw(); 1/0
+
+    #for u in range(ns.Points.CountU):
+    #    for v in range(ns.Points.CountV):
+    #        ptA = ns.Points.GetControlPoint(u, v).Location
+    #        ptA.Z = bb.Max.Z
+    #        ptB = rg.Point3d(ptA)
+    #        ptB.Z = bb.Min.Z
+    #        print(sc.doc.Objects.AddLine(ptA, ptB))
+    #sc.doc.Views.Redraw(); 1/0
+
+    if cPlane != rg.Plane.WorldXY:
+        xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
+        ns.Transform(xform)
+
+    return ns
+
+
+def processDocObject(rdObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Plane.WorldXY, **kwargs):
     """
     """
 
@@ -1351,130 +1604,33 @@ def processBrepObject(rdBreps_toFit, objref_srf_Starting=None, cPlane=rg.Plane.W
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
+    rgObjs_toDrapeOver = []
+    for rhObj in rdObjs_toDrapeOver:
+        rgObj_toDrapeOver = rs.coercegeometry(rhObj)
+        if not isinstance(rgObj_toDrapeOver, (rg.Brep, rg.Mesh)):
+            print("{} is not supported for an object to drape over.".format(rgObj_toDrapeOver.GetType().Name))
+            continue
+        rgObjs_toDrapeOver.append(rgObj_toDrapeOver)
 
-    breps_ProjectTo = [rs.coercebrep(rhObj) for rhObj in rdBreps_toFit]
 
-    if objref_srf_Starting is not None:
-        def coerceSurface(rhObj):
-            if isinstance(rhObj, rg.GeometryBase):
-                geom = rhObj
-            elif isinstance(rhObj, rd.ObjRef):
-                #print rhObj.GeometryComponentIndex.ComponentIndexType
-                geom = rhObj.Geometry()
-            elif isinstance(rhObj, Guid):
-                rdObj = sc.doc.Objects.FindId(rhObj) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(rhObj)
-                geom = rdObj.Geometry
-            else:
-                return
-
-            srf = None
-            if isinstance(geom, rg.BrepFace):
-                srf = geom.UnderlyingSurface()
-            elif isinstance(geom, rg.Surface):
-                srf = geom
-            elif isinstance(geom, rg.Brep):
-                if geom.Faces.Count == 1:
-                    srf = geom.Faces[0].UnderlyingSurface()
-
-            return srf
-
-        srf_Starting = coerceSurface(objref_srf_Starting)
-        ns_Starting = srf_Starting.ToNurbsSurface()
+    if objref_srf_Starting is None:
+        ns_Starting = _createStartingSurface(
+            rgObjs_toDrapeOver,
+            cPlane=cPlane,
+            fPointSpacing=fPointSpacing,
+            bDebug=bDebug)
     else:
-        def createStartingSurface(rgBreps_Target, fPointSpacing=1.0, bDebug=False):
-            """
-            Returns:
-                rg.NurbsSurface that is degree 3 and 2 knots beyond the target on each of the 4 sides.
-            """
+        srf_Starting = _coerceSurface(objref_srf_Starting)
+        ns_Starting = srf_Starting.ToNurbsSurface()
 
-            bb = rg.BoundingBox.Unset
-
-            if cPlane != rg.Plane.WorldXY:
-                xform = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
-                for rgB in rgBreps_Target:
-                    rgB_Xd = rgB.DuplicateBrep()
-                    rgB_Xd.Transform(xform)
-                    bb.Union(rgB_Xd.GetBoundingBox(accurate=True))
-                    rgB_Xd.Dispose()
-            else:
-                for rgB in rgBreps_Target:
-                    bb.Union(rgB.GetBoundingBox(accurate=True))
-
-            #sc.doc.Objects.AddBox(rg.Box(bb))
-
-            degree = 3
-
-            # The 6.0 in the following creates 4 rows of planar control points
-            # on each side, thus allowing _ExtendSrf to remain planar for the
-            # degree-3 surface.
-
-            starting_srf_X_dim = math.ceil(bb.Diagonal.X + 6.0*fPointSpacing)
-            uInterval = rg.Interval(0.0, starting_srf_X_dim)
-            uPointCount = int(starting_srf_X_dim / fPointSpacing) + degree
-
-            starting_srf_Y_dim = math.ceil(bb.Diagonal.Y + 6.0*fPointSpacing)
-            vInterval = rg.Interval(0.0, starting_srf_Y_dim)
-            vPointCount = int(starting_srf_Y_dim / fPointSpacing) + degree
-
-            origin = rg.Point3d(
-                bb.Center.X-starting_srf_X_dim/2.0,
-                bb.Center.Y-starting_srf_Y_dim/2.0,
-                bb.Max.Z)
-
-            plane = rg.Plane(origin=origin, normal=rg.Vector3d.ZAxis)
-
-            ns = rg.NurbsSurface.CreateFromPlane(
-                plane=plane,
-                uInterval=uInterval,
-                vInterval=vInterval,
-                uDegree=degree,
-                vDegree=degree,
-                uPointCount=uPointCount,
-                vPointCount=vPointCount)
-
-            # Set perimeter 3 points on each side to "bottom" of target.
-            for iU in range(ns.Points.CountU):
-                for iV in range(ns.Points.CountV):
-                    if (
-                        (degree <= iU <= ns.Points.CountU - degree - 1) and
-                        (degree <= iV <= ns.Points.CountV - degree - 1)
-                    ):
-                        continue
-                    cp_New = ns.Points.GetControlPoint(iU, iV)
-                    cp_New.Z = bb.Min.Z
-                    ns.Points.SetControlPoint(
-                        iU,
-                        iV,
-                        cp_New)
-
-            #sc.doc.Objects.AddSurface(ns); sc.doc.Views.Redraw(); 1/0
-
-            #for u in range(ns.Points.CountU):
-            #    for v in range(ns.Points.CountV):
-            #        ptA = ns.Points.GetControlPoint(u, v).Location
-            #        ptA.Z = bb.Max.Z
-            #        ptB = rg.Point3d(ptA)
-            #        ptB.Z = bb.Min.Z
-            #        print sc.doc.Objects.AddLine(ptA, ptB)
-            #sc.doc.Views.Redraw(); 1/0
-
-            if cPlane != rg.Plane.WorldXY:
-                xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
-                ns.Transform(xform)
-
-            return ns
-
-        ns_Starting = createStartingSurface(
-            breps_ProjectTo,
-            fPointSpacing=fPointSpacing)
 
     if bEcho or bDebug:
         point_count = ns_Starting.Points.CountU * ns_Starting.Points.CountV
         if point_count > 10000:
-            print "Start surface has {} points.".format(point_count)
+            print("Start surface has {} points.".format(point_count))
 
-    ns_Res = fit_Surface(
-        rgBreps_ProjectTo=breps_ProjectTo,
+    ns_Res = processGeometry(
+        rgObjs_toDrapeOver=rgObjs_toDrapeOver,
         srf_Starting=ns_Starting,
         cPlane=cPlane,
         fTolerance=fTolerance,
@@ -1483,7 +1639,7 @@ def processBrepObject(rdBreps_toFit, objref_srf_Starting=None, cPlane=rg.Plane.W
         )
 
 
-    for brep in breps_ProjectTo: brep.Dispose()
+    for brep in rgObjs_toDrapeOver: brep.Dispose()
     if objref_srf_Starting is not None: srf_Starting.Dispose()
 
 
@@ -1501,10 +1657,10 @@ def processBrepObject(rdBreps_toFit, objref_srf_Starting=None, cPlane=rg.Plane.W
 
 def main():
 
-    rc = getInput_TargetBreps()
+    rc = getInput_ObjsToDrapeOver()
     if rc is None: return
     (
-        rdBs_toFit,
+        rdObjs_toDrapeOver,
         cPlane,
         bUserProvidesStartingSrf,
         fPointSpacing,
@@ -1517,7 +1673,7 @@ def main():
     if not bUserProvidesStartingSrf:
         objref_srf_Starting = None
     else:
-        rc = getInput_StartingSurface(rdBs_toFit)
+        rc = getInput_StartingSurface(rdObjs_toDrapeOver)
         if rc is None: return
         (
             objref_srf_Starting,
@@ -1531,8 +1687,8 @@ def main():
 
     Rhino.RhinoApp.CommandPrompt = "Working ..."
 
-    processBrepObject(
-        rdBreps_toFit=rdBs_toFit,
+    processDocObject(
+        rdObjs_toDrapeOver=rdObjs_toDrapeOver,
         objref_srf_Starting=objref_srf_Starting,
         cPlane=cPlane,
         fPointSpacing=fPointSpacing,

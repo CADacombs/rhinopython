@@ -19,13 +19,14 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 180316: Added support for brep edge curves.
 ...
 190513: Fixed bug where breps of selected edges were being joined.
-250109-10: Reenabled the RhinoCommon method.
+250109-10,15: Reenabled the RhinoCommon method.
         Disabled support for BrepEdges until script is working properly for just wires.
         Refactored.
 
 TODO:
     Reenable support for BrepEdges.
-    Check whether there are benefits for using RC's Curve.JoinCurves.
+    Possibly reenable support for < 8.12.
+        The indices of the joined input are not returned by V5's JoinCurves method and overloads.
 
 _Join (at least in V8.14) appears to use 1.8 * ModelAbsoluteTolerance as the
 endpoint distance (gap or overlap) threshold to perform the join.
@@ -313,7 +314,7 @@ def getInput():
     go.Dispose()
 
 
-def join_Curve_RhinoCommon(rgCrvs_In, fJoinTol=None, bSimpleJoin=False, bDebug=False):
+def joinCurves_using_RC_method(rgCrvs_In, fJoinTol=None, bSimpleJoin=False, bDebug=False):
     """
     Returns:
         list(rg.Curves from Join)
@@ -330,11 +331,13 @@ def join_Curve_RhinoCommon(rgCrvs_In, fJoinTol=None, bSimpleJoin=False, bDebug=F
     if fJoinTol is None:
         fJoinTol = 1.8 * sc.doc.ModelAbsoluteTolerance # The same as _Join for curves (per Rhino 8.14).
 
+
     rgCs_Joined, idxs_Out_per_In = rg.Curve.JoinCurves(
         rgCrvs_In,
         joinTolerance=fJoinTol,
         preserveDirection=False,
         simpleJoin=bSimpleJoin)
+
 
     #sEval = "len(rgCs_Joined)"; print(sEval, '=', eval(sEval))
     #sEval = "max(idxs_Out_per_In) + 1"; print(sEval, '=', eval(sEval))
@@ -518,7 +521,7 @@ def join_CurveObjects(rhCrvs_In, bByLayer=True, bByColor=True, bUseUiJoinCmd=Fal
             return join_Cmd(rgCrvs_perSet, fJoinTol, bEcho, bDebug)
         else:
             # Join using RC's JoinCurves not considering object layer or color.
-            rvs = join_Curve_RhinoCommon(
+            rvs = joinCurves_using_RC_method(
                 rgCrvs_perSet,
                 fJoinTol=fJoinTol,
                 bSimpleJoin=bSimpleJoin,
@@ -579,17 +582,15 @@ def join_CurveObjects(rhCrvs_In, bByLayer=True, bByColor=True, bUseUiJoinCmd=Fal
 
 def main():
 
-    #gCrvs_Preselected = []
-    
-    #for gObj in rs.SelectedObjects():
-    #    if rs.ObjectType(gObj) == rs.filter.curve:
-    #        gCrvs_Preselected.append(gObj)
-    
-    #ct_gCrvs_Preselected = len(gCrvs_Preselected)
-    
-    #if ct_gCrvs_Preselected == 0:
-    #    rc = getInput()
-    #    if rc is None: return
+    if Rhino.RhinoApp.ExeVersion < 8:
+        print("This script uses a method added to RhinoCommon 8.12. Rhino 7 is not current supported in this branch of the script.")
+        return
+    if Rhino.RhinoApp.ExeVersion == 8 and ExeServiceRelease < 12:
+        print("This script uses a method added to RhinoCommon 8.12. Upgrade your Rhino 8 to use this script.")
+        return
+
+
+    gObjs_Preselected = [rdObj.Id for rdObj in sc.doc.Objects.GetSelectedObjects(includeLights=False, includeGrips=False)]
 
     rhCrvs = getInput() # ObjRefs, rd.CurveObjects, or None.
     if rhCrvs is None: return
@@ -612,7 +613,7 @@ def main():
     #        print("Edge curve in selection, so all curves' layers will be ignored.")
     #    bByColor = False
 
-    if not bDebug: sc.doc.Views.RedrawEnabled = True
+    if not bDebug: sc.doc.Views.RedrawEnabled = False
 
     sc.doc.Objects.UnselectAll()
     
@@ -627,11 +628,18 @@ def main():
         bDebug=bDebug,
         )
 
-    # Note that one case when rgCrvs1 is None is when _Join is used.
+    if gObjs_Preselected:
+        for gObj in gObjs_Preselected: sc.doc.Objects.Select(gObj)
+        for gC in gCs_Res: sc.doc.Objects.Select(gC)
+
+    # Note that one case when gCs_Res is None is when _Join is used.
     if gCs_Res:
         sc.doc.Views.Redraw()
 
+    sc.doc.Views.RedrawEnabled = True
+
     return
+
 
 
 
@@ -702,6 +710,9 @@ def main():
                 len(gCrvs1) - isClosedCt))
     print(s + ",".join(sPolyInfos))
     
+    if gObjs_Preselected:
+        rs.SelectObjects(gObjs_Preselected)
+
     sc.doc.Views.RedrawEnabled = True
 
 

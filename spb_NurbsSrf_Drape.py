@@ -19,8 +19,12 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210730-0808: Reduced wavy output along elevation transitions of target.
 210808: Now, active CPlane's Z axis is used for drape direction.
 250115: Added support for meshes as objects over which to drape. Refactored.
-250116: Fixed bug for highest elevation in ...HighToLow function.
-        Replaced the command option for extrapolation from an int (count) to a bool. Refactored.
+250116: Fixed bug for highest elevation in ...HighToLow function. Refactored.
+250117: Replaced the 2 bool options for missed targets to 3-choice list.
+        WIP: Started a rewrite of the HighToLow routine.
+
+TODO:
+    Create new HighToLow routine with a slightly new approach.
 """
 
 import Rhino
@@ -36,6 +40,11 @@ from System.Drawing import Color
 #import itertools
 import math
 import random
+
+
+class Data:
+    def __init__(self):
+        self
 
 
 class Opts:
@@ -73,16 +82,13 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'bDrapeAtMisses'; keys.append(key)
-    values[key] = True
-    names[key] = 'AtTargetPtMisses'
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Fix', 'Drape')
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'bExtrapolateMisses'; keys.append(key)
-    values[key] = True
-    names[key] = 'DrapeStyle'
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'LowestTargetPt', 'Extrapolate')
+    key = 'iTargetMisses'; keys.append(key)
+    values[key] = 1
+    listValues[key] = (
+        'FixToStartingSrf',
+        'ExtrapolateFromHits',
+        'UseLowestTarget',
+        )
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bDeleteStartingSrf'; keys.append(key)
@@ -131,13 +137,13 @@ class Opts:
             elif key[0] == 'i':
                 idxOpt = go.AddOptionInteger(
                     englishName=cls.names[key], intValue=cls.riOpts[key])[0]
-        else:
+        elif key in cls.listValues:
             idxOpt = go.AddOptionList(
                 englishOptionName=cls.names[key],
                 listValues=cls.listValues[key],
                 listCurrentIndex=cls.values[key])
-
-        if not idxOpt: print("Add option for {} failed.".format(key))
+        else:
+            print("{} is not a valid key in Opts.".format(key))
 
         return idxOpt
 
@@ -195,9 +201,7 @@ def getInput_ObjsToDrapeOver():
         addOption('bUserProvidesStartingSrf')
         if not Opts.values['bUserProvidesStartingSrf']:
             addOption('fPointSpacing')
-        addOption('bDrapeAtMisses')
-        if Opts.values['bDrapeAtMisses']:
-            addOption('bExtrapolateMisses')
+        addOption('iTargetMisses')
         if Opts.values['bUserProvidesStartingSrf']:
             addOption('bDeleteStartingSrf')
         addOption('bEcho')
@@ -340,11 +344,15 @@ def _getGrevillePoints(ns):
     return pts_out
 
 
-def _createPointsProjectedToTargets(rgObjs_Targets, pts_toProject, bDebug=False):
+def _projectPts_toObjs(pts_In, rgObjs_Targets, bDebug=False):
     """
-    rhObjects_Ref can include ObjRefs, DocObjects.RhinoObjects, GUIDS, or Geometry, but must be all the same type.
-    Returns:
-        list(rg.Point3ds)
+    Parameters
+        rgObjs_Targets: rd.ObjRef, rd.RhinoObject, GUID, or Rhino.Geometry, but all must be of the same type.
+        pts_In: list of rg.Point3d
+        bDebug: bool
+
+    Returns
+        list of mix of rg.Point3ds and None (for misses)
     """
 
     _prompt("Creating target points ...", bDebug=bDebug)
@@ -361,9 +369,9 @@ def _createPointsProjectedToTargets(rgObjs_Targets, pts_toProject, bDebug=False)
 
     pts_Out = []
     
-    for iU in range(len(pts_toProject)):
+    for iU in range(len(pts_In)):
         pts_Out.append([])
-        for iV in range(len(pts_toProject[0])):
+        for iV in range(len(pts_In[0])):
             if sc.escape_test(throw_exception=False):
                 print("User break.")
                 return
@@ -373,7 +381,7 @@ def _createPointsProjectedToTargets(rgObjs_Targets, pts_toProject, bDebug=False)
             if rgMeshes_Targets:
                 rv = rg.Intersect.Intersection.ProjectPointsToMeshes(
                     meshes=rgMeshes_Targets,
-                    points=[pts_toProject[iU][iV]],
+                    points=[pts_In[iU][iV]],
                     direction=rg.Vector3d.ZAxis,
                     tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
                 if rv:
@@ -382,26 +390,26 @@ def _createPointsProjectedToTargets(rgObjs_Targets, pts_toProject, bDebug=False)
             if rgBreps_Targets:
                 rv = rg.Intersect.Intersection.ProjectPointsToBreps(
                     breps=rgBreps_Targets,
-                    points=[pts_toProject[iU][iV]],
+                    points=[pts_In[iU][iV]],
                     direction=rg.Vector3d.ZAxis,
                     tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
                 if rv:
                     pts_Projected.extend(rv)
 
             if len(pts_Projected) == 0:
-                pt_to = None
+                pt_Out = None
             elif len(pts_Projected) == 1:
-                pt_to = pts_Projected[0]
+                pt_Out = pts_Projected[0]
             else:
                 pts = pts_Projected
                 zs = []
                 for pt in pts:
                     zs.append(pt.Z)
-                    dist = pt.DistanceTo(pts_toProject[iU][iV])
+                    dist = pt.DistanceTo(pts_In[iU][iV])
                 winning_Z = max(zs)
-                pt_to = pts[zs.index(winning_Z)]
+                pt_Out = pts[zs.index(winning_Z)]
 
-            pts_Out[-1].append(pt_to)
+            pts_Out[-1].append(pt_Out)
 
     _promptDone(bDebug=bDebug)
 
@@ -473,38 +481,86 @@ def _flattenNestedList(pts_in):
     return pts_out
 
 
-def _sortAndGroupTargetsByElevation_High_to_low(ns, pts_In, fElevTol, bDebug=False):
+def _sort2ListsPer1st(list1, list2):
+    sorted_zipped = sorted(zip(list1, list2), reverse=True)
+    sorted1, sorted2 = zip(*sorted_zipped)
+    return sorted1, sorted2
+
+
+def _sortAndGroupTargetsByElevation_High_to_low_NEW(pts, fElevTol=1e-6, bDebug=False):
     """
-    Returns:
-        list(lists of u and vN index tuples whose z's are within fElevTol)
+    Parameters
+        pts: list of lists of mix of rg.Point3d or None
+        fElevTol: float  Should be tighter than general tolerance to minimize tolerance stack up.
+
+    Returns
+        tuple of
+            list of lists of z values rounded per fElevTol
+            list of lists of u and v index tuples whose z's are within fElevTol
+    """
+
+    sEval = "fElevTol"; print(sEval,'=',eval(sEval))
+
+    _prompt("Sorting target points by elevation ...", bDebug=bDebug)
+
+    uvs_Flat = [(u,v) for u in range(len(pts)) for v in range(len(pts[0]))]
+    pts_Flat = _flattenNestedList(pts)
+    zs_Flat_perPts = [pt.Z for pt in pts_Flat]
+
+    zs_Flat_Sorted, uvs_Flat_Sorted = _sort2ListsPer1st(zs_Flat_perPts, uvs_Flat)
+    sEval = "uvs_Flat_Sorted[:9]"; print(sEval,'=',eval(sEval))
+    sEval = "zs_Flat_Sorted[:9]"; print(sEval,'=',eval(sEval))
+
+    # Group per fElevTol.
+    zs_1perElevGroup = [zs_Flat_Sorted[0]]
+    uvs_Sorted_and_grouped_per_z = [[]]
+    for iZ, z in enumerate(zs_Flat_Sorted):
+        z_Lowest_for_group = zs_1perElevGroup[-1] - fElevTol
+        if z >= z_Lowest_for_group:
+            uvs_Sorted_and_grouped_per_z[-1].append(uvs_Flat_Sorted[iZ])
+            continue
+        # New group.
+        zs_1perElevGroup.append(z)
+        uvs_Sorted_and_grouped_per_z.append([uvs_Flat_Sorted[iZ]])
+
+    return zs_1perElevGroup, uvs_Sorted_and_grouped_per_z
+
+
+def _sortAndGroupTargetsByElevation_High_to_low(pts, fElevTol=1e-6, bDebug=False):
+    """
+    Parameters
+        pts: list of lists of mix of rg.Point3d or None
+
+    Returns
+        list of lists of u and v index tuples whose z's are within fElevTol
     """
 
     _prompt("Sorting target points by elevation ...", bDebug=bDebug)
 
-    pts_Flat = _flattenNestedList(pts_In)
-    zs_Flat_FlatOrder = [pt.Z for pt in pts_Flat]
-    zs_Flat_HiToLo = sorted(zs_Flat_FlatOrder, reverse=True)
+    pts_Flat = _flattenNestedList(pts)
+    zs_Flat_perPts = [pt.Z for pt in pts_Flat]
+    zs_Flat_HiToLo = sorted(zs_Flat_perPts, reverse=True)
     iZs_Used = []
     iZs_Sorted_Grouped_Flat = []
-    z_LastTolStart = None
+    z_LastTolStart = float("inf")
     for i, z in enumerate(zs_Flat_HiToLo):
-        if zs_Flat_FlatOrder.index(z) in iZs_Used:
+        if zs_Flat_perPts.index(z) in iZs_Used:
             continue
-        iZs_NewElevation = [j for j, x in enumerate(zs_Flat_FlatOrder) if x == z]
-        if z_LastTolStart is None or abs(z_LastTolStart-z) > fElevTol:
+        iZs_NewElevation = [j for j, x in enumerate(zs_Flat_perPts) if x == z]
+        if abs(z_LastTolStart-z) > fElevTol:
             iZs_Sorted_Grouped_Flat.append(iZs_NewElevation)
             z_LastTolStart = z
         else:
             iZs_Sorted_Grouped_Flat[-1].extend(iZs_NewElevation)
         iZs_Used.extend(iZs_NewElevation)
 
+    countV = len(pts[0])
     iUiVs_Sorted = []
     for z_Group in iZs_Sorted_Grouped_Flat:
         iUiVs_Sorted.append([])
         for iZ in z_Group:
-            iUiVs_Sorted[-1].append(
-                (iZ // ns.Points.CountV, iZ % ns.Points.CountV))
-            #sc.doc.Objects.AddPoint(pts_In[iU][iV])
+            iUiVs_Sorted[-1].append(((iZ // countV), (iZ % countV)))
+            #sc.doc.Objects.AddPoint(pts[iU][iV])
 
     _promptDone(bDebug=False)
 
@@ -518,6 +574,7 @@ def _getNeighborsPerElevationGroup(ns, uvs_Target_Groups, zs_Targets, zs_Min_Adj
     _prompt("Determining neighbors of targets ...", bDebug=bDebug)
 
     iUiVs_Sorted_Flat = _flattenNestedList(uvs_Target_Groups)
+    #zs_Targets_Flat = _flattenNestedList(zs_Targets)
     uvs_WithTarget = []
     iDirs = -1, 0, 1
     # 8 directions from each index location.
@@ -525,6 +582,10 @@ def _getNeighborsPerElevationGroup(ns, uvs_Target_Groups, zs_Targets, zs_Min_Adj
     uvs_Neighbors_PerElevGroup = []
 
     for iGroup, uvs_Target_Group in enumerate(uvs_Target_Groups):
+        sc.escape_test()
+        #if iGroup == 747:
+        #    sEval = "iGroup,len(uvs_Target_Group)"; print(sEval,'=',eval(sEval))
+        #    1/0
         uvs_Neighbors_PerElevGroup.append([])
         for uT, vT in uvs_Target_Group:
             #print("T:", uT, vT)
@@ -534,6 +595,7 @@ def _getNeighborsPerElevationGroup(ns, uvs_Target_Groups, zs_Targets, zs_Min_Adj
                 #print("N:", uN, vN)
                 if (uN, vN) in uvs_Target_Group:
                     # Neighbor cannot be in current target group.
+                    #sEval = "iGroup,uD,vD"; print(sEval,'=',eval(sEval))
                     continue
                 if (uN, vN) in uvs_WithTarget:
                     continue
@@ -562,20 +624,44 @@ def _highestElevation(pts):
     return zMax
 
 
-def _fit_Iteratively_translate_individual_pts_High_to_low(pts_Target, ns_In, fTolerance, bDebug=False):
+def _fit_NEW_High_to_low(ns_In=None, pts_Target=None, fTolerance=None, bDebug=False):
+    """
+    WIP to possibly replace other High_to_low
+    """
+
+    ns_Out = ns_In.Duplicate() if ns_In.IsDocumentControlled else ns_In
+
+    zs_1perElevGroup, uvs_Sorted_and_grouped_per_z = _sortAndGroupTargetsByElevation_High_to_low_NEW(
+        pts_Target,
+        fElevTol=0.1*min((sc.doc.ModelAbsoluteTolerance, fTolerance)),
+        bDebug=bDebug)
+
+    sEval = "len(zs_1perElevGroup)"; print(sEval,'=',eval(sEval))
+    sEval = "len(uvs_Sorted_and_grouped_per_z)"; print(sEval,'=',eval(sEval))
+    sEval = "zs_1perElevGroup[:9]"; print(sEval,'=',eval(sEval))
+    sEval = "uvs_Sorted_and_grouped_per_z[:9]"; print(sEval,'=',eval(sEval))
+
+
+
+def _fit_Iteratively_translate_pts_High_to_low(pts_Target, ns_In, fTolerance, bDebug=False):
     """
     """
 
-    ns_Out = ns_In.Duplicate()
+    #return _fit_NEW_High_to_low(
+    #    ns_In=ns_In,
+    #    pts_Target=pts_Target,
+    #    fTolerance=fTolerance,
+    #    bDebug=bDebug)
+
+    ns_Out = ns_In.Duplicate() if ns_In.IsDocumentControlled else ns_In
 
 
     #map(sc.doc.Objects.AddPoint, [pt for pts_V in pts_Target for pt in pts_V]); sc.doc.Views.Redraw()
 
 
     uvs_Targets_InElevGroups = _sortAndGroupTargetsByElevation_High_to_low(
-        ns_In,
         pts_Target,
-        10.0*fTolerance,
+        fElevTol=0.1*min((sc.doc.ModelAbsoluteTolerance, fTolerance)),
         bDebug=bDebug)
 
     #if bDebug:
@@ -1078,8 +1164,8 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
         and get the ClosestPoint of that line on the normal line.
     """
 
-    lines_thruStartingSrfNormals = _createZAxisLinesAtGrevilles(pts_Greville)
-    #for line in lines_thruStartingSrfNormals: sc.doc.Objects.AddLine(line)
+    lines_thruStartingSrfGrevilles = _createZAxisLinesAtGrevilles(pts_Greville)
+    #for line in lines_thruStartingSrfGrevilles: sc.doc.Objects.AddLine(line)
     #sc.doc.Views.Redraw(); 1/0
 
 
@@ -1101,12 +1187,12 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
             line_ThruNeighbors.Length *= 2.0
             #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
             rc = rg.Intersect.Intersection.LineLine(
-                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineA=lines_thruStartingSrfGrevilles[iU][iV],
                     lineB=line_ThruNeighbors)
             if rc[0]:
-                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+                pt = lines_thruStartingSrfGrevilles[iU][iV].PointAt(rc[1])
         else:
-            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+            pt = lines_thruStartingSrfGrevilles[iU][iV].ClosestPoint(
                     pts_In[iU-1][iV],
                     limitToFiniteSegment=False)
         if pt: pts_Out.append(pt)
@@ -1119,12 +1205,12 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
             line_ThruNeighbors.Length *= 2.0
             #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
             rc = rg.Intersect.Intersection.LineLine(
-                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineA=lines_thruStartingSrfGrevilles[iU][iV],
                     lineB=line_ThruNeighbors)
             if rc[0]:
-                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+                pt = lines_thruStartingSrfGrevilles[iU][iV].PointAt(rc[1])
         else:
-            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+            pt = lines_thruStartingSrfGrevilles[iU][iV].ClosestPoint(
                     pts_In[iU+1][iV],
                     limitToFiniteSegment=False)
         if pt: pts_Out.append(pt)
@@ -1137,12 +1223,12 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
             line_ThruNeighbors.Length *= 2.0
             #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
             rc = rg.Intersect.Intersection.LineLine(
-                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineA=lines_thruStartingSrfGrevilles[iU][iV],
                     lineB=line_ThruNeighbors)
             if rc[0]:
-                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+                pt = lines_thruStartingSrfGrevilles[iU][iV].PointAt(rc[1])
         else:
-            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+            pt = lines_thruStartingSrfGrevilles[iU][iV].ClosestPoint(
                     pts_In[iU][iV-1],
                     limitToFiniteSegment=False)
         if pt: pts_Out.append(pt)
@@ -1155,12 +1241,12 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
             line_ThruNeighbors.Length *= 2.0
             #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
             rc = rg.Intersect.Intersection.LineLine(
-                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineA=lines_thruStartingSrfGrevilles[iU][iV],
                     lineB=line_ThruNeighbors)
             if rc[0]:
-                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+                pt = lines_thruStartingSrfGrevilles[iU][iV].PointAt(rc[1])
         else:
-            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+            pt = lines_thruStartingSrfGrevilles[iU][iV].ClosestPoint(
                     pts_In[iU][iV+1],
                     limitToFiniteSegment=False)
         if pt: pts_Out.append(pt)
@@ -1183,12 +1269,12 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
             line_ThruNeighbors.Length *= 2.0
             #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
             rc = rg.Intersect.Intersection.LineLine(
-                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineA=lines_thruStartingSrfGrevilles[iU][iV],
                     lineB=line_ThruNeighbors)
             if rc[0]:
-                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+                pt = lines_thruStartingSrfGrevilles[iU][iV].PointAt(rc[1])
         else:
-            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+            pt = lines_thruStartingSrfGrevilles[iU][iV].ClosestPoint(
                     pts_In[iU-1][iV-1],
                     limitToFiniteSegment=False)
         if pt: pts_Out.append(pt)
@@ -1211,12 +1297,12 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
             line_ThruNeighbors.Length *= 2.0
             #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
             rc = rg.Intersect.Intersection.LineLine(
-                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineA=lines_thruStartingSrfGrevilles[iU][iV],
                     lineB=line_ThruNeighbors)
             if rc[0]:
-                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+                pt = lines_thruStartingSrfGrevilles[iU][iV].PointAt(rc[1])
         else:
-            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+            pt = lines_thruStartingSrfGrevilles[iU][iV].ClosestPoint(
                     pts_In[iU+1][iV-1],
                     limitToFiniteSegment=False)
         if pt: pts_Out.append(pt)
@@ -1239,12 +1325,12 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
             line_ThruNeighbors.Length *= 2.0
             #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
             rc = rg.Intersect.Intersection.LineLine(
-                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineA=lines_thruStartingSrfGrevilles[iU][iV],
                     lineB=line_ThruNeighbors)
             if rc[0]:
-                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+                pt = lines_thruStartingSrfGrevilles[iU][iV].PointAt(rc[1])
         else:
-            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+            pt = lines_thruStartingSrfGrevilles[iU][iV].ClosestPoint(
                     pts_In[iU-1][iV+1],
                     limitToFiniteSegment=False)
         if pt: pts_Out.append(pt)
@@ -1267,12 +1353,12 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
             line_ThruNeighbors.Length *= 2.0
             #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
             rc = rg.Intersect.Intersection.LineLine(
-                    lineA=lines_thruStartingSrfNormals[iU][iV],
+                    lineA=lines_thruStartingSrfGrevilles[iU][iV],
                     lineB=line_ThruNeighbors)
             if rc[0]:
-                pt = lines_thruStartingSrfNormals[iU][iV].PointAt(rc[1])
+                pt = lines_thruStartingSrfGrevilles[iU][iV].PointAt(rc[1])
         else:
-            pt = lines_thruStartingSrfNormals[iU][iV].ClosestPoint(
+            pt = lines_thruStartingSrfGrevilles[iU][iV].ClosestPoint(
                     pts_In[iU+1][iV+1],
                     limitToFiniteSegment=False)
         if pt: pts_Out.append(pt)
@@ -1342,47 +1428,52 @@ def _addMissingPerStartingSrf(pts, ns_Starting):
                 pts[iU][iV] = ns_Starting.Points.GetControlPoint(iU,iV).Location
 
 
-def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, fTolerance=None, bDrapeAtMisses=True, bExtrapolateMisses=True, bDebug=False):
+def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, fTolerance=None, iTargetMisses=1, bDebug=False):
     """
     """
 
     if fTolerance is None:
         fTolerance = sc.doc.ModelAbsoluteTolerance
 
-    ns_Starting_WIP = srf_Starting.ToNurbsSurface()
+
+    data = Data()
+
+    ns_WIP = srf_Starting.ToNurbsSurface()
 
     #sEval = "cPlane"; print(sEval,'=',eval(sEval))
     #return
 
     if cPlane == rg.Plane.WorldXY:
-        xform = None
+        xform_toW = xform_fromW = None
     else:
-        xform = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
-        [rgObjs_toDrapeOver[i].Transform(xform) for i in range(len(rgObjs_toDrapeOver))]
-        ns_Starting_WIP.Transform(xform)
+        xform_toW = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
+        if not all([rgObjs_toDrapeOver[i].Transform(xform_toW) for i in range(len(rgObjs_toDrapeOver))]):
+            raise Exception("No all objects to drape over can be transformed.")
+        if not ns_WIP.Transform(xform_toW):
+            raise Exception("Starting surface cannot be transformed.")
 
         # Prepare xform for output.
-        xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
+        xform_fromW = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
         #[sc.doc.Objects.AddBrep(rgBreps_ProjectTo[i]) for i in range(len(rgBreps_ProjectTo))]
-        #sc.doc.Objects.AddSurface(ns_Starting_WIP); sc.doc.Views.Redraw()#; return
+        #sc.doc.Objects.AddSurface(ns_WIP); sc.doc.Views.Redraw()#; return
 
 
     uvs_All = [(u, v)
-               for u in range(ns_Starting_WIP.Points.CountU)
-               for v in range(ns_Starting_WIP.Points.CountV)]
+               for u in range(ns_WIP.Points.CountU)
+               for v in range(ns_WIP.Points.CountV)]
 
 
-    #ns_WIP = addKnotsToSurface(ns_Starting_WIP)
+    #ns_WIP = addKnotsToSurface(ns_WIP)
 
 
-    pts_Greville = _getGrevillePoints(ns_Starting_WIP)
+    pts_Greville = _getGrevillePoints(ns_WIP)
 
     #[sc.doc.Objects.AddPoint(pts_Greville[u][v]) for u, v in uvs_All if pts_Greville[u][v] is not None]
     #sc.doc.Views.Redraw(); return
 
-    pts_Target = _createPointsProjectedToTargets(
+    pts_Target = _projectPts_toObjs(
+        pts_In=pts_Greville,
         rgObjs_Targets=rgObjs_toDrapeOver,
-        pts_toProject=pts_Greville,
         bDebug=bDebug,
         )
     if not pts_Target:
@@ -1390,7 +1481,7 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
         return
 
 
-    #[_addObject(pts_Target[u][v], xform) for u, v in uvs_All if pts_Target[u][v] is not None]
+    #[_addObject(pts_Target[u][v], xform_fromW) for u, v in uvs_All if pts_Target[u][v] is not None]
     #sc.doc.Views.Redraw(); return
 
     #for iU in range(len(pts_Target)):
@@ -1406,22 +1497,25 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
 
 
     if not _hasMissingPoints(pts_Target):
-        if len(rgObjs_toDrapeOver) == 1 and rgObjs_toDrapeOver[0].Faces.Count == 1:
+        if (
+            len(rgObjs_toDrapeOver) == 1 and
+            isinstance(rgObjs_toDrapeOver, rg.Brep) and
+            rgObjs_toDrapeOver[0].Faces.Count == 1
+        ):
             ns1 = _fit_Iteratively_translate_individual_pts(
                 pts_Target,
-                ns_Starting_WIP,
+                ns_WIP,
                 fTolerance,
                 bDebug=bDebug)
         else:
-            ns1 = _fit_Iteratively_translate_individual_pts_High_to_low(
+            ns1 = _fit_Iteratively_translate_pts_High_to_low(
                 pts_Target,
-                ns_Starting_WIP,
+                ns_WIP,
                 fTolerance,
                 bDebug=bDebug)
 
-        if cPlane != rg.Plane.WorldXY:
-            xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
-            ns1.Transform(xform)
+        if xform_fromW:
+            ns1.Transform(xform_fromW)
 
         return ns1
 
@@ -1433,22 +1527,21 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
     # Target misses exist.
 
 
-    if not bDrapeAtMisses:
+    if iTargetMisses == 0:
 
         # Fill any remaining missing points with the
         # starting surface control point locations.
 
 
-        _addMissingPerStartingSrf(pts_Target, ns_Starting_WIP)
+        _addMissingPerStartingSrf(pts_Target, ns_WIP)
 
-        ns1 = _fit_Iteratively_translate_individual_pts_High_to_low(
+        ns1 = _fit_Iteratively_translate_pts_High_to_low(
                     pts_Target,
-                    ns_Starting_WIP,
+                    ns_WIP,
                     fTolerance)
 
-        if cPlane != rg.Plane.WorldXY:
-            xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
-            ns1.Transform(xform)
+        if xform_fromW:
+            ns1.Transform(xform_fromW)
 
         return ns1
 
@@ -1457,11 +1550,11 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
     # It is to simulate flattening then dropping the material onto the objects.
     zMax = _highestElevation(pts_Target)
 
-    for iU in range(ns_Starting_WIP.Points.CountU):
-        for iV in range(ns_Starting_WIP.Points.CountV):
-            cp = ns_Starting_WIP.Points.GetControlPoint(iU, iV)
+    for iU in range(ns_WIP.Points.CountU):
+        for iV in range(ns_WIP.Points.CountV):
+            cp = ns_WIP.Points.GetControlPoint(iU, iV)
             cp.Z = zMax
-            ns_Starting_WIP.Points.SetControlPoint(iU, iV, cp)
+            ns_WIP.Points.SetControlPoint(iU, iV, cp)
 
 
 
@@ -1524,21 +1617,20 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
             for iV in range(len(pts_Target[0])):
                 if pts_Target[iU][iV] is None:
                     pts_Target[iU][iV] = rg.Point3d(
-                        ns_Starting_WIP.Points.GetControlPoint(iU,iV).X,
-                        ns_Starting_WIP.Points.GetControlPoint(iU,iV).Y,
-                        ns_Starting_WIP.Points.GetControlPoint(0,0).Z)
+                        ns_WIP.Points.GetControlPoint(iU,iV).X,
+                        ns_WIP.Points.GetControlPoint(iU,iV).Y,
+                        ns_WIP.Points.GetControlPoint(0,0).Z)
 
 
-        ns_Res3 = _fit_Iteratively_translate_individual_pts_High_to_low(
+        ns_Res3 = _fit_Iteratively_translate_pts_High_to_low(
             pts_Target,
-            ns_Starting_WIP,
+            ns_WIP,
             fTolerance=fTolerance,
             bDebug=bDebug)
         if not ns_Res3: continue
 
-        if cPlane != rg.Plane.WorldXY:
-            xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
-            ns_Res3.Transform(xform)
+        if xform_fromW:
+            ns_Res3.Transform(xform_fromW)
 
         return ns_Res3
 
@@ -1576,13 +1668,15 @@ def _createStartingSurface(rgObjs_Ref, cPlane=rg.Plane.WorldXY, fPointSpacing=1.
     bb = rg.BoundingBox.Unset
 
     if cPlane != rg.Plane.WorldXY:
-        xform = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
+        xform_toW = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
         for rgObj in rgObjs_Ref:
             rgB_Xd = rgObj.Duplicate()
-            rgB_Xd.Transform(xform)
+            rgB_Xd.Transform(xform_toW)
             bb.Union(rgB_Xd.GetBoundingBox(accurate=True))
             rgB_Xd.Dispose()
+        xform_fromW = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
     else:
+        xform_toW = xform_fromW = None
         for rgObj in rgObjs_Ref:
             bb.Union(rgObj.GetBoundingBox(accurate=True))
 
@@ -1644,9 +1738,8 @@ def _createStartingSurface(rgObjs_Ref, cPlane=rg.Plane.WorldXY, fPointSpacing=1.
     #        print(sc.doc.Objects.AddLine(ptA, ptB))
     #sc.doc.Views.Redraw(); 1/0
 
-    if cPlane != rg.Plane.WorldXY:
-        xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
-        ns.Transform(xform)
+    if xform_fromW:
+        ns.Transform(xform_fromW)
 
     return ns
 
@@ -1661,8 +1754,7 @@ def processDocObject(rhObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Pla
 
     fTolerance = getOpt('fTolerance')
     fPointSpacing = getOpt('fPointSpacing')
-    bDrapeAtMisses = getOpt('bDrapeAtMisses')
-    bExtrapolateMisses = getOpt('bExtrapolateMisses')
+    iTargetMisses = getOpt('iTargetMisses')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -1696,8 +1788,7 @@ def processDocObject(rhObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Pla
         srf_Starting=ns_Starting,
         cPlane=cPlane,
         fTolerance=fTolerance,
-        bDrapeAtMisses=bDrapeAtMisses,
-        bExtrapolateMisses=bExtrapolateMisses,
+        iTargetMisses=iTargetMisses,
         bDebug=bDebug
         )
 
@@ -1729,8 +1820,7 @@ def main():
     fTolerance = Opts.values['fTolerance']
     bUserProvidesStartingSrf = Opts.values['bUserProvidesStartingSrf']
     fPointSpacing = Opts.values['fPointSpacing']
-    bDrapeAtMisses = Opts.values['bDrapeAtMisses']
-    bExtrapolateMisses = Opts.values['bExtrapolateMisses']
+    iTargetMisses = Opts.values['iTargetMisses']
     bDeleteStartingSrf = Opts.values['bDeleteStartingSrf']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -1759,8 +1849,7 @@ def main():
         cPlane=cPlane,
         fTolerance=fTolerance,
         fPointSpacing=fPointSpacing,
-        bDrapeAtMisses=bDrapeAtMisses,
-        bExtrapolateMisses=bExtrapolateMisses,
+        iTargetMisses=iTargetMisses,
         bEcho=bEcho,
         bDebug=bDebug)
 

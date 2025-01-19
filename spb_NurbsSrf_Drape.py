@@ -20,8 +20,10 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210808: Now, active CPlane's Z axis is used for drape direction.
 250115: Added support for meshes as objects over which to drape. Refactored.
 250116: Fixed bug for highest elevation in ...HighToLow function. Refactored.
-250117: Replaced the 2 bool options for missed targets to 3-choice list.
-        WIP: Started a rewrite of the HighToLow routine.
+250117: WIP: Started a rewrite of the HighToLow routine.
+250118: Fixed a bug in creating the starting surface. It was previously adding an extra knot outside of the bounding box.
+        Replaced the 3-choice list for missed targets with a bool since 3rd choice may more confusing than valuable in some cases.
+        Now, starting surface must be an open, degree-3 NURBS with only multiplicity-of-1 interior knots.
 
 TODO:
     Create new HighToLow routine with a slightly new approach.
@@ -38,7 +40,6 @@ from System import Guid
 from System.Drawing import Color
 
 #import itertools
-import math
 import random
 
 
@@ -73,7 +74,7 @@ class Opts:
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Create', 'UserProvides')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fPointSpacing'; keys.append(key)
+    key = 'fSpanSpacing'; keys.append(key)
     if sc.doc.ModelUnitSystem.Inches:
         values[key] = 1.0
     else:
@@ -82,13 +83,15 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'iTargetMisses'; keys.append(key)
-    values[key] = 1
-    listValues[key] = (
-        'FixToStartingSrf',
-        'ExtrapolateFromHits',
-        'UseLowestTarget',
-        )
+    key = 'iSpansBeyondEachSide'; keys.append(key)
+    values[key] = 3
+    riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=0)
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bExtrapolate_misses'; keys.append(key)
+    values[key] = True
+    names[key] = 'AtTargetMisses'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'FixOnStartingSrf', 'ExtrapolateFromHits')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bDeleteStartingSrf'; keys.append(key)
@@ -151,7 +154,7 @@ class Opts:
     @classmethod
     def setValue(cls, key, idxList=None):
 
-        if key == 'fPointSpacing':
+        if key == 'fSpanSpacing':
             if cls.riOpts[key].CurrentValue <= 10.0*sc.doc.ModelAbsoluteTolerance:
                 print("Invalid input for tolerance.")
                 cls.riOpts[key].CurrentValue = cls.values[key]
@@ -200,8 +203,9 @@ def getInput_ObjsToDrapeOver():
         addOption('fTolerance')
         addOption('bUserProvidesStartingSrf')
         if not Opts.values['bUserProvidesStartingSrf']:
-            addOption('fPointSpacing')
-        addOption('iTargetMisses')
+            addOption('fSpanSpacing')
+            addOption('iSpansBeyondEachSide')
+        addOption('bExtrapolate_misses')
         if Opts.values['bUserProvidesStartingSrf']:
             addOption('bDeleteStartingSrf')
         addOption('bEcho')
@@ -223,7 +227,7 @@ def getInput_ObjsToDrapeOver():
             if Opts.values['bUserProvidesStartingSrf']:
                 print("Numeric input ignored.")
                 continue
-            key = 'fPointSpacing'
+            key = 'fSpanSpacing'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
@@ -233,6 +237,46 @@ def getInput_ObjsToDrapeOver():
             if go.Option().Index == idxs_Opt[key]:
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
+
+
+def _doesNurbsSrfContainInteriorKnotsWithMultiplictyGT1(ns):
+    for iDir in 0,1:
+        knots = ns.KnotsV if iDir else ns.KnotsU
+        degree = ns.Degree(iDir)
+        iK = 0 if ns.IsPeriodic(iDir) else degree
+        while iK < (knots.Count if ns.IsPeriodic(iDir) else knots.Count - degree):
+            sc.escape_test()
+            if knots.KnotMultiplicity(iK) > 1:
+                return True
+            iK += 1
+
+    return False
+
+
+def _isStartingSrfSupported(ns):
+    """
+    Supported means surface must be an open, degree-3 NURBS with only multiplicity-of-1 interior knots.
+    """
+
+    if not isinstance(ns, rg.NurbsSurface):
+        return False
+
+    if ns.Degree(0) != 3:
+        return False
+
+    if ns.Degree(1) != 3:
+        return False
+
+    if ns.IsClosed(0):
+        return False
+
+    if ns.IsClosed(1):
+        return False
+
+    if _doesNurbsSrfContainInteriorKnotsWithMultiplictyGT1(ns):
+        return False
+
+    return True
 
 
 def getInput_StartingSurface(gObjs_toDrapeOver):
@@ -245,7 +289,9 @@ def getInput_StartingSurface(gObjs_toDrapeOver):
         sc.doc.Views.Redraw()
 
     go = ri.Custom.GetObject()
+
     go.SetCommandPrompt("Select starting surface")
+
     go.GeometryFilter = rd.ObjectType.Surface
 
     while True:
@@ -259,17 +305,23 @@ def getInput_StartingSurface(gObjs_toDrapeOver):
             objref = go.Object(0)
             go.Dispose()
 
+            sc.doc.Objects.UnselectAll()
+            sc.doc.Views.Redraw()
+
             if objref.ObjectId in gObjs_toDrapeOver:
                 print("Starting surface cannot be one of the objects to fit")
-                sc.doc.Objects.UnselectAll()
                 go = ri.Custom.GetObject()
                 go.SetCommandPrompt("Select starting surface")
                 go.GeometryFilter = rd.ObjectType.Surface
                 continue
 
-            # Check that surface is Degree x and contains only simple knots.
-            #rgF = objref.Surface()
-            #rgS = rgF.UnderlyingSurface()
+            # Check that surface is Degree 3 and contains only simple knots.
+            if not _isStartingSrfSupported(objref.Surface().UnderlyingSurface()):
+                print("Starting surface must be an open, degree-3 NURBS with only multiplicity-of-1 interior knots.")
+                go = ri.Custom.GetObject()
+                go.SetCommandPrompt("Select starting surface")
+                go.GeometryFilter = rd.ObjectType.Surface
+                continue
 
             return objref
 
@@ -287,48 +339,87 @@ def _promptDone(bAddWorking=True, bDebug=False):
         Rhino.RhinoApp.Wait()
 
 
-def _addKnotsToSurface(ns_In):
+def _createStartingSurface(rgObjs_Ref, cPlane=rg.Plane.WorldXY, fSpanSpacing=1.0, iSpansBeyondEachSide=4, bDebug=False):
     """
-    Returns: rg.NurbsSurface
+    Returns
+        rg.NurbsSurface that is degree-3 and has 2 interior knots beyond the target bounding box on each of the 4 sides.
     """
 
-    ns_Out = ns_In.Duplicate()
+    bb = rg.BoundingBox.Unset
 
-    iK = ns_In.KnotsU.Count-1-ns_In.Degree(0)
-    k_M = ns_In.KnotsU[iK]
-    k_L = ns_In.KnotsU[iK-1]
-    ns_Out.KnotsU.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
+    if cPlane == rg.Plane.WorldXY:
+        xform_toW = xform_fromW = None
+        for rgObj_Ref in rgObjs_Ref:
+            bb.Union(rgObj_Ref.GetBoundingBox(accurate=True))
+    else:
+        xform_toW = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
+        for rgObj_Ref in rgObjs_Ref:
+            rgObj_Ref_Dup = rgObj_Ref.Duplicate()
+            rgObj_Ref_Dup.Transform(xform_toW)
+            bb.Union(rgObj_Ref_Dup.GetBoundingBox(accurate=True))
+            rgObj_Ref_Dup.Dispose()
+        xform_fromW = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
 
-    for iK in range(ns_In.KnotsU.Count-2-ns_In.Degree(0), ns_In.Degree(0), -1):
-        k_M = ns_In.KnotsU[iK]
-        k_L = ns_In.KnotsU[iK-1]
-        k_R = ns_In.KnotsU[iK+1]
-        ns_Out.KnotsU.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
-        ns_Out.KnotsU.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
+    #sc.doc.Objects.AddBox(rg.Box(bb))
 
-    iK = ns_In.Degree(0)
-    k_M = ns_In.KnotsU[iK]
-    k_R = ns_In.KnotsU[iK+1]
-    ns_Out.KnotsU.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
+    degree = 3
 
-    iK = ns_In.KnotsV.Count-1-ns_In.Degree(1)
-    k_M = ns_In.KnotsV[iK]
-    k_L = ns_In.KnotsV[iK-1]
-    ns_Out.KnotsV.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
+    dim_bb_x = bb.Diagonal.X
+    starting_srf_X_dim = round(dim_bb_x + 2.0*float(iSpansBeyondEachSide)*fSpanSpacing, 0)
+    uInterval = rg.Interval(0.0, starting_srf_X_dim)
+    uPointCount = int(starting_srf_X_dim / fSpanSpacing) + degree
 
-    for iK in range(ns_In.KnotsV.Count-2-ns_In.Degree(1), ns_In.Degree(1), -1):
-        k_M = ns_In.KnotsV[iK]
-        k_L = ns_In.KnotsV[iK-1]
-        k_R = ns_In.KnotsV[iK+1]
-        ns_Out.KnotsV.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
-        ns_Out.KnotsV.InsertKnot(k_L/3.0 + 2.0*k_M/3.0)
+    dim_bb_y = bb.Diagonal.Y
+    starting_srf_Y_dim = round(dim_bb_y + 2.0*float(iSpansBeyondEachSide)*fSpanSpacing, 0)
+    vInterval = rg.Interval(0.0, starting_srf_Y_dim)
+    vPointCount = int(starting_srf_Y_dim / fSpanSpacing) + degree
 
-    iK = ns_In.Degree(1)
-    k_M = ns_In.KnotsV[iK]
-    k_R = ns_In.KnotsV[iK+1]
-    ns_Out.KnotsV.InsertKnot(k_R/3.0 + 2.0*k_M/3.0)
+    origin = rg.Point3d(
+        bb.Center.X-starting_srf_X_dim/2.0,
+        bb.Center.Y-starting_srf_Y_dim/2.0,
+        bb.Max.Z)
 
-    return ns_Out
+    plane = rg.Plane(origin=origin, normal=rg.Vector3d.ZAxis)
+
+    ns = rg.NurbsSurface.CreateFromPlane(
+        plane=plane,
+        uInterval=uInterval,
+        vInterval=vInterval,
+        uDegree=degree,
+        vDegree=degree,
+        uPointCount=uPointCount,
+        vPointCount=vPointCount)
+
+    #sc.doc.Objects.AddSurface(ns); sc.doc.Views.Redraw(); 1/0
+
+    if xform_fromW:
+        ns.Transform(xform_fromW)
+
+    return ns
+
+
+def _coerceSurface(rhObj):
+    if isinstance(rhObj, rg.GeometryBase):
+        geom = rhObj
+    elif isinstance(rhObj, rd.ObjRef):
+        #print(rhObj.GeometryComponentIndex.ComponentIndexType)
+        geom = rhObj.Geometry()
+    elif isinstance(rhObj, Guid):
+        rdObj = sc.doc.Objects.FindId(rhObj) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(rhObj)
+        geom = rdObj.Geometry
+    else:
+        return
+
+    srf = None
+    if isinstance(geom, rg.BrepFace):
+        srf = geom.UnderlyingSurface()
+    elif isinstance(geom, rg.Surface):
+        srf = geom
+    elif isinstance(geom, rg.Brep):
+        if geom.Faces.Count == 1:
+            srf = geom.Faces[0].UnderlyingSurface()
+
+    return srf
 
 
 def _getGrevillePoints(ns):
@@ -337,8 +428,8 @@ def _getGrevillePoints(ns):
     for iU in range(ns.Points.CountU):
         pts_out.append([])
         for iV in range(ns.Points.CountV):
-            u, vN = ns.Points.GetGrevillePoint(iU, iV)
-            pt = ns.PointAt(u, vN)
+            u, v = ns.Points.GetGrevillePoint(iU, iV)
+            pt = ns.PointAt(u, v)
             pts_out[-1].append(pt)
 
     return pts_out
@@ -614,6 +705,10 @@ def _getNeighborsPerElevationGroup(ns, uvs_Target_Groups, zs_Targets, zs_Min_Adj
 
 
 def _highestElevation(pts):
+    bb = rg.BoundingBox(points=[pt for pt in _flattenNestedList(pts) if pt is not None])
+    return bb.Max.Z
+
+    # Alternative routine.
     zMax = -float('inf')
     for us in pts:
         for v in us:
@@ -1153,7 +1248,7 @@ def _addObject(rgObj, xform):
         if isinstance(rgObj, rg.GeometryBase):
             sc.doc.Objects.Add(rgObj)
         elif isinstance(rgObj, rg.Point3d):
-            sc.doc.Objects.AddPoint(rgPt3d_Dup)
+            sc.doc.Objects.AddPoint(rgObj)
 
 
 def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNeighborCt=1, bDiag=True, bLineExts=True):
@@ -1187,14 +1282,14 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
             line_ThruNeighbors.Length *= 2.0
             #sc.doc.Objects.AddLine(line_ThruNeighbors, attr)
             rc = rg.Intersect.Intersection.LineLine(
-                    lineA=lines_thruStartingSrfGrevilles[iU][iV],
-                    lineB=line_ThruNeighbors)
+                lineA=lines_thruStartingSrfGrevilles[iU][iV],
+                lineB=line_ThruNeighbors)
             if rc[0]:
                 pt = lines_thruStartingSrfGrevilles[iU][iV].PointAt(rc[1])
         else:
             pt = lines_thruStartingSrfGrevilles[iU][iV].ClosestPoint(
-                    pts_In[iU-1][iV],
-                    limitToFiniteSegment=False)
+                pts_In[iU-1][iV],
+                limitToFiniteSegment=False)
         if pt: pts_Out.append(pt)
 
     # East (Next U).
@@ -1369,36 +1464,34 @@ def _closestPointsOfNeighborsOnNormalLines(pts_In, pts_Greville, iU, iV, iMinNei
     return pts_Out
 
 
-def _addMissingPointsAlongBorder(pts, pts_Greville, idxs_pt_filter=None, iMinNeighborCt=1, bDiag=False, bLineExts=True):
+def _addMissingPointsAlongBorder(pts_In, pts_Greville, idxs_pt_filter=None, iMinNeighborCt=1, bDiag=False, bLineExts=True):
     """
     Parameters
-        pts: list of lists of Point3d  This will be modified.
+        pts_In: list of lists of Point3d
 
     Returns
-        bool  Indicating whether pts was modified.
+        list of lists of Point3d if modified.
     """
 
-    pts0 = pts
-
     # Modify a copy of the list so that new points do not affect subsequent ones in this function call.
-    pts_WIP = [ptsV[:] for ptsV in pts0]
+    pts_Out = [ptsV[:] for ptsV in pts_In]
 
     bModificationOccured = False
 
-    for iU in range(len(pts0)):
-        for iV in range(len(pts0[0])):
+    for iU in range(len(pts_In)):
+        for iV in range(len(pts_In[0])):
             if idxs_pt_filter and not (iU, iV) in idxs_pt_filter: continue
 
-            if pts0[iU][iV] is not None: continue
+            if pts_Out[iU][iV] is not None: continue
 
             pts = _closestPointsOfNeighborsOnNormalLines(
-                    pts0,
-                    pts_Greville,
-                    iU,
-                    iV,
-                    iMinNeighborCt=iMinNeighborCt,
-                    bDiag=bDiag,
-                    bLineExts=bLineExts)
+                pts_Out,
+                pts_Greville,
+                iU,
+                iV,
+                iMinNeighborCt=iMinNeighborCt,
+                bDiag=bDiag,
+                bLineExts=bLineExts)
             if not pts: continue
 
             pt_Sum = None
@@ -1408,28 +1501,110 @@ def _addMissingPointsAlongBorder(pts, pts_Greville, idxs_pt_filter=None, iMinNei
             pt = pt_Sum / float(len(pts))
             #sc.doc.Objects.AddPoint(pt, attr)
 
-            pts_WIP[iU][iV] = pt
+            pts_Out[iU][iV] = pt
 
             bModificationOccured = True
 
     # Modify original list.
-    for iU in range(len(pts0)):
-        for iV in range(len(pts0[0])):
-            pts0[iU][iV] = pts_WIP[iU][iV]
+    #for iU in range(len(pts0)):
+    #    for iV in range(len(pts0[0])):
+    #        pts0[iU][iV] = pts_Out[iU][iV]
 
-    return bModificationOccured
-
-
-def _addMissingPerStartingSrf(pts, ns_Starting):
-    for iU in range(len(pts)):
-        for iV in range(len(pts[0])):
-            if pts[iU][iV] is None:
-                #print("Missing point found at {}, {}".format(iU, iV))
-                pts[iU][iV] = ns_Starting.Points.GetControlPoint(iU,iV).Location
+    if bModificationOccured:
+        return pts_Out
 
 
-def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, fTolerance=None, iTargetMisses=1, bDebug=False):
+def _addSrfGrevillPtsForMissing(pts_In, ns_Starting):
     """
+    Returns
+        list of lists of Point3d
+    """
+    pts_Out = []
+    for iU in range(len(pts_In)):
+        pts_Out.append([])
+        for iV in range(len(pts_In[0])):
+            if pts_In[iU][iV] is None:
+                #print("Missing point found at {}, {}".format(iU, iV))
+                pts_Out[iU][iV] = ns_Starting.Points.GetControlPoint(iU,iV).Location
+                u, v = ns.Points.GetGrevillePoint(iU, iV)
+                pt = ns.PointAt(u, v)
+                pts_Out[-1].append(pt)
+            else:
+                pts_Out[-1].append(pts_In[iU][iV])
+    return pts_Out
+
+
+def _extrapolateHitsForMisses(pts_Target_In, pts_Greville):
+
+    idxs_borderPts = _getBorderPointIndices(pts_Target_In)
+    #print(idxs_borderPts); 1/0
+
+    attr = rd.ObjectAttributes()
+    attr.ColorSource = rd.ObjectColorSource.ColorFromObject
+
+    #for bDiag1, bDiag2, bLineExts1, bLineExts2 in itertools.product(
+    #            (False, True), (False, True), (False, True), (False, True)):
+    for bLineExts1, bLineExts2 in ((True, False),):
+    #for bLineExts1, bLineExts2 in itertools.product(
+    #            (False, True), (False, True)):
+
+        pts_Target_Out = [ptsV[:] for ptsV in pts_Target_In]
+
+
+        #for iMinNeighborCt in 4,3,2,1: #(1,): #
+
+        #    addMissingPointsAlongBorder(
+        #            pts_Target,
+        #            idxs_pt_filter=idxs_borderPts,
+        #            iMinNeighborCt=iMinNeighborCt,
+        #            bDiag=True,
+        #            bLineExts=bLineExts1)
+
+        #    if not hasMissingPoints(pts_Target):
+        #        break
+
+
+        while _hasMissingPoints(pts_Target_Out):
+            sc.escape_test()
+
+            pts_Target_Out = _addMissingPointsAlongBorder(
+                pts_Target_Out,
+                pts_Greville,
+                bDiag=False,
+                bLineExts=bLineExts2)
+
+            #sEval = "bPointsWereAdded"; print(sEval,'=',eval(sEval))
+
+
+        # Fill any remaining missing points with the
+        # starting surface control point locations.
+
+        #idxs_Pts_SameAsStartingSrf = []
+        #for iU in range(len(pts_Target)):
+        #    for iV in range(len(pts_Target[0])):
+        #        if pts_Target[iU][iV] is None:
+        #            pts_Target[iU][iV] = ns_Starting.Points.GetControlPoint(iU,iV).Location
+        #            idxs_Pts_SameAsStartingSrf.append((iU,iV))
+
+
+        # Fill any remaining missing points with the
+        # starting surface border elevation.
+        for iU in range(len(pts_Target_Out)):
+            for iV in range(len(pts_Target_Out[0])):
+                if pts_Target_Out[iU][iV] is None:
+                    raise Exception("Why are points missing?")
+                    pts_Target_Out[iU][iV] = rg.Point3d(
+                        ns_WIP.Points.GetControlPoint(iU,iV).X,
+                        ns_WIP.Points.GetControlPoint(iU,iV).Y,
+                        ns_WIP.Points.GetControlPoint(0,0).Z)
+
+        return pts_Target_Out
+
+
+def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, fTolerance=None, bExtrapolate_misses=True, bDebug=False):
+    """
+    Parameters
+        bExtrapolate_misses: bool  True for extrapolate from nearest hits, False to fix on starting surface
     """
 
     if fTolerance is None:
@@ -1496,59 +1671,27 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
 
 
 
-    if not _hasMissingPoints(pts_Target):
-        if (
-            len(rgObjs_toDrapeOver) == 1 and
-            isinstance(rgObjs_toDrapeOver, rg.Brep) and
-            rgObjs_toDrapeOver[0].Faces.Count == 1
-        ):
-            ns1 = _fit_Iteratively_translate_individual_pts(
-                pts_Target,
-                ns_WIP,
-                fTolerance,
-                bDebug=bDebug)
-        else:
-            ns1 = _fit_Iteratively_translate_pts_High_to_low(
-                pts_Target,
-                ns_WIP,
-                fTolerance,
-                bDebug=bDebug)
-
-        if xform_fromW:
-            ns1.Transform(xform_fromW)
-
-        return ns1
-
-
-    pts_Target_HasMissing = [ptsV[:] for ptsV in pts_Target]
-
-
-
-    # Target misses exist.
-
-
-    if iTargetMisses == 0:
-
-        # Fill any remaining missing points with the
-        # starting surface control point locations.
-
-
-        _addMissingPerStartingSrf(pts_Target, ns_WIP)
-
-        ns1 = _fit_Iteratively_translate_pts_High_to_low(
-                    pts_Target,
-                    ns_WIP,
-                    fTolerance)
-
-        if xform_fromW:
-            ns1.Transform(xform_fromW)
-
-        return ns1
-
-
     # Set all the control points of the output surface to the highest elevation.
     # It is to simulate flattening then dropping the material onto the objects.
     zMax = _highestElevation(pts_Target)
+
+
+    # This checks for ns_WIP being planar, has normal parallel to World Z axis, and origin Z at max Z of targets.
+    # The starting surface created by this script is this except the Z coordinate is the top of the bounding box of the objects that are draped over.
+    #def is_NS_flattened_at_top_of_target(ns, z):
+    #    bSuccess, plane = ns.TryGetPlane()
+    #    if not bSuccess:
+    #        return False
+    #    if (plane.Origin.Z - z) >= 1e-6:
+    #        return False
+    #    iIsParallelTo = plane.Normal.IsParallelTo(
+    #        other=rg.Vector3d.ZAxis,
+    #        angleTolerance=Rhino.RhinoMath.ToRadians(1e-6))
+    #    return iIsParallelTo == 1
+
+
+    #print(is_NS_flattened_at_top_of_target(ns_WIP, zMax))
+    #return
 
     for iU in range(ns_WIP.Points.CountU):
         for iV in range(ns_WIP.Points.CountV):
@@ -1558,203 +1701,68 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
 
 
 
-    # Extrapolate missing points.
+    if _hasMissingPoints(pts_Target):
 
-    idxs_borderPts = _getBorderPointIndices(pts_Target)
-    #print(idxs_borderPts); 1/0
-
-    attr = rd.ObjectAttributes()
-    attr.ColorSource = rd.ObjectColorSource.ColorFromObject
-
-    #for bDiag1, bDiag2, bLineExts1, bLineExts2 in itertools.product(
-    #            (False, True), (False, True), (False, True), (False, True)):
-    for bLineExts1, bLineExts2 in ((True, False),):
-    #for bLineExts1, bLineExts2 in itertools.product(
-    #            (False, True), (False, True)):
-
-        pts_Target = [ptsV[:] for ptsV in pts_Target_HasMissing]
+        # Making a duplicate for debugging, etc.
+        pts_Target_HasMissing = [ptsV[:] for ptsV in pts_Target]
 
 
-        #for iMinNeighborCt in 4,3,2,1: #(1,): #
-
-        #    addMissingPointsAlongBorder(
-        #            pts_Target,
-        #            idxs_pt_filter=idxs_borderPts,
-        #            iMinNeighborCt=iMinNeighborCt,
-        #            bDiag=True,
-        #            bLineExts=bLineExts1)
-
-        #    if not hasMissingPoints(pts_Target):
-        #        break
-
-
-        while _hasMissingPoints(pts_Target):
-            sc.escape_test()
-
-            bPointsWereAdded = _addMissingPointsAlongBorder(
-                pts_Target,
-                pts_Greville,
-                bDiag=False,
-                bLineExts=bLineExts2)
-
-            #sEval = "bPointsWereAdded"; print(sEval,'=',eval(sEval))
+        if bExtrapolate_misses:
+            pts_Target = _extrapolateHitsForMisses(
+                pts_Target_HasMissing,
+                pts_Greville)
+        else:
+            # Fill any remaining missing points with the
+            # starting surface control point locations.
+            pts_Target = _addSrfGrevillPtsForMissing(
+                pts_Target_HasMissing,
+                ns_WIP)
 
 
-        # Fill any remaining missing points with the
-        # starting surface control point locations.
 
-        #idxs_Pts_SameAsStartingSrf = []
-        #for iU in range(len(pts_Target)):
-        #    for iV in range(len(pts_Target[0])):
-        #        if pts_Target[iU][iV] is None:
-        #            pts_Target[iU][iV] = ns_Starting.Points.GetControlPoint(iU,iV).Location
-        #            idxs_Pts_SameAsStartingSrf.append((iU,iV))
-
-
-        # Fill any remaining missing points with the
-        # starting surface border elevation.
-        for iU in range(len(pts_Target)):
-            for iV in range(len(pts_Target[0])):
-                if pts_Target[iU][iV] is None:
-                    pts_Target[iU][iV] = rg.Point3d(
-                        ns_WIP.Points.GetControlPoint(iU,iV).X,
-                        ns_WIP.Points.GetControlPoint(iU,iV).Y,
-                        ns_WIP.Points.GetControlPoint(0,0).Z)
-
-
-        ns_Res3 = _fit_Iteratively_translate_pts_High_to_low(
+        ns_Out = _fit_Iteratively_translate_pts_High_to_low(
             pts_Target,
             ns_WIP,
-            fTolerance=fTolerance,
+            fTolerance,
             bDebug=bDebug)
-        if not ns_Res3: continue
+
+        # TODO: Reevaluate using a different approach for fitting to a single surface.
+        #if (
+        #    len(rgObjs_toDrapeOver) == 1 and
+        #    isinstance(rgObjs_toDrapeOver, rg.Brep) and
+        #    rgObjs_toDrapeOver[0].Faces.Count == 1
+        #):
+        #    ns_Out = _fit_Iteratively_translate_individual_pts(
+        #        pts_Target,
+        #        ns_WIP,
+        #        fTolerance,
+        #        bDebug=bDebug)
+        #else:
+        #    ns_Out = _fit_Iteratively_translate_pts_High_to_low(
+        #        pts_Target,
+        #        ns_WIP,
+        #        fTolerance,
+        #        bDebug=bDebug)
 
         if xform_fromW:
-            ns_Res3.Transform(xform_fromW)
+            ns_Out.Transform(xform_fromW)
 
-        return ns_Res3
-
-
-def _coerceSurface(rhObj):
-    if isinstance(rhObj, rg.GeometryBase):
-        geom = rhObj
-    elif isinstance(rhObj, rd.ObjRef):
-        #print(rhObj.GeometryComponentIndex.ComponentIndexType)
-        geom = rhObj.Geometry()
-    elif isinstance(rhObj, Guid):
-        rdObj = sc.doc.Objects.FindId(rhObj) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(rhObj)
-        geom = rdObj.Geometry
-    else:
-        return
-
-    srf = None
-    if isinstance(geom, rg.BrepFace):
-        srf = geom.UnderlyingSurface()
-    elif isinstance(geom, rg.Surface):
-        srf = geom
-    elif isinstance(geom, rg.Brep):
-        if geom.Faces.Count == 1:
-            srf = geom.Faces[0].UnderlyingSurface()
-
-    return srf
-
-
-def _createStartingSurface(rgObjs_Ref, cPlane=rg.Plane.WorldXY, fPointSpacing=1.0, bDebug=False):
-    """
-    Returns:
-        rg.NurbsSurface that is degree 3 and 2 knots beyond the target on each of the 4 sides.
-    """
-
-    bb = rg.BoundingBox.Unset
-
-    if cPlane != rg.Plane.WorldXY:
-        xform_toW = rg.Transform.PlaneToPlane(cPlane, rg.Plane.WorldXY)
-        for rgObj in rgObjs_Ref:
-            rgB_Xd = rgObj.Duplicate()
-            rgB_Xd.Transform(xform_toW)
-            bb.Union(rgB_Xd.GetBoundingBox(accurate=True))
-            rgB_Xd.Dispose()
-        xform_fromW = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, cPlane)
-    else:
-        xform_toW = xform_fromW = None
-        for rgObj in rgObjs_Ref:
-            bb.Union(rgObj.GetBoundingBox(accurate=True))
-
-    #sc.doc.Objects.AddBox(rg.Box(bb))
-
-    degree = 3
-
-    # The 6.0 in the following creates 4 rows of planar control points
-    # on each side, thus allowing _ExtendSrf to remain planar for the
-    # degree-3 surface.
-
-    starting_srf_X_dim = math.ceil(bb.Diagonal.X + 6.0*fPointSpacing)
-    uInterval = rg.Interval(0.0, starting_srf_X_dim)
-    uPointCount = int(starting_srf_X_dim / fPointSpacing) + degree
-
-    starting_srf_Y_dim = math.ceil(bb.Diagonal.Y + 6.0*fPointSpacing)
-    vInterval = rg.Interval(0.0, starting_srf_Y_dim)
-    vPointCount = int(starting_srf_Y_dim / fPointSpacing) + degree
-
-    origin = rg.Point3d(
-        bb.Center.X-starting_srf_X_dim/2.0,
-        bb.Center.Y-starting_srf_Y_dim/2.0,
-        bb.Max.Z)
-
-    plane = rg.Plane(origin=origin, normal=rg.Vector3d.ZAxis)
-
-    ns = rg.NurbsSurface.CreateFromPlane(
-        plane=plane,
-        uInterval=uInterval,
-        vInterval=vInterval,
-        uDegree=degree,
-        vDegree=degree,
-        uPointCount=uPointCount,
-        vPointCount=vPointCount)
-
-    # Set perimeter 3 points on each side to "bottom" of target.
-    for iU in range(ns.Points.CountU):
-        for iV in range(ns.Points.CountV):
-            if (
-                (degree <= iU <= ns.Points.CountU - degree - 1) and
-                (degree <= iV <= ns.Points.CountV - degree - 1)
-            ):
-                continue
-            cp_New = ns.Points.GetControlPoint(iU, iV)
-            cp_New.Z = bb.Min.Z
-            ns.Points.SetControlPoint(
-                iU,
-                iV,
-                cp_New)
-
-    #sc.doc.Objects.AddSurface(ns); sc.doc.Views.Redraw(); 1/0
-
-    #for u in range(ns.Points.CountU):
-    #    for v in range(ns.Points.CountV):
-    #        ptA = ns.Points.GetControlPoint(u, v).Location
-    #        ptA.Z = bb.Max.Z
-    #        ptB = rg.Point3d(ptA)
-    #        ptB.Z = bb.Min.Z
-    #        print(sc.doc.Objects.AddLine(ptA, ptB))
-    #sc.doc.Views.Redraw(); 1/0
-
-    if xform_fromW:
-        ns.Transform(xform_fromW)
-
-    return ns
+        return ns_Out
 
 
 def processDocObject(rhObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Plane.WorldXY, **kwargs):
     """
     Parameters
         rhObjs_toDrapeOver: rd.ObjRef[] or rd.RhinoObject[]
+        bExtrapolate_misses: bool  True for extrapolate from nearest hits, False to fix on starting surface
     """
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
     fTolerance = getOpt('fTolerance')
-    fPointSpacing = getOpt('fPointSpacing')
-    iTargetMisses = getOpt('iTargetMisses')
+    fSpanSpacing = getOpt('fSpanSpacing')
+    iSpansBeyondEachSide = getOpt('iSpansBeyondEachSide')
+    bExtrapolate_misses = getOpt('bExtrapolate_misses')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -1771,8 +1779,10 @@ def processDocObject(rhObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Pla
         ns_Starting = _createStartingSurface(
             rgObjs_toDrapeOver,
             cPlane=cPlane,
-            fPointSpacing=fPointSpacing,
+            fSpanSpacing=fSpanSpacing,
+            iSpansBeyondEachSide=iSpansBeyondEachSide,
             bDebug=bDebug)
+        #sc.doc.Objects.AddSurface(ns_Starting); sc.doc.Views.Redraw(); return
     else:
         srf_Starting = _coerceSurface(objref_srf_Starting)
         ns_Starting = srf_Starting.ToNurbsSurface()
@@ -1788,7 +1798,7 @@ def processDocObject(rhObjs_toDrapeOver, objref_srf_Starting=None, cPlane=rg.Pla
         srf_Starting=ns_Starting,
         cPlane=cPlane,
         fTolerance=fTolerance,
-        iTargetMisses=iTargetMisses,
+        bExtrapolate_misses=bExtrapolate_misses,
         bDebug=bDebug
         )
 
@@ -1819,8 +1829,9 @@ def main():
     bFlipCPlane = Opts.values['bFlipCPlane']
     fTolerance = Opts.values['fTolerance']
     bUserProvidesStartingSrf = Opts.values['bUserProvidesStartingSrf']
-    fPointSpacing = Opts.values['fPointSpacing']
-    iTargetMisses = Opts.values['iTargetMisses']
+    fSpanSpacing = Opts.values['fSpanSpacing']
+    iSpansBeyondEachSide = Opts.values['iSpansBeyondEachSide']
+    bExtrapolate_misses = Opts.values['bExtrapolate_misses']
     bDeleteStartingSrf = Opts.values['bDeleteStartingSrf']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -1848,8 +1859,9 @@ def main():
         objref_srf_Starting=objref_srf_Starting,
         cPlane=cPlane,
         fTolerance=fTolerance,
-        fPointSpacing=fPointSpacing,
-        iTargetMisses=iTargetMisses,
+        fSpanSpacing=fSpanSpacing,
+        iSpansBeyondEachSide=iSpansBeyondEachSide,
+        bExtrapolate_misses=bExtrapolate_misses,
         bEcho=bEcho,
         bDebug=bDebug)
 

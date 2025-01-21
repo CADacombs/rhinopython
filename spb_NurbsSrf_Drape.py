@@ -25,6 +25,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Now, starting surface must be an open, degree-3 NURBS with only multiplicity-of-1 interior knots.
 250119: Replaced the 2 bool options for missed targets to a 3-choice list.
         Now, negative values are allowed for SpansBeyondEachSide.
+250120: WIP: Adding routine for assign lowest neighbor to target misses.
+
 
 TODO:
     Create new HighToLow routine with a slightly new approach.
@@ -539,6 +541,13 @@ def _get_orthogonal_neighbor_count_of_point(pts, iU, iV):
 
 
 def _getBorderPointIndices(pts_Target):
+    """
+    Returns flat list of tuples of column, row indices of target points
+    whose value is None and have any neighbors whose value is not None.
+    In other words, the pattern(s) of points will be 1-point wide and
+    outline(s) the target hits.
+    """
+
     idxs_borderPts = []
     for iU in range(len(pts_Target)):
         for iV in range(len(pts_Target[0])):
@@ -1434,10 +1443,81 @@ def _addSrfGrevillPtsForMissing(pts_In, ns_Starting):
     return pts_Out
 
 
+def _get_zs_of_orthogonal_neighbors(pts, iU, iV):
+    """
+    Parameters:
+        pts: u list of v lists of pts
+        iU: int Index in u (top-level list)
+        iV: int Index of v (nested list)
+    Returns:
+        list of z values of counts 0, 1, 2, 3, or 4
+    """
+
+    idx_MaxU = len(pts)-1
+    idx_MaxV = len(pts[0])-1
+
+    zs = []
+
+    if iU-1 >= 0:
+        pt = pts[iU-1][iV]
+        if pt is not None:
+            zs.append(pt.Z)
+    if iU+1 <= idx_MaxU:
+        pt = pts[iU+1][iV]
+        if pt is not None:
+            zs.append(pt.Z)
+    if iV-1 >= 0:
+        pt = pts[iU][iV-1]
+        if pt is not None:
+            zs.append(pt.Z)
+    if iV+1 <= idx_MaxV:
+        pt = pts[iU][iV+1]
+        if pt is not None:
+            zs.append(pt.Z)
+
+    return zs
+
+
+def _addMissingBorderPoints(pts_Target_In, pts_Greville):
+    """
+    """
+
+    pts_Target_Out = [ptsV[:] for ptsV in pts_Target_In]
+
+    for iU in range(len(pts_Target_In)):
+        for iV in range(len(pts_Target_In[0])):
+            if pts_Target_In[iU][iV] is not None:
+                continue
+            zs = _get_zs_of_orthogonal_neighbors(pts_Target_In, iU, iV)
+            if not zs:
+                continue
+            pts_Target_Out[iU][iV] = pts_Greville[iU][iV]
+            pts_Target_Out[iU][iV].Z = min(zs)
+
+    return pts_Target_Out
+
+
+def _addMissingPointsAtLowestNeighbors(pts_Target_In, pts_Greville):
+
+    rvs = _addMissingBorderPoints(pts_Target_In, pts_Greville)
+    if not rvs:
+        return
+
+    while rvs:
+        sc.escape_test()
+        pts_Target_Out = rvs
+        rvs = _addMissingBorderPoints(pts_Target_Out, pts_Greville)
+
+    return pts_Target_Out
+
+
 def _extrapolateHitsForMisses(pts_Target_In, pts_Greville):
 
     idxs_borderPts = _getBorderPointIndices(pts_Target_In)
-    #print(idxs_borderPts); 1/0
+
+    #for iU,iV in idxs_borderPts:
+    #    sc.doc.Objects.AddPoint(pts_Greville[iU][iV])
+    #sc.doc.Views.Redraw(); 1/0
 
     attr = rd.ObjectAttributes()
     attr.ColorSource = rd.ObjectColorSource.ColorFromObject
@@ -1453,7 +1533,7 @@ def _extrapolateHitsForMisses(pts_Target_In, pts_Greville):
 
         #for iMinNeighborCt in 4,3,2,1: #(1,): #
 
-        #    addMissingPointsAlongBorder(
+        #    _addMissingPointsAlongBorder(
         #            pts_Target,
         #            idxs_pt_filter=idxs_borderPts,
         #            iMinNeighborCt=iMinNeighborCt,
@@ -1614,7 +1694,9 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
                 pts_Target_HasMissing,
                 ns_WIP)
         elif iTargetMisses==1:
-            raise Exception("Need to implement lowest neighbor. Change setting to FixToStartingSrf or LinearlyExtrapolateFromHits.")
+            pts_Target = _addMissingPointsAtLowestNeighbors(
+                pts_Target_HasMissing,
+                pts_Greville)
         elif iTargetMisses==2:
             pts_Target = _extrapolateHitsForMisses(
                 pts_Target_HasMissing,

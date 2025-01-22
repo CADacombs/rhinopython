@@ -25,7 +25,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Now, starting surface must be an open, degree-3 NURBS with only multiplicity-of-1 interior knots.
 250119: Replaced the 2 bool options for missed targets to a 3-choice list.
         Now, negative values are allowed for SpansBeyondEachSide.
-250120: WIP: Adding routine for assign lowest neighbor to target misses.
+250120-21: Added routine for assign lowest neighbor to target misses.
 
 
 TODO:
@@ -43,6 +43,7 @@ from System import Guid
 from System.Drawing import Color
 
 #import itertools
+import pprint
 import random
 
 
@@ -92,7 +93,7 @@ class Opts:
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iTargetMisses'; keys.append(key)
-    values[key] = 2
+    values[key] = 1
     listValues[key] = (
         'FixToStartingSrf',
         'UseLowestNeighborHits',
@@ -343,6 +344,39 @@ def _promptDone(bAddWorking=True, bDebug=False):
     if bAddWorking:
         Rhino.RhinoApp.SetCommandPrompt("Working ...")
         Rhino.RhinoApp.Wait()
+
+
+def _print_nested_list(lst, level=0, max_items=3):
+    """
+    Prints the first few items of each nested list.
+    Modification to AI-generated code.
+    """
+
+    #sEval = "level"; print(sEval,'=',eval(sEval))
+
+    deepest = level
+
+    if level==0:
+        print("  "*level + "[")
+
+    elif level==1:
+        pass
+
+    for i, item in enumerate(lst):
+        if i >= max_items:
+            print("  "*level + "...")
+            print("  "*level + "]")
+            break
+
+        if isinstance(item, list):
+            print("  "*(level+1) + "[")
+            depth = _print_nested_list(item, level + 1, max_items)
+            if depth > level:
+                deepest = depth
+        else:
+            print("  "*level + str(item))
+
+    return deepest
 
 
 def _createStartingSurface(rgObjs_Ref, cPlane=rg.Plane.WorldXY, fSpanSpacing=1.0, iSpansBeyondEachSide=4, bDebug=False):
@@ -765,8 +799,12 @@ def _fit_NEW_High_to_low(ns_In=None, pts_Target=None, fTolerance=None, bDebug=Fa
 
 
 
-def _fit_Iteratively_translate_pts_High_to_low(pts_Target, ns_In, fTolerance, bDebug=False):
+def _fit_Iter_transl_High_to_low_9pts(pts_Target, ns_In, fTolerance, bDebug=False):
     """
+    The 9-point groups are for degree-3 NurbsSrfs with simple interior knots.
+    Not all groups are 9 points; points already in higher elevation groups are not included.
+    These are not the elevation groups. Those are for reducing the amount of absolute
+    elevation differences, be combining targets within a tolerance.
     """
 
     #return _fit_NEW_High_to_low(
@@ -974,17 +1012,22 @@ def _fit_Iteratively_translate_pts_High_to_low(pts_Target, ns_In, fTolerance, bD
         # Test whether Greville points of elevation group are still on or above target.
 
         for uT,vT in uvs_Target_Group:
-            uG,vG = ns_Out.Points.GetGrevillePoint(uT, vT)
+            uG, vG = ns_Out.Points.GetGrevillePoint(uT, vT)
             #print(uT, vT)
             #if (uT,vT) == (6,5):
             #    pass
             #    sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); return
-            zG = ns_Out.PointAt(uG, vG).Z
+            pt_Greville = ns_Out.PointAt(uG, vG)
+            zG = pt_Greville.Z
             zT = pts_Target[uT][vT].Z
             if (zG + 0.001*fTolerance) >= zT:
                 continue
-            #sc.doc.Objects.AddSurface(ns_Out); sc.doc.Views.Redraw(); 1/0
-            raise Exception("This still occurs. When?")
+
+            #sc.doc.Objects.AddSurface(ns_Out)
+            #sc.doc.Objects.AddPoint(pt_Greville)
+            #sc.doc.Views.Redraw()
+            #raise Exception("This still occurs. When?")
+
             break
         else:
             # No change to zs_Min_AdjustedPerNeighbors.
@@ -1035,16 +1078,16 @@ def _fit_Iteratively_translate_pts_High_to_low(pts_Target, ns_In, fTolerance, bD
                 def getHighestElevationOfNeighbors():
                     iDirs = -1, 0, 1
                     # 8 directions from each index location.
-                    delta_dirs = [[u, v] for u in iDirs for v in iDirs]
+                    delta_dirs = [[u, v] for u in iDirs for v in iDirs if not (u == v == 0)]
 
                     zs_Neighbors = []
 
                     for uD, vD in delta_dirs:
-                        print(uD, vD)
+                        #print(uD, vD)
                         uNN = uN + uD
                         vNN = vN + vD
                         zs_Neighbors.append(zs_Targets[uNN][vNN])
-                    1/0
+                    #1/0
                     return max(zs_Neighbors)
 
                 z_Highest = getHighestElevationOfNeighbors()
@@ -1095,7 +1138,7 @@ def _fit_Iteratively_translate_pts_High_to_low(pts_Target, ns_In, fTolerance, bD
     return ns_Out
 
 
-def _fit_Iteratively_translate_individual_pts(pts, ns_In, fTolerance):
+def _fit_Iter_transl_indiv_pts(pts, ns_In, fTolerance):
     """
     """
 
@@ -1423,18 +1466,23 @@ def _addMissingPointsAlongBorder(pts_In, pts_Greville, idxs_pt_filter=None, iMin
         return pts_Out
 
 
-def _addSrfGrevillPtsForMissing(pts_In, ns_Starting):
+def _addSrfGrevillPtsForMissing(pts_In, ns):
     """
+    Parameters
+        pts_In: list of lists of rg.Point3d
+        ns: rg.NurbsSurface with Greville counts of len(pts_In) x len(pts_In[0])
     Returns
         list of lists of Point3d
     """
+
+    max_nesting_level_of_list = _print_nested_list(pts_In)
+    sEval = "max_nesting_level_of_list"; print(sEval,'=',eval(sEval))
+
     pts_Out = []
     for iU in range(len(pts_In)):
         pts_Out.append([])
         for iV in range(len(pts_In[0])):
             if pts_In[iU][iV] is None:
-                #print("Missing point found at {}, {}".format(iU, iV))
-                pts_Out[iU][iV] = ns_Starting.Points.GetControlPoint(iU,iV).Location
                 u, v = ns.Points.GetGrevillePoint(iU, iV)
                 pt = ns.PointAt(u, v)
                 pts_Out[-1].append(pt)
@@ -1478,11 +1526,13 @@ def _get_zs_of_orthogonal_neighbors(pts, iU, iV):
     return zs
 
 
-def _addMissingBorderPoints(pts_Target_In, pts_Greville):
+def _addMissingPoints_LowestNeighbors_Border(pts_Target_In, pts_Greville):
     """
     """
 
     pts_Target_Out = [ptsV[:] for ptsV in pts_Target_In]
+
+    iCt_Pts_added = 0
 
     for iU in range(len(pts_Target_In)):
         for iV in range(len(pts_Target_In[0])):
@@ -1493,20 +1543,24 @@ def _addMissingBorderPoints(pts_Target_In, pts_Greville):
                 continue
             pts_Target_Out[iU][iV] = pts_Greville[iU][iV]
             pts_Target_Out[iU][iV].Z = min(zs)
+            iCt_Pts_added += 1
 
-    return pts_Target_Out
+    #sEval = "iCt_Pts_added"; print(sEval,'=',eval(sEval))
+
+    if iCt_Pts_added:
+        return pts_Target_Out
 
 
-def _addMissingPointsAtLowestNeighbors(pts_Target_In, pts_Greville):
+def _addMissingPoints_LowestNeighbors_All(pts_Target_In, pts_Greville):
 
-    rvs = _addMissingBorderPoints(pts_Target_In, pts_Greville)
+    rvs = _addMissingPoints_LowestNeighbors_Border(pts_Target_In, pts_Greville)
     if not rvs:
         return
 
     while rvs:
         sc.escape_test()
         pts_Target_Out = rvs
-        rvs = _addMissingBorderPoints(pts_Target_Out, pts_Greville)
+        rvs = _addMissingPoints_LowestNeighbors_Border(pts_Target_Out, pts_Greville)
 
     return pts_Target_Out
 
@@ -1694,7 +1748,7 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
                 pts_Target_HasMissing,
                 ns_WIP)
         elif iTargetMisses==1:
-            pts_Target = _addMissingPointsAtLowestNeighbors(
+            pts_Target = _addMissingPoints_LowestNeighbors_All(
                 pts_Target_HasMissing,
                 pts_Greville)
         elif iTargetMisses==2:
@@ -1710,29 +1764,29 @@ def processGeometry(rgObjs_toDrapeOver, srf_Starting, cPlane=rg.Plane.WorldXY, f
             raise Exception("iTargetMisses must be 0, 1, or 2.")
 
 
-    ns_Out = _fit_Iteratively_translate_pts_High_to_low(
-        pts_Target,
-        ns_WIP,
-        fTolerance,
-        bDebug=bDebug)
+    #ns_Out = _fit_Iter_transl_High_to_low_9pts(
+    #    pts_Target,
+    #    ns_WIP,
+    #    fTolerance,
+    #    bDebug=bDebug)
 
     # TODO: Reevaluate using a different approach for fitting to a single surface.
-    #if (
-    #    len(rgObjs_toDrapeOver) == 1 and
-    #    isinstance(rgObjs_toDrapeOver, rg.Brep) and
-    #    rgObjs_toDrapeOver[0].Faces.Count == 1
-    #):
-    #    ns_Out = _fit_Iteratively_translate_individual_pts(
-    #        pts_Target,
-    #        ns_WIP,
-    #        fTolerance,
-    #        bDebug=bDebug)
-    #else:
-    #    ns_Out = _fit_Iteratively_translate_pts_High_to_low(
-    #        pts_Target,
-    #        ns_WIP,
-    #        fTolerance,
-    #        bDebug=bDebug)
+    if (
+        len(rgObjs_toDrapeOver) == 1 and
+        isinstance(rgObjs_toDrapeOver, rg.Brep) and
+        rgObjs_toDrapeOver[0].Faces.Count == 1
+    ):
+        ns_Out = _fit_Iter_transl_indiv_pts(
+            pts_Target,
+            ns_WIP,
+            fTolerance,
+            bDebug=bDebug)
+    else:
+        ns_Out = _fit_Iter_transl_High_to_low_9pts(
+            pts_Target,
+            ns_WIP,
+            fTolerance,
+            bDebug=bDebug)
 
     if xform_fromW:
         ns_Out.Transform(xform_fromW)

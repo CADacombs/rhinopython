@@ -9,12 +9,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 211106: Tolerance is now creeped up from RhinoMath.ZeroTolerance to select only grips that
         are collectively within the tolerance, not independently with reference grips.
         Bug fixed during numeric input.
-250125-26: WIP: Added selection of grips per one grip and parallel plane per option.
-
-Control points at both 1 u and 1 v in from each side will be made coplanar with adjacent
-control points along border of surface.
-
-WIP:
+250125-27: Added selection of grips per one grip and parallel plane per option.
 """
 
 import Rhino
@@ -66,7 +61,8 @@ class Opts:
 
     key = 'bEnableGrips'; keys.append(key)
     values[key] = False
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    names[key] = 'OtherSrfsGrips'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'VisibleOnly', 'EnableAsNeeded')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
@@ -178,7 +174,7 @@ def getInput():
             go.ClearCommandOptions()
             idxs_Opt.clear()
 
-            key = 'EnableAllSrfGrips'; idxs_Opt[key] = go.AddOption(key)
+            key = 'AllSrfGripsOn'; idxs_Opt[key] = go.AddOption(key)
             addOption('bDeterminePlaneBy3PlusGripPick')
             if not Opts.values['bDeterminePlaneBy3PlusGripPick']:
                 addOption('iParallelWithPlane')
@@ -208,7 +204,7 @@ def getInput():
                 Opts.setValue(key)
                 continue
 
-            if go.Option().Index == idxs_Opt['EnableAllSrfGrips']:
+            if go.Option().Index == idxs_Opt['AllSrfGripsOn']:
                 bRedraw = False
                 for rdB in _getAllNormalBreps():
                     if not rdB.GripsOn:
@@ -307,122 +303,103 @@ def _tryGetPlane(ref_pts, fPlanarityTol):
     return True, plane, None
 
 
-def _findCoplanarGripsOfRhinoObject(rhObj, rdGrips_Ref, fPlanarityTol, bEnableGrips):
-    rdGrips_Out = []
+def _findCoplanarGrips_Per_1Grip_and_parallelPlane(rhObj, rdGrip_Ref, plane_Parallel, fPlanarityTol):
 
-    if bEnableGrips and not rhObj.GripsOn:
+    if not rhObj.GripsOn:
         rhObj.GripsOn = True
         if not rhObj.GripsOn:
-            #print("Could not turn on grips for brep.")
             return
 
     rdGrips_All_of_obj = rhObj.GetGrips()
     if rdGrips_All_of_obj is None:
-        return 0
+        return
 
-    iTol = 0
-    fTol = Rhino.RhinoMath.ZeroTolerance
-    bMaxTolReach = fPlanarityTol < fTol
+    plane_Ref = rg.Plane(plane_Parallel)
+    plane_Ref.Origin = rdGrip_Ref.CurrentLocation
 
+    #sc.doc.Objects.AddSurface(rg.PlaneSurface(plane_Ref))
 
-    for grip in rdGrips_All_of_obj:
+    rdGrips_Added = []
 
-        if grip.IsSelected(checkSubObjects=False):
-            sEval = "grip.Id"; print(sEval,'=',eval(sEval))
-            grip.Select(True, syncHighlight=True) # For persistant selection.
+    sEval = "fPlanarityTol"; print(sEval,'=',eval(sEval))
 
-    return
-    while not bMaxTolReach:
-        sc.escape_test()
+    for rdGrip in rdGrips_All_of_obj:
 
-        ref_pts_ToAdd = []
+        if rdGrip.Id == rdGrip_Ref.Id:
+            continue
 
-        fTol = Rhino.RhinoMath.ZeroTolerance*(10**(iTol))
+        pt = rdGrip.CurrentLocation
 
-        if fTol >= fPlanarityTol:
-            fTol = fPlanarityTol
-            bMaxTolReach = True
+        dist = abs(plane_Ref.DistanceTo(pt)) # abs because this method returns a signed distance.
 
-        for grip in rdGrips_All_of_obj:
+        if dist <= fPlanarityTol:
+            #sEval = "dist"; print(sEval,'=',eval(sEval))
+            rdGrips_Added.append(rdGrip)
 
-            if grip.IsSelected(checkSubObjects=False):
-                #grip.Select(True, syncHighlight=True) # For persistant selection.
-                continue
-
-            pt = grip.CurrentLocation
-
-            if rg.Point3d.ArePointsCoplanar(ref_pts+[pt], tolerance=fTol):
-                if grip.Select(True, syncHighlight=True):
-                    iCt_added_grips += 1
-                    ref_pts_ToAdd.append(pt)
-
-        ref_pts.extend(ref_pts_ToAdd)
-        iTol += 1
-
-    return iCt_added_grips
+    return rdGrips_Added
 
 
-def _selectCoplanarGripsOfRhinoObject(rhObj, ref_pts, fPlanarityTol, bEnableGrips):
-    iCt_added_grips = 0
-
-    if bEnableGrips and not rhObj.GripsOn:
+def _findCoplanarGrips_AddingWithRefGrips(rhObj, rdGrips_Ref, fPlanarityTol):
+    """
+    The tolerance creeps from ZeroTolerance to fPlanarityTol so that grips are added more in the
+    order of how coplanar they are will grips already in list, and less by their
+    order from GetGrips().
+    """
+    if not rhObj.GripsOn:
         rhObj.GripsOn = True
         if not rhObj.GripsOn:
-            #print("Could not turn on grips for brep."
-            return 0
+            return
 
-    grips = rhObj.GetGrips()
-    if grips is None:
-        return 0
+    # APC = ArePointsCoplanar.
+    rdGrips_Passed = []
+    gGrips_Ref = [_.Id for _ in rdGrips_Ref]
+    pts_Passed = [_.CurrentLocation for _ in rdGrips_Ref]
 
-    iTol = 0
+    rdGrips_toCheck = [_ for _ in rhObj.GetGrips() if _.Id not in gGrips_Ref]
+    if rdGrips_toCheck is None:
+        return
+
+    iExponent = 0
     fTol = Rhino.RhinoMath.ZeroTolerance
     bMaxTolReach = fPlanarityTol < fTol
-
-
-    for grip in grips:
-
-        if grip.IsSelected(checkSubObjects=False):
-            grip.Select(True, syncHighlight=True) # For persistant selection.
-
 
     while not bMaxTolReach:
         sc.escape_test()
 
-        ref_pts_ToAdd = []
-
-        fTol = Rhino.RhinoMath.ZeroTolerance*(10**(iTol))
+        fTol = Rhino.RhinoMath.ZeroTolerance*(10**(iExponent))
 
         if fTol >= fPlanarityTol:
             fTol = fPlanarityTol
             bMaxTolReach = True
 
-        for grip in grips:
+        rdGrips_Failed = []
 
-            if grip.IsSelected(checkSubObjects=False):
-                #grip.Select(True, syncHighlight=True) # For persistant selection.
-                continue
+        for rdGrip in rdGrips_toCheck:
+            pt = rdGrip.CurrentLocation
 
-            pt = grip.CurrentLocation
+            if rg.Point3d.ArePointsCoplanar(pts_Passed+[pt], tolerance=fTol):
+                rdGrips_Passed.append(rdGrip)
+                pts_Passed.append(pt)
+            else:
+                rdGrips_Failed.append(rdGrip)
 
-            if rg.Point3d.ArePointsCoplanar(ref_pts+[pt], tolerance=fTol):
-                if grip.Select(True, syncHighlight=True):
-                    iCt_added_grips += 1
-                    ref_pts_ToAdd.append(pt)
+            if not rdGrips_Failed:
+                return rdGrips_Passed
 
-        ref_pts.extend(ref_pts_ToAdd)
-        iTol += 1
+        rdGrips_toCheck = rdGrips_Failed
 
-    return iCt_added_grips
+        iExponent += 1
+
+    return rdGrips_Passed
 
 
-def _printGripsAddedFeedback(iCt_added_grips, ref_grips):
-    if iCt_added_grips == 0:
-        print("No grips were added to selection of {}.".format(
-            len(ref_grips)))
+def _printGripsAddedFeedback(rdGrips_Added, rdGrips_Ref):
+    if not rdGrips_Added:
+        print("No grips were added to the selection of {}.".format(
+            len(rdGrips_Ref)))
     else:
-        print("{} grips were added to selection of {}.".format(
-            iCt_added_grips, len(ref_grips)))
+        print("{} grips were added to the selection of {} for a total of {}.".format(
+            len(rdGrips_Added), len(rdGrips_Ref), len(rdGrips_Added) + len(rdGrips_Ref)))
 
 
 def selectGrips_planePerMultipleGrips(objref_Grips_Ref, fPlanarityTol=Rhino.RhinoMath.ZeroTolerance, bSearchOtherSrfs=False, bEnableGrips=True, bEcho=True, bDebug=False):
@@ -430,60 +407,68 @@ def selectGrips_planePerMultipleGrips(objref_Grips_Ref, fPlanarityTol=Rhino.Rhin
     """
 
     rdGrips_Ref = []
-    pts_Grips = []
-    gObjs_Grip_owners = []
+    pts_Grips_Refs = []
+    gOwners_of_RefGrips = []
 
     for o in objref_Grips_Ref:
-        rdGrip = o.Object()
-        rdGrips_Ref.append(rdGrip)
-        pts_Grips.append(rdGrip.CurrentLocation)
-        gObjs_Grip_owners.append(rdGrip.OwnerId)
+        rdGrip_Ref = o.Object()
+        rdGrips_Ref.append(rdGrip_Ref)
+        pts_Grips_Refs.append(rdGrip_Ref.CurrentLocation)
+        gOwners_of_RefGrips.append(rdGrip_Ref.OwnerId)
 
-    #sEval = "gObjs_Grip_owners"; print(sEval,'=',eval(sEval))
+    #sEval = "gOwners_of_RefGrips"; print(sEval,'=',eval(sEval))
 
-    bSuccess, plane, sLog = _tryGetPlane(pts_Grips, fPlanarityTol)
+    bSuccess, plane, sLog = _tryGetPlane(pts_Grips_Refs, fPlanarityTol)
     if not bSuccess:
         if bEcho and sLog: print(sLog)
         return
 
+    rdGrips_Added_All = []
 
-    iCt_added_grips = 0
-
-
-    for gBrep in set(gObjs_Grip_owners):
-        rhObj = sc.doc.Objects.FindId(gBrep)
-        _findCoplanarGripsOfRhinoObject(
-            rhObj,
+    for gOwner in set(gOwners_of_RefGrips):
+        rdOwner = sc.doc.Objects.FindId(gOwner)
+        rdGrips_Added_this_object = _findCoplanarGrips_AddingWithRefGrips(
+            rdOwner,
             rdGrips_Ref=rdGrips_Ref,
             fPlanarityTol=fPlanarityTol,
-            bEnableGrips=bEnableGrips)
-        iCt_added_grips += _selectCoplanarGripsOfRhinoObject(
-            rhObj,
-            ref_pts=pts_Grips,
-            fPlanarityTol=fPlanarityTol,
-            bEnableGrips=bEnableGrips)
+            )
+        rdGrips_Added_All.extend(rdGrips_Added_this_object)
 
+    if bSearchOtherSrfs:
+        iter = rd.ObjectEnumeratorSettings()
+        iter.LockedObjects = False
 
-    if not bSearchOtherSrfs:
-        if bEcho:
-            _printGripsAddedFeedback(iCt_added_grips, rdGrips_Ref)
-        return
-
-    iter = rd.ObjectEnumeratorSettings()
-    iter.LockedObjects = False
-
-    for rdObj in sc.doc.Objects.GetObjectList(iter):
-        if rdObj.ObjectType == rd.ObjectType.Brep:
-            if rdObj.Id in gObjs_Grip_owners:
+        for rdObj in sc.doc.Objects.GetObjectList(iter):
+            if rdObj.ObjectType != rd.ObjectType.Brep:
                 continue
-            iCt_added_grips += _selectCoplanarGripsOfRhinoObject(
+            if rdObj.BrepGeometry.Faces.Count > 1:
+                continue
+            if rdObj.Id in gOwners_of_RefGrips:
+                continue
+            bGripsWereEnabled = rdObj.GripsOn
+            if not bEnableGrips and not bGripsWereEnabled:
+                continue
+
+            rdGrips_Added_this_object = _findCoplanarGrips_AddingWithRefGrips(
                 rdObj,
-                ref_pts=pts_Grips,
+                rdGrips_Ref=rdGrips_Ref,
                 fPlanarityTol=fPlanarityTol,
-                bEnableGrips=bEnableGrips)
+                )
+
+            if rdGrips_Added_this_object:
+                rdGrips_Added_All.extend(rdGrips_Added_this_object)
+            else:
+                if not bGripsWereEnabled:
+                    rdObj.GripsOn = False
+
+    for rdGrip_Ref in rdGrips_Ref:
+        rdGrip_Ref.Select(True, syncHighlight=True) # For persistant selection.
+
+    for rdGrip in rdGrips_Added_All:
+        rdGrip.Select(True, syncHighlight=True) # For persistant selection.
 
     if bEcho:
-        _printGripsAddedFeedback(iCt_added_grips, rdGrips_Ref)
+        _printGripsAddedFeedback(rdGrips_Added_All, rdGrips_Ref)
 
 
 def _getParallelToPlane(iParallelWithPlane):
@@ -491,9 +476,6 @@ def _getParallelToPlane(iParallelWithPlane):
         return sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane()
     if Opts.listValues['iParallelWithPlane'][iParallelWithPlane] == 'CPlaneYZ':
         cplane = sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane()
-        #origin = cplane.Origin
-        #xaxis = cplane.YAxis
-        #yaxis = cplane.ZAxis
         return rg.Plane(origin=cplane.Origin, normal=cplane.XAxis)
     if Opts.listValues['iParallelWithPlane'][iParallelWithPlane] == 'CPlaneZX':
         cplane = sc.doc.Views.ActiveView.ActiveViewport.ConstructionPlane()
@@ -511,16 +493,57 @@ def _getParallelToPlane(iParallelWithPlane):
     raise Exception("What happened?")
 
 
-def selectGrips_planePerOneGrip(objref_Grip, iParallelWithPlane=3, fPlanarityTol=Rhino.RhinoMath.ZeroTolerance, bSearchOtherSrfs=False, bEnableGrips=True, bEcho=True, bDebug=False):
+def selectGrips_Per_1Grip_and_parallelPlane(objref_Grip_Ref, iParallelWithPlane=3, fPlanarityTol=Rhino.RhinoMath.ZeroTolerance, bSearchOtherSrfs=False, bEnableGrips=True, bEcho=True, bDebug=False):
     """
     """
 
-    rdGrip = objref_Grip.Object()
+    rdGrip_Ref = objref_Grip_Ref.Object()
+    rdOwner = sc.doc.Objects.FindId(rdGrip_Ref.OwnerId)
 
-    plane = _getParallelToPlane(Opts.values['iParallelWithPlane'])
+    plane_Parallel = _getParallelToPlane(Opts.values['iParallelWithPlane'])
 
-    sc.doc.Objects.AddSurface(rg.PlaneSurface(plane))
-    sc.doc.Views.Redraw()
+    rdGrips_Added_All = _findCoplanarGrips_Per_1Grip_and_parallelPlane(
+        rdOwner,
+        rdGrip_Ref=rdGrip_Ref,
+        plane_Parallel=plane_Parallel,
+        fPlanarityTol=fPlanarityTol,
+        )
+
+    if bSearchOtherSrfs:
+        iter = rd.ObjectEnumeratorSettings()
+        iter.LockedObjects = False
+
+        for rdObj in sc.doc.Objects.GetObjectList(iter):
+            if rdObj.ObjectType != rd.ObjectType.Brep:
+                continue
+            if rdObj.BrepGeometry.Faces.Count > 1:
+                continue
+            if rdObj.Id == rdGrip_Ref.OwnerId:
+                continue
+            bGripsWereEnabled = rdObj.GripsOn
+            if not bEnableGrips and not bGripsWereEnabled:
+                continue
+
+            rdGrips_Added_this_object = _findCoplanarGrips_Per_1Grip_and_parallelPlane(
+                rdObj,
+                rdGrip_Ref=rdGrip_Ref,
+                plane_Parallel=plane_Parallel,
+                fPlanarityTol=fPlanarityTol,
+                )
+
+            if rdGrips_Added_this_object:
+                rdGrips_Added_All.extend(rdGrips_Added_this_object)
+            else:
+                if not bGripsWereEnabled:
+                    rdObj.GripsOn = False
+
+    rdGrip_Ref.Select(True, syncHighlight=True) # For persistant selection.
+
+    for rdGrip in rdGrips_Added_All:
+        rdGrip.Select(True, syncHighlight=True) # For persistant selection.
+
+    if bEcho:
+        _printGripsAddedFeedback(rdGrips_Added_All, [rdGrip_Ref])
 
 
 def main():
@@ -551,7 +574,7 @@ def main():
             bDebug=bDebug,
         )
     else:
-        selectGrips_planePerOneGrip(
+        selectGrips_Per_1Grip_and_parallelPlane(
             objrefx[0],
             iParallelWithPlane=iParallelWithPlane,
             fPlanarityTol=fPlanarityTol,

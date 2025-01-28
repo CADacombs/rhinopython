@@ -12,7 +12,7 @@ A case use of this is:
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-250127: Created.
+250127-28: Created.
 """
 
 import Rhino
@@ -22,6 +22,7 @@ import Rhino.Input as ri
 import scriptcontext as sc
 
 from clr import StrongBox
+from System import Array
 
 
 class Opts:
@@ -44,8 +45,9 @@ class Opts:
     riOpts[key] = ri.Custom.OptionInteger(1, setLowerLimit=True, limit=1)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fDistTolForSharedGrips'; keys.append(key)
+    key = 'fTolForSharedGrips'; keys.append(key)
     values[key] = sc.doc.ModelAbsoluteTolerance
+    names[key] = 'DistTolForEquallySharedGrips'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
@@ -113,7 +115,7 @@ class Opts:
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
             return
 
-        if key == 'fDistTolForSharedGrips':
+        if key == 'fTolForSharedGrips':
             if cls.riOpts[key].CurrentValue < 0.0:
                 cls.riOpts[key].CurrentValue = cls.values[key] = cls.riOpts[key].InitialValue
             elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
@@ -140,9 +142,11 @@ def getInput_Ref():
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select curves and/or pts for references")
+    go.SetCommandPrompt("Select curves and/or points to find grips")
 
     go.GeometryFilter = rd.ObjectType.Point | rd.ObjectType.Curve
+
+    #go.EnablePreSelect(True, ignoreUnacceptablePreselectedObjects=False)
 
     go.AcceptNumber(True, acceptZero=False)
 
@@ -156,7 +160,7 @@ def getInput_Ref():
         #key = 'AllSrfGripsOn'; idxs_Opt[key] = go.AddOption(key)
         #addOption('bAutoPickSrf')
         addOption('iClosestGripCtPerAnalysisPt')
-        addOption('fDistTolForSharedGrips')
+        addOption('fTolForSharedGrips')
         addOption('bEcho')
         addOption('bDebug')
 
@@ -178,7 +182,7 @@ def getInput_Ref():
             continue
 
         if res == ri.GetResult.Number:
-            key = 'fDistTolForSharedGrips'
+            key = 'fTolForSharedGrips'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
@@ -188,19 +192,6 @@ def getInput_Ref():
             if go.Option().Index == idxs_Opt[key]:
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
-
-
-def _printGripsAddedFeedback(rdGrips_Added, rdGrips_Ref):
-    if not rdGrips_Added:
-        print("No grips were added to the selection of {}.".format(
-            len(rdGrips_Ref)))
-    else:
-        print("{} grips were added to the selection of {} for a total of {}.".format(
-            len(rdGrips_Added), len(rdGrips_Ref), len(rdGrips_Added) + len(rdGrips_Ref)))
-
-
-def _find_indices(lst, element):
-    return [i for i, _ in enumerate(lst) if _ == element]
 
 
 def _find_indices_of_minimums(lst, levels, tol_per_level):
@@ -224,7 +215,9 @@ def _find_indices_of_minimums(lst, levels, tol_per_level):
 
 def _getGripsIndices_GripsClosestToPoint(rgPoint, idxs_UVs, pt3ds_Grevs, levels, tol_per_level):
     pt = rgPoint.Location
+
     dists = []
+
     for i, (iU, iV) in enumerate(idxs_UVs):
         dist = pt3ds_Grevs[i].DistanceTo(pt)
         dists.append(dist)
@@ -234,15 +227,71 @@ def _getGripsIndices_GripsClosestToPoint(rgPoint, idxs_UVs, pt3ds_Grevs, levels,
         levels=levels,
         tol_per_level=tol_per_level)
 
-    idxs_Out = []
-    for j in _find_indices(dists, min(dists)):
-        if j not in idxs_Out:
-            idxs_Out.append(j)
 
-    return idxs_Out
+def _GrevillePt3ds_NestedList(ns):
+    pt3ds_Grevs = []
+    for iU in range(ns.Points.CountU):
+        pt3ds_Grevs.append([])
+        for iV in range(ns.Points.CountV):
+            pt2d = ns.Points.GetGrevillePoint(iU, iV)
+            pt3d = ns.PointAt(pt2d.X, pt2d.Y)
+            pt3ds_Grevs[-1].append(pt3d)
+    return pt3ds_Grevs
 
 
-def selectGrips(objrefs_Ref, rdBrep_1F, iClosestGripCtPerAnalysisPt=1, fDistTolForSharedGrips=None, bEcho=True, bDebug=False):
+def _findMinGrevSpan(ns):
+    pt3ds_Grevs = _GrevillePt3ds_NestedList(ns)
+    fMinDist = float('Inf')
+
+    for iU in range(ns.Points.CountU):
+        for iV in range(ns.Points.CountV):
+            if iU < (ns.Points.CountU - 1):
+                dist = pt3ds_Grevs[iU][iV].DistanceTo(pt3ds_Grevs[iU+1][iV])
+                if dist < fMinDist:
+                    fMinDist = dist
+            if iV < (ns.Points.CountV - 1):
+                dist = pt3ds_Grevs[iU][iV].DistanceTo(pt3ds_Grevs[iU][iV+1])
+                if dist < fMinDist:
+                    fMinDist = dist
+
+    return fMinDist
+
+
+def _curve_DivideByLength(rgCurve, segmentLength, includeEnds):
+    strongBox_points = StrongBox[Array[rg.Point3d]]()
+
+    ts = rgCurve.DivideByLength(
+        segmentLength=segmentLength,
+        includeEnds=True,
+        points=strongBox_points)
+
+    pts = list(strongBox_points.Value)
+
+    return pts
+
+
+def _getGripsIndices_GripsClosestToCurve(rgCurve, segmentLength, pt3ds_Grevs, levels, tol_per_level):
+    pts = _curve_DivideByLength(rgCurve, segmentLength=segmentLength, includeEnds=True)
+
+    idxs_Mins_All = []
+
+    for pt in pts:
+        dists = []
+        for i in range(len(pt3ds_Grevs)):
+            dist = pt3ds_Grevs[i].DistanceTo(pt)
+            dists.append(dist)
+
+        idxs_Mins_This_pt = _find_indices_of_minimums(
+            dists,
+            levels=levels,
+            tol_per_level=tol_per_level)
+
+        idxs_Mins_All.extend(idxs_Mins_This_pt)
+
+    return sorted(set(idxs_Mins_All))
+
+
+def selectGrips(objrefs_Ref, rdBrep_1F, iClosestGripCtPerAnalysisPt=1, fTolForSharedGrips=None, bEcho=True, bDebug=False):
     """
     """
 
@@ -255,8 +304,8 @@ def selectGrips(objrefs_Ref, rdBrep_1F, iClosestGripCtPerAnalysisPt=1, fDistTolF
 
     ns = rgS
 
-    if fDistTolForSharedGrips is None:
-        fDistTolForSharedGrips = sc.doc.ModelAbsoluteTolerance
+    if fTolForSharedGrips is None:
+        fTolForSharedGrips = sc.doc.ModelAbsoluteTolerance
 
     # Creating flat lists.
 
@@ -272,9 +321,9 @@ def selectGrips(objrefs_Ref, rdBrep_1F, iClosestGripCtPerAnalysisPt=1, fDistTolF
             pt3d = ns.PointAt(pt2d.X, pt2d.Y)
             pt3ds_Grevs.append(pt3d)
 
+    fMinGrevSpan = None
 
     idx_Grips_to_sel = []
-
 
     for objref in objrefs_Ref:
         rgO = objref.Object().Geometry
@@ -284,37 +333,60 @@ def selectGrips(objrefs_Ref, rdBrep_1F, iClosestGripCtPerAnalysisPt=1, fDistTolF
                 idxs_UVs=idxs_UVs,
                 pt3ds_Grevs=pt3ds_Grevs,
                 levels=iClosestGripCtPerAnalysisPt,
-                tol_per_level=fDistTolForSharedGrips)
+                tol_per_level=fTolForSharedGrips)
             idx_Grips_to_sel.extend(idxs_Grips)
-
+        elif isinstance(rgO, rg.Curve):
+            if fMinGrevSpan is None:
+                fMinGrevSpan = _findMinGrevSpan(ns)
+                #sEval = "fMinGrevSpan"; print(sEval,'=',eval(sEval))
+            idxs_Grips = _getGripsIndices_GripsClosestToCurve(
+                rgO,
+                segmentLength=0.25*fMinGrevSpan,
+                pt3ds_Grevs=pt3ds_Grevs,
+                levels=iClosestGripCtPerAnalysisPt,
+                tol_per_level=fTolForSharedGrips)
+            idx_Grips_to_sel.extend(idxs_Grips)
+        else:
+            if bEcho:
+                print("{} is no supported as reference geometry.".format(rgO))
 
     if not idx_Grips_to_sel:
         return
 
-    rdBrep_1F.GripsOn = True
+    rdGrips = None
+    rdGrips_AlreadySelected = []
+    bGrips_AlreadyOn = rdBrep_1F.GripsOn
+
+    if not bGrips_AlreadyOn:
+        rdBrep_1F.GripsOn = True
 
     rdGrips = rdBrep_1F.GetGrips()
 
+    if bGrips_AlreadyOn:
+        if rdBrep_1F.GripsSelected:
+            for i, rdG in enumerate(rdGrips):
+                if rdG.IsSelected(checkSubObjects=False):
+                    print(i, rdG.Index)
+                    rdGrips_AlreadySelected.append(rdG.Index)
+
+    iCt_Selected = 0
+
     for iG in idx_Grips_to_sel:
-        rdGrips[iG].Select(
+        rv = rdGrips[iG].Select(
             on=True,
             syncHighlight=True,
             persistentSelect=True,
             ignoreGripsState=True,
             ignoreLayerLocking=False,
             ignoreLayerVisibility=False)
-
-    return
-
-
-    for rdGrip_Ref in rdGrips_Ref:
-        rdGrip_Ref.Select(True, syncHighlight=True) # For persistant selection.
-
-    for rdGrip in rdGrips_Added_All:
-        rdGrip.Select(True, syncHighlight=True) # For persistant selection.
+        if rv:
+            iCt_Selected += 1
 
     if bEcho:
-        _printGripsAddedFeedback(rdGrips_Added_All, rdGrips_Ref)
+        if not iCt_Selected:
+            print("No grips were selected.")
+        else:
+            print("{} surface grips are selected.".format(iCt_Selected))
 
 
 def _findClosestSrf(objrefs):
@@ -364,7 +436,7 @@ def main():
 
     bAutoPickSrf = Opts.values['bAutoPickSrf']
     iClosestGripCtPerAnalysisPt = Opts.values['iClosestGripCtPerAnalysisPt']
-    fDistTolForSharedGrips = Opts.values['fDistTolForSharedGrips']
+    fTolForSharedGrips = Opts.values['fTolForSharedGrips']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
@@ -386,7 +458,7 @@ def main():
         objrefs_Ref=objrefs_Ref,
         rdBrep_1F=rdB,
         iClosestGripCtPerAnalysisPt=iClosestGripCtPerAnalysisPt,
-        fDistTolForSharedGrips=fDistTolForSharedGrips,
+        fTolForSharedGrips=fTolForSharedGrips,
         bEcho=bEcho,
         bDebug=bDebug,
     )

@@ -12,7 +12,7 @@ A case use of this is:
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-250127-28: Created.
+250127-30: Created.
 """
 
 import Rhino
@@ -43,6 +43,12 @@ class Opts:
     key = 'iClosestGripCtPerAnalysisPt'; keys.append(key)
     values[key] = 1
     riOpts[key] = ri.Custom.OptionInteger(1, setLowerLimit=True, limit=1)
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bAddInterior'; keys.append(key)
+    values[key] = True
+    names[key] = 'AddInteriorGripsForCrvInput'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fTolForSharedGrips'; keys.append(key)
@@ -160,6 +166,7 @@ def getInput_Ref():
         #key = 'AllSrfGripsOn'; idxs_Opt[key] = go.AddOption(key)
         #addOption('bAutoPickSrf')
         addOption('iClosestGripCtPerAnalysisPt')
+        addOption('bAddInterior')
         addOption('fTolForSharedGrips')
         addOption('bEcho')
         addOption('bDebug')
@@ -270,7 +277,61 @@ def _curve_DivideByLength(rgCurve, segmentLength, includeEnds):
     return pts
 
 
-def _getGripsIndices_GripsClosestToCurve(rgCurve, segmentLength, pt3ds_Grevs, levels, tol_per_level):
+def _U_V_indices_from_flat_list_index(idx_In, v_count):
+    return (idx_In // v_count), (idx_In % v_count)
+
+
+def _nestedList_of_NurbsSrf_CPs_from_flatList(lst):
+    pass
+
+
+def _get_CP_indices_between_input_indices(idxs_In, countV):
+    """
+    Parameters:
+        idxs_In: Flat list of int.
+
+    Returns: Flat list of int.
+    """
+
+    iVs_perU = {}
+    iUs_perV = {}
+    for idx in idxs_In:
+        iU = idx // countV
+        iV = idx % countV
+        if iU not in iVs_perU:
+            iVs_perU[iU] = [iV]
+        else:
+            iVs_perU[iU].append(iV)
+        if iV not in iUs_perV:
+            iUs_perV[iV] = [iU]
+        else:
+            iUs_perV[iV].append(iU)
+
+    if not iVs_perU and not iUs_perV:
+        return []
+
+    idxs_Added = []
+
+    for iU in iVs_perU:
+        if len(iVs_perU[iU]) == 1:
+            continue
+        for iV in range(min(iVs_perU[iU])+1, max(iVs_perU[iU])):
+            idx_Btwn = iU*countV + iV
+            if idx_Btwn not in idxs_Added:
+                idxs_Added.append(idx_Btwn)
+
+    for iV in iUs_perV:
+        if len(iUs_perV[iV]) == 1:
+            continue
+        for iU in range(min(iUs_perV[iV])+1, max(iUs_perV[iV])):
+            idx_Btwn = iU*countV + iV
+            if idx_Btwn not in idxs_Added:
+                idxs_Added.append(idx_Btwn)
+
+    return idxs_Added
+
+
+def _getGripsIndices_GripsClosestToCurve(rgCurve, segmentLength, pt3ds_Grevs, levels=1, tol_per_level=None):
     pts = _curve_DivideByLength(rgCurve, segmentLength=segmentLength, includeEnds=True)
 
     idxs_Mins_All = []
@@ -291,7 +352,7 @@ def _getGripsIndices_GripsClosestToCurve(rgCurve, segmentLength, pt3ds_Grevs, le
     return sorted(set(idxs_Mins_All))
 
 
-def selectGrips(objrefs_Ref, rdBrep_1F, iClosestGripCtPerAnalysisPt=1, fTolForSharedGrips=None, bEcho=True, bDebug=False):
+def selectGrips(objrefs_Ref, rdBrep_1F, iClosestGripCtPerAnalysisPt=1, bAddInterior=True, fTolForSharedGrips=None, bEcho=True, bDebug=False):
     """
     """
 
@@ -346,6 +407,11 @@ def selectGrips(objrefs_Ref, rdBrep_1F, iClosestGripCtPerAnalysisPt=1, fTolForSh
                 levels=iClosestGripCtPerAnalysisPt,
                 tol_per_level=fTolForSharedGrips)
             idx_Grips_to_sel.extend(idxs_Grips)
+
+            if bAddInterior:
+                idxs_Grips = _get_CP_indices_between_input_indices(idxs_Grips, ns.Points.CountV)
+            idx_Grips_to_sel.extend(idxs_Grips)
+
         else:
             if bEcho:
                 print("{} is no supported as reference geometry.".format(rgO))
@@ -436,6 +502,7 @@ def main():
 
     bAutoPickSrf = Opts.values['bAutoPickSrf']
     iClosestGripCtPerAnalysisPt = Opts.values['iClosestGripCtPerAnalysisPt']
+    bAddInterior = Opts.values['bAddInterior']
     fTolForSharedGrips = Opts.values['fTolForSharedGrips']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -458,6 +525,7 @@ def main():
         objrefs_Ref=objrefs_Ref,
         rdBrep_1F=rdB,
         iClosestGripCtPerAnalysisPt=iClosestGripCtPerAnalysisPt,
+        bAddInterior=bAddInterior,
         fTolForSharedGrips=fTolForSharedGrips,
         bEcho=bEcho,
         bDebug=bDebug,

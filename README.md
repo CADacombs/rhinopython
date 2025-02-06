@@ -1,5 +1,5 @@
 # rhinopython
-Most of these scripts were last developed for Rhino V6, although most will also work in V5 and V7.
+The latest scripts have been developed for Rhino V8, although some will also work in some previous versions, V5 and up.
 
 ## Preparation for use
 Save all the **.py** files to a folder that Rhino can access for running Python scripts and run from Rhino UI or Rhino Python Editor.  For help, see **Getting Started** and **Python Editor for Windows** at https://developer.rhino3d.com/guides/rhinopython/

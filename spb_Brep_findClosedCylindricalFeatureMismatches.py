@@ -38,29 +38,31 @@ class Opts:
     stickyKeys = {}
 
 
-    key = 'fTol_IsCyl_Dist'; keys.append(key)
-    values[key] = 1e-6 * Rhino.RhinoMath.UnitScale(
+    key = 'fTol_IsCyl'; keys.append(key)
+    value = 1e-6 * Rhino.RhinoMath.UnitScale(
         Rhino.UnitSystem.Millimeters,
         sc.doc.ModelUnitSystem)
-    names[key] = 'IsCylDistTol'
+    values[key] = float(format(value, '.0e'))
+    names[key] = 'IsCylTol'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'fTol_Cocyl_AdjFace_Angle_Deg'; keys.append(key)
+    key = 'fTol_Dist'; keys.append(key)
+    value = 1e-3 * Rhino.RhinoMath.UnitScale(
+        Rhino.UnitSystem.Millimeters,
+        sc.doc.ModelUnitSystem)
+    values[key] = float(format(value, '.0e'))
+    names[key] = 'MaxMatchDistTol'
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'fTol_Angle_Deg'; keys.append(key)
     values[key] = 0.1 * sc.doc.ModelAngleToleranceDegrees
-    names[key] = 'AdjFaceCocylParallelAngleTol'
+    names[key] = 'MaxMatchAngleTol'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fTol_Mismatch_Min'; keys.append(key)
-    values[key] = 1e-6 * Rhino.RhinoMath.UnitScale(
-        Rhino.UnitSystem.Millimeters,
-        sc.doc.ModelUnitSystem)
-    names[key] = 'MinMismatchDistTol'
-    riOpts[key] = ri.Custom.OptionDouble(values[key])
-    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
-
-    key = 'fTol_Mismatch_Ignore'; keys.append(key)
+    key = 'fTol_Dist_Ignore'; keys.append(key)
     values[key] = 0.1 * Rhino.RhinoMath.UnitScale(
         Rhino.UnitSystem.Inches,
         sc.doc.ModelUnitSystem)
@@ -68,9 +70,9 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'fTol_Mismatch_Deg'; keys.append(key)
-    values[key] = 0.1 * sc.doc.ModelAngleToleranceDegrees
-    names[key] = 'MismatchParallelAngleTol'
+    key = 'fTol_Angle_Ignore_Deg'; keys.append(key)
+    values[key] = 46.0
+    names[key] = 'AngleToIgnore'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -139,11 +141,19 @@ class Opts:
     @classmethod
     def setValue(cls, key, idxList=None):
 
-        if key == 'fTol_Mismatch_Ignore':
+        if key in ('fTol_IsCyl', 'fTol_Dist', 'fTol_Angle_Deg', 'fTol_Angle_Ignore_Deg'):
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
+                cls.riOpts[key].CurrentValue = Rhino.RhinoMath.ZeroTolerance
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
+            return
+
+        if key == 'fTol_Dist_Ignore':
             if cls.riOpts[key].CurrentValue < 0.0:
                 cls.riOpts[key].CurrentValue = cls.values[key] = cls.riOpts[key].InitialValue
                 sc.sticky[cls.stickyKeys[key]] = cls.values[key]
-            if cls.riOpts[key].CurrentValue < cls.riOpts['fTol_Mismatch_Min'].CurrentValue:
+            if cls.riOpts[key].CurrentValue < cls.riOpts['fTol_Dist'].CurrentValue:
                 cls.riOpts[key].CurrentValue = cls.values[key]
             else:
                 sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
@@ -199,11 +209,11 @@ def getInput():
 
         idxs_Opts.clear()
 
-        addOption('fTol_IsCyl_Dist')
-        addOption('fTol_Cocyl_AdjFace_Angle_Deg')
-        addOption('fTol_Mismatch_Min')
-        addOption('fTol_Mismatch_Ignore')
-        addOption('fTol_Mismatch_Deg')
+        addOption('fTol_IsCyl')
+        addOption('fTol_Dist')
+        addOption('fTol_Angle_Deg')
+        addOption('fTol_Dist_Ignore')
+        addOption('fTol_Angle_Ignore_Deg')
         #addOption('bDot')
         #if Opts.values['bDot']:
         #    addOption('iDotHeight')
@@ -235,7 +245,7 @@ def getInput():
                 break
 
 
-def _collect_cylinders_per_face_index(rgBrep, fTol_IsCyl_Dist):
+def _collect_cylinders_per_face_index(rgBrep, fTol_IsCyl):
     """
     Parameters:
     Returns:
@@ -245,10 +255,10 @@ def _collect_cylinders_per_face_index(rgBrep, fTol_IsCyl_Dist):
     for rgF in rgBrep.Faces:
         #if rg.Surface.IsCylinder(
         #    rgF,
-        #    tolerance=fTol_IsCyl_Dist)
+        #    tolerance=fTol_IsCyl)
         bSuccess, cyl = rg.Surface.TryGetCylinder(
             rgF,
-            tolerance=fTol_IsCyl_Dist)
+            tolerance=fTol_IsCyl)
         if bSuccess:
             cyls_perF[rgF.FaceIndex] = cyl
             continue
@@ -260,7 +270,7 @@ def _collect_cylinders_per_face_index(rgBrep, fTol_IsCyl_Dist):
         ns = rgF.ToNurbsSurface()
         bSuccess, cyl = rg.Surface.TryGetCylinder(
             ns,
-            tolerance=fTol_IsCyl_Dist)
+            tolerance=fTol_IsCyl)
         if bSuccess:
             cyls_perF[rgF.FaceIndex] = cyl
 
@@ -285,7 +295,7 @@ def _are_cylinders_colcylindrical(cylA, cylB, distanceTolerance, angleTolerance)
         angle = rg.Vector3d.VectorAngle(cylA.Axis, cylB.Axis)
         #sEval = "angle"; print(sEval,'=',eval(sEval))
         #sEval = "Rhino.RhinoMath.ToDegrees(angle)"; print(sEval,'=',eval(sEval))
-        #sEval = "fTol_IsCyl_Dist"; print(sEval,'=',eval(sEval))
+        #sEval = "fTol_IsCyl"; print(sEval,'=',eval(sEval))
         sc.doc.Objects.AddCircle(cylA.CircleAt(linearParameter=0))
         sc.doc.Objects.AddCircle(cylB.CircleAt(linearParameter=0))
         raise Exception("isParallelTo of {} should not be so because EpsilonEquals of previous block passed.".format(
@@ -329,7 +339,7 @@ def _are_cylinders_colcylindrical(cylA, cylB, distanceTolerance, angleTolerance)
     return True
 
 
-def _findContiguousCocylindricFacesOf1Face(rgBrep, cyls_perF, idx_F_Start, idxs_Fs_Cocyl_In, idxs_Fs_Fails_In, fTol_IsCyl_Dist, fTol_Cocyl_AdjFace_Angle_Deg):
+def _findContiguousCocylindricFacesOf1Face(rgBrep, cyls_perF, idx_F_Start, idxs_Fs_Cocyl_In, idxs_Fs_Fails_In, fTol_IsCyl, fTol_Angle_Deg):
 
     idxs_Fs_Cocyl_Out = idxs_Fs_Cocyl_In[:]
     idxs_Fs_Fails_Out = idxs_Fs_Fails_In[:]
@@ -361,8 +371,8 @@ def _findContiguousCocylindricFacesOf1Face(rgBrep, cyls_perF, idx_F_Start, idxs_
         if _are_cylinders_colcylindrical(
             cylA=cyl_This,
             cylB=cyl_Other,
-            distanceTolerance=fTol_IsCyl_Dist,
-            angleTolerance=fTol_Cocyl_AdjFace_Angle_Deg
+            distanceTolerance=fTol_IsCyl,
+            angleTolerance=fTol_Angle_Deg
         ):
             idxs_Fs_Cocyl_Out.append(iF_Adj)
         else:
@@ -370,10 +380,10 @@ def _findContiguousCocylindricFacesOf1Face(rgBrep, cyls_perF, idx_F_Start, idxs_
 
         #if not cyls_perF[iF].IsFinite and not cyls_perF[iF_Adj].IsFinite:
         #    if cyls_perF[iF].Axis.EpsilonEquals(
-        #        cyls_perF[iF_Adj].Axis, epsilon=fTol_IsCyl_Dist
+        #        cyls_perF[iF_Adj].Axis, epsilon=fTol_IsCyl
         #    ):
         #        if cyls_perF[iF].Center.EpsilonEquals(
-        #            cyls_perF[iF_Adj].Center, epsilon=fTol_IsCyl_Dist
+        #            cyls_perF[iF_Adj].Center, epsilon=fTol_IsCyl
         #        ):
         #            cyls_Out.append(cyls_perF[iF])
         #            continue
@@ -381,7 +391,7 @@ def _findContiguousCocylindricFacesOf1Face(rgBrep, cyls_perF, idx_F_Start, idxs_
     return idxs_Fs_Cocyl_Out, idxs_Fs_Fails_Out
 
 
-def _get_lists_of_face_indices_for_cocylindric_faces(rgBrep, cyls_perF, fTol_IsCyl_Dist, fTol_Cocyl_AdjFace_Angle_Deg):
+def _get_lists_of_face_indices_for_cocylindric_faces(rgBrep, cyls_perF, fTol_IsCyl, fTol_Angle_Deg):
 
     idxs_Fs_perCyl_Out = [] # List of lists of int indices.
 
@@ -411,8 +421,8 @@ def _get_lists_of_face_indices_for_cocylindric_faces(rgBrep, cyls_perF, fTol_IsC
                 iF_Start,
                 idxs_Fs_Cocyls,
                 idxs_Fs_Fails,
-                fTol_IsCyl_Dist,
-                fTol_Cocyl_AdjFace_Angle_Deg=fTol_Cocyl_AdjFace_Angle_Deg)
+                fTol_IsCyl,
+                fTol_Angle_Deg=fTol_Angle_Deg)
 
             idxs_Fs_Cocyls = idxs_Fs_Cocyls_Res
             idxs_Fs_Fails = idxs_Fs_Fails_Res
@@ -428,7 +438,7 @@ def _get_lists_of_face_indices_for_cocylindric_faces(rgBrep, cyls_perF, fTol_IsC
     return idxs_Fs_perCyl_Out
 
 
-def _find_closed_cylinders_per_face_sets(rgBrep, cyls_perF, idxFs_perCyl, fTol_IsCyl_Dist):
+def _find_closed_cylinders_per_face_sets(rgBrep, cyls_perF, idxFs_perCyl, fTol_IsCyl):
     rgB_Dup = rgBrep.DuplicateBrep()
     rgB_Dup.Faces.ShrinkFaces()
 
@@ -491,7 +501,7 @@ def _find_closed_cylinders_per_face_sets(rgBrep, cyls_perF, idxFs_perCyl, fTol_I
     return cyls_Out
 
 
-def _areLinesParallel(lineA, lineB, distanceTolerance, angleTolerance):
+def _areLinesParallel(lineA, lineB, angleTolerance):
     isParallelTo = lineA.Direction.IsParallelTo(
         lineB.Direction,
         angleTolerance=angleTolerance)
@@ -516,16 +526,20 @@ def _areLinesCollinear(lineA, lineB, distanceTolerance, angleTolerance):
     return dist <= distanceTolerance
 
 
-def _create_geom_to_mark_possible_mismatches(cyls_Closed_perB, fTol_Mismatch_Min, fTol_Mismatch_Ignore, fTol_Mismatch_Deg):
-    fTol_Mismatch_Rad = Rhino.RhinoMath.ToRadians(fTol_Mismatch_Deg)
+def _create_geom_to_mark_possible_mismatches(cyls_Closed_perB, fTol_Dist, fTol_Angle_Deg, fTol_Dist_Ignore, fTol_Angle_Ignore_Deg):
+    fTol_Mismatch_Angle_Rad = Rhino.RhinoMath.ToRadians(fTol_Angle_Deg)
+    fAngleTol_Ignore_Rad = Rhino.RhinoMath.ToRadians(fTol_Angle_Ignore_Deg)
 
     rgPts_Out = []
     rgLines_Out = []
 
     for iThisBrep in range(len(cyls_Closed_perB)-1):
+        Rhino.RhinoApp.SetCommandPromptMessage(
+            "Comparing cylindrical features in brep {} of {} to others...".format(
+                iThisBrep+1,
+                len(cyls_Closed_perB)))
         for iOtherBrep in range(iThisBrep+1, len(cyls_Closed_perB)):
             sc.escape_test()
-            #print(iThisBrep, iOtherBrep)
             cyls_This = cyls_Closed_perB[iThisBrep]
             cyls_Other = cyls_Closed_perB[iOtherBrep]
             for iCyl_This in range(len(cyls_This)):
@@ -557,19 +571,27 @@ def _create_geom_to_mark_possible_mismatches(cyls_Closed_perB, fTol_Mismatch_Min
                     if _areLinesParallel(
                         line_This,
                         line_Other,
-                        distanceTolerance=fTol_Mismatch_Min,
-                        angleTolerance=fTol_Mismatch_Rad
+                        angleTolerance=fTol_Mismatch_Angle_Rad
                     ):
                         if _areLinesCollinear(
                             line_This,
                             line_Other,
-                            distanceTolerance=fTol_Mismatch_Min,
-                            angleTolerance=fTol_Mismatch_Rad
+                            distanceTolerance=fTol_Dist,
+                            angleTolerance=fTol_Mismatch_Angle_Rad
                         ):
                             continue
                         ptA = line_This.From
                         ptB = line_Other.ClosestPoint(ptA, limitToFiniteSegment=False)
+                        bAreParallel = True
                     else:
+                        bAreParallel = False
+                        if not _areLinesParallel(
+                            line_This,
+                            line_Other,
+                            angleTolerance=fAngleTol_Ignore_Rad
+                        ):
+                            continue
+
                         bSuccess, tA, tB = rg.Intersect.Intersection.LineLine(line_This, line_Other)
                         if not bSuccess:
                             # Will be False if lines are parallel.
@@ -580,17 +602,23 @@ def _create_geom_to_mark_possible_mismatches(cyls_Closed_perB, fTol_Mismatch_Min
 
                     dist = ptA.DistanceTo(ptB)
 
-                    if fTol_Mismatch_Min < dist <= fTol_Mismatch_Ignore:
-                        rgPts_Out.extend((ptA, ptB))
-                        rgLines_Out.extend(())
-                        if ptA.DistanceTo(center_This) > 100.0 * fTol_Mismatch_Min:
-                            rgLines_Out.append(rg.Line(center_This, ptA))
-                        else:
-                            rgLines_Out.append(line_This)
-                        if ptA.DistanceTo(center_Other) > 100.0 * fTol_Mismatch_Min:
-                            rgLines_Out.append(rg.Line(center_Other, ptB))
-                        else:
-                            rgLines_Out.append(line_Other)
+                    if bAreParallel and (fTol_Dist < dist <= fTol_Dist_Ignore):
+                        pass
+                    elif not bAreParallel and (dist <= fTol_Dist_Ignore):
+                        pass
+                    else:
+                        continue
+
+                    rgPts_Out.extend((ptA, ptB))
+                    rgLines_Out.extend(())
+                    if ptA.DistanceTo(center_This) > 100.0 * fTol_Dist:
+                        rgLines_Out.append(rg.Line(center_This, ptA))
+                    else:
+                        rgLines_Out.append(line_This)
+                    if ptA.DistanceTo(center_Other) > 100.0 * fTol_Dist:
+                        rgLines_Out.append(rg.Line(center_Other, ptB))
+                    else:
+                        rgLines_Out.append(line_Other)
 
     return rgPts_Out, rgLines_Out
 
@@ -601,11 +629,11 @@ def processBreps(rgBreps, **kwargs):
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    fTol_IsCyl_Dist = getOpt('fTol_IsCyl_Dist')
-    fTol_Cocyl_AdjFace_Angle_Deg = getOpt('fTol_Cocyl_AdjFace_Angle_Deg')
-    fTol_Mismatch_Min = getOpt('fTol_Mismatch_Min')
-    fTol_Mismatch_Ignore = getOpt('fTol_Mismatch_Ignore')
-    fTol_Mismatch_Deg = getOpt('fTol_Mismatch_Deg')
+    fTol_IsCyl = getOpt('fTol_IsCyl')
+    fTol_Dist = getOpt('fTol_Dist')
+    fTol_Angle_Deg = getOpt('fTol_Angle_Deg')
+    fTol_Dist_Ignore = getOpt('fTol_Dist_Ignore')
+    fTol_Angle_Ignore_Deg = getOpt('fTol_Angle_Ignore_Deg')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -621,7 +649,7 @@ def processBreps(rgBreps, **kwargs):
     for rgB in rgBreps:
         dict_face_cyl = _collect_cylinders_per_face_index(
             rgB,
-            fTol_IsCyl_Dist)
+            fTol_IsCyl)
         if dict_face_cyl:
             rgBs_withCyls.append(rgB)
             dicts_face_cyl_perB.append(dict_face_cyl)
@@ -637,8 +665,8 @@ def processBreps(rgBreps, **kwargs):
         idxFs_perCyl = _get_lists_of_face_indices_for_cocylindric_faces(
             rgB,
             dict_face_cyl,
-            fTol_IsCyl_Dist,
-            fTol_Cocyl_AdjFace_Angle_Deg)
+            fTol_IsCyl,
+            fTol_Angle_Deg)
         #sEval = "idxFs_perCyl"; print(sEval,'=',eval(sEval))
         idxFs_perCyl_perB.append(idxFs_perCyl)
 
@@ -658,7 +686,7 @@ def processBreps(rgBreps, **kwargs):
             rgB,
             dict_face_cyl,
             idxFs_perCyl,
-            fTol_IsCyl_Dist)
+            fTol_IsCyl)
         cyls_Closed_perB.append(cyls_Closed)
 
     #sEval = "len(rdBs_withCyls)"; print(sEval,'=',eval(sEval))
@@ -668,9 +696,10 @@ def processBreps(rgBreps, **kwargs):
 
     return _create_geom_to_mark_possible_mismatches(
         cyls_Closed_perB,
-        fTol_Mismatch_Min=fTol_Mismatch_Min,
-        fTol_Mismatch_Ignore=fTol_Mismatch_Ignore,
-        fTol_Mismatch_Deg=fTol_Mismatch_Deg)
+        fTol_Dist=fTol_Dist,
+        fTol_Angle_Deg=fTol_Angle_Deg,
+        fTol_Dist_Ignore=fTol_Dist_Ignore,
+        fTol_Angle_Ignore_Deg=fTol_Angle_Ignore_Deg)
 
 
 def processBrepObjects(rdBreps, **kwargs):
@@ -679,11 +708,11 @@ def processBrepObjects(rdBreps, **kwargs):
 
     def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    fTol_IsCyl_Dist = getOpt('fTol_IsCyl_Dist')
-    fTol_Cocyl_AdjFace_Angle_Deg = getOpt('fTol_Cocyl_AdjFace_Angle_Deg')
-    fTol_Mismatch_Min = getOpt('fTol_Mismatch_Min')
-    fTol_Mismatch_Ignore = getOpt('fTol_Mismatch_Ignore')
-    fTol_Mismatch_Deg = getOpt('fTol_Mismatch_Deg')
+    fTol_IsCyl = getOpt('fTol_IsCyl')
+    fTol_Angle_Deg = getOpt('fTol_Angle_Deg')
+    fTol_Dist = getOpt('fTol_Dist')
+    fTol_Dist_Ignore = getOpt('fTol_Dist_Ignore')
+    fTol_Angle_Ignore_Deg = getOpt('fTol_Angle_Ignore_Deg')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
@@ -711,11 +740,11 @@ def processBrepObjects(rdBreps, **kwargs):
 
     return processBreps(
         rgBreps,
-        fTol_IsCyl_Dist=fTol_IsCyl_Dist,
-        fTol_Cocyl_AdjFace_Angle_Deg=fTol_Cocyl_AdjFace_Angle_Deg,
-        fTol_Mismatch_Min=fTol_Mismatch_Min,
-        fTol_Mismatch_Ignore=fTol_Mismatch_Ignore,
-        fTol_Mismatch_Deg=fTol_Mismatch_Deg,
+        fTol_IsCyl=fTol_IsCyl,
+        fTol_Angle_Deg=fTol_Angle_Deg,
+        fTol_Dist=fTol_Dist,
+        fTol_Dist_Ignore=fTol_Dist_Ignore,
+        fTol_Angle_Ignore_Deg=fTol_Angle_Ignore_Deg,
         bEcho=bEcho,
         bDebug=bDebug,
         )
@@ -726,11 +755,11 @@ def main():
     rdBreps = getInput()
     if not rdBreps: return
 
-    fTol_IsCyl_Dist = Opts.values['fTol_IsCyl_Dist']
-    fTol_Cocyl_AdjFace_Angle_Deg = Opts.values['fTol_Cocyl_AdjFace_Angle_Deg']
-    fTol_Mismatch_Min = Opts.values['fTol_Mismatch_Min']
-    fTol_Mismatch_Ignore = Opts.values['fTol_Mismatch_Ignore']
-    fTol_Mismatch_Deg = Opts.values['fTol_Mismatch_Deg']
+    fTol_IsCyl = Opts.values['fTol_IsCyl']
+    fTol_Dist = Opts.values['fTol_Dist']
+    fTol_Angle_Deg = Opts.values['fTol_Angle_Deg']
+    fTol_Dist_Ignore = Opts.values['fTol_Dist_Ignore']
+    fTol_Angle_Ignore_Deg = Opts.values['fTol_Angle_Ignore_Deg']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
@@ -745,11 +774,11 @@ def main():
 
     rv = processBrepObjects(
         rdBreps,
-        fTol_IsCyl_Dist=fTol_IsCyl_Dist,
-        fTol_Cocyl_AdjFace_Angle_Deg=fTol_Cocyl_AdjFace_Angle_Deg,
-        fTol_Mismatch_Min=fTol_Mismatch_Min,
-        fTol_Mismatch_Ignore=fTol_Mismatch_Ignore,
-        fTol_Mismatch_Deg=fTol_Mismatch_Deg,
+        fTol_IsCyl=fTol_IsCyl,
+        fTol_Angle_Deg=fTol_Angle_Deg,
+        fTol_Dist=fTol_Dist,
+        fTol_Dist_Ignore=fTol_Dist_Ignore,
+        fTol_Angle_Ignore_Deg=fTol_Angle_Ignore_Deg,
         bEcho=bEcho,
         bDebug=bDebug,
         )

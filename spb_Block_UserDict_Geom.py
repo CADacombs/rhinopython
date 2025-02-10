@@ -20,7 +20,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 221014-15: Further development.
 240926: Bug fix and command option name changes.
 240929-1001: Further development.
-250208-09: WIP: Further development.
+250208-10: WIP: Further development.
 
 TODO:
     Add DeleteFromAll routine?
@@ -57,7 +57,7 @@ class Opts():
     key = 'bReadAll'; keys.append(key)
     values[key] = False
     names[key] = 'ReadMode'
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'SelectKeys', 'DumpAllKVPs')
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'SelectKeys', 'AllKeys')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bRemoveKeysRead'; keys.append(key)
@@ -251,6 +251,54 @@ def getInput_OneBlockInst(bWrite_NotRead):
             return objref
 
         Opts.setValue(keys_in_order_added[go.Option().Index])
+
+        if Opts.values['bReadAll']:
+            return getInput_MultiBlockInsts(bWrite_NotRead)
+
+
+def getInput_MultiBlockInsts(bWrite_NotRead):
+
+    go = ri.Custom.GetObject()
+
+    go.SetCommandPrompt('Select block instances')
+
+    go.GeometryFilter = rd.ObjectType.InstanceReference
+
+    def addOption(key):
+        Opts.addOption(go, key)
+        keys_in_order_added.append(key)
+
+    while True:
+        go.ClearCommandOptions()
+        keys_in_order_added = [None] # None is just a placeholder since option indices are base 1.
+
+        if bWrite_NotRead:
+            addOption('bAppend_Not_overwrite')
+            addOption('bDeleteInputOnWrite')
+        else:
+            addOption('bReadAll')
+            addOption('bRemoveKeysRead')
+        #addOption('bLayers')
+        #if Opts.values['bLayers']:
+        #    addOption('bBlockParentLayer')
+        addOption('bEcho')
+        addOption('bDebug')
+
+        res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
+
+        if res == ri.GetResult.Cancel:
+            go.Dispose()
+            return
+
+        if res == ri.GetResult.Object:
+            objrefs = go.Objects()
+            go.Dispose()
+            return objrefs
+
+        Opts.setValue(keys_in_order_added[go.Option().Index])
+
+        if Opts.values['bReadAll']:
+            return getInput_OneBlockInst(bWrite_NotRead)
 
 
 def _auditAllBlockDefsForGeometry():
@@ -449,8 +497,13 @@ def _get_keys_for_geometries(rgIref_or_rdIdef):
 
 def readFromBlock():
 
-    objref_Iref = getInput_OneBlockInst(bWrite_NotRead=False)
-    if objref_Iref is None: return
+    if Opts.values['bReadAll']:
+        objrefs_Iref = getInput_MultiBlockInsts(bWrite_NotRead=False)
+        if objrefs_Iref is None: return
+    else:
+        objref_Iref = getInput_OneBlockInst(bWrite_NotRead=False)
+        if objref_Iref is None: return
+        objrefs_Iref = [objref_Iref]
 
     bReadAll = Opts.values['bReadAll']
     bRemoveKeysRead = Opts.values['bRemoveKeysRead']
@@ -467,44 +520,48 @@ def readFromBlock():
     #    filter=rd.ObjectType.InstanceReference)
     #if res != Rhino.Commands.Result.Success: return
 
-    rgIref = objref_Iref.Geometry()
-    rdIdef = sc.doc.InstanceDefinitions.FindId(rgIref.ParentIdefId)
+    #sEval = "sc.doc.Objects.SelectedObjectsExist(objectType=rd.ObjectType.AnyObject, checkSubObjects=False)"; print(sEval,'=',eval(sEval))
+    sc.doc.Objects.UnselectAll()
 
-    keys_with_geoms = _get_keys_for_geometries(rgIref)
-    if not keys_with_geoms:
-        print("No keys for geometry.")
-        return
+    for objref_Iref in objrefs_Iref:
+        rgIref = objref_Iref.Geometry()
+        rdIdef = sc.doc.InstanceDefinitions.FindId(rgIref.ParentIdefId)
 
-    if bReadAll:
-        sKeys = keys_with_geoms
-    elif len(keys_with_geoms) == 1:
-        if bEcho: print("Only 1 key/value pair with geometry.")
-        sKeys = keys_with_geoms
-    else:
-        sKeys = rs.MultiListBox(
-            items=keys_with_geoms,
-            message="Pick keys to access their geometries.",
-            title="Get Geometry per Key",
-            defaults=None)
-        if sKeys is None:
+        keys_with_geoms = _get_keys_for_geometries(rgIref)
+        if not keys_with_geoms:
+            print("No keys for geometry.")
             return
 
-    for sKey in sKeys:
-        geoms_ret = _get_geoms_transformed_to_instance(rgIref, sKey)
-        if not geoms_ret:
-            continue
-        nFails = 0
-        for geom_ret in geoms_ret:
-            gOut = sc.doc.Objects.Add(geom_ret)
-            if gOut == gOut.Empty:
-                print("Could not add {}.".format(geom_ret))
-                nFails += 1
-        if bRemoveKeysRead:
-            if nFails:
-                print("Will not delete key '{}' from block since not all geometry could be added to the document.".format(
-                    sKey))
-            else:
-                print(rdIdef.UserDictionary.Remove(sKey))
+        if bReadAll:
+            sKeys = keys_with_geoms
+        elif len(keys_with_geoms) == 1:
+            if bEcho: print("Only 1 key/value pair with geometry.")
+            sKeys = keys_with_geoms
+        else:
+            sKeys = rs.MultiListBox(
+                items=keys_with_geoms,
+                message="Pick keys to access their geometries.",
+                title="Get Geometry per Key",
+                defaults=None)
+            if sKeys is None:
+                return
+
+        for sKey in sKeys:
+            geoms_ret = _get_geoms_transformed_to_instance(rgIref, sKey)
+            if not geoms_ret:
+                continue
+            nFails = 0
+            for geom_ret in geoms_ret:
+                gOut = sc.doc.Objects.Add(geom_ret)
+                if gOut == gOut.Empty:
+                    print("Could not add {}.".format(geom_ret))
+                    nFails += 1
+            if bRemoveKeysRead:
+                if nFails:
+                    print("Will not delete key '{}' from block since not all geometry could be added to the document.".format(
+                        sKey))
+                else:
+                    print(rdIdef.UserDictionary.Remove(sKey))
 
     sc.doc.Objects.UnselectAll()
     sc.doc.Views.Redraw()

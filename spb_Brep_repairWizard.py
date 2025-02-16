@@ -1,9 +1,6 @@
 """
 160705-160728: Created.
 ...
-191022-1121: Rewritten with major updates.  Removed most of the previous revision notes.
-191213: Import-related update.
-200129: Added JoinNakedEdges.
 200130: Now maximum edge tolerance is used for finding matching bounding boxes from split.
         Added routine to remove slits from faces.
         Now rebuilds edges of remaining brep before extracting those to be rebuilt.
@@ -13,6 +10,8 @@
 210122: Bug fixes.
 210426, 220118, 220315
 220317: Imported a function.  Import-related update.
+220420: Repaired for Rhino 7+ due to a RhinoCommon 7.17 script-breaking change.
+220914-15, 221122, 240402, 250123, 0215: Import-related updates.
 
 TODO:
 Continuing replacing xBrepFace_trimToNakedEdges with other modules.
@@ -34,16 +33,16 @@ from System.Drawing import Color
 import Eto.Drawing as drawing
 import Eto.Forms as forms
 
-import xBrep_correctEdgeTolerances
-import xBrep_edgeDeviations
-import xBrep_facesWithShortBorderLength
+import spb_Brep_correctEdgeTolerances
+import spb_Brep_edgeFromTrimDeviations
+import spb_Brep_Faces_withShortBorderLength
 import xBrep_findFaceByBorderBoundingBox
 import xBrep_invalid
-import xBrep_join
-import xBrep_nakedEdgeLoop
+import spb_Brep_Join
+import spb_Brep_nakedEdgeLoop
 import xBrep_rebuildEdges
-import spb_Brep_sliverFaces
-import xBrep_smallAreaFaces
+import spb_Brep_Faces_Sliver
+import spb_Brep_findFaces_SmallArea
 import xBrep_splitSurfaceWithCurves
 import xBrepObject
 import xCurve
@@ -573,7 +572,7 @@ def processBrepObjects(rdBreps, **kwargs):
 
         iCt_Removed = 0
 
-        gCorrected = xBrep_correctEdgeTolerances.processBrepObjects(
+        gCorrected = spb_Brep_correctEdgeTolerances.processBrepObjects(
             gBreps[keySearchUs],
             fPercentOfMAT=fPercent_EdgeTolMismatchTol,
             bAddDot=False,
@@ -618,7 +617,7 @@ def processBrepObjects(rdBreps, **kwargs):
         if bEchoCmdPrompt: Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt0 + " done.")
 
 
-    def extractFacesWithEdgeTolError(keySearchUs, keyExtracted):
+    def extractFacesWithEdgeFromTrimTolError(keySearchUs, keyExtracted):
 
         if bEchoCmdPrompt:
             sCmdPrompt0 = "Searching for faces with any " \
@@ -638,7 +637,7 @@ def processBrepObjects(rdBreps, **kwargs):
             rgB = getBrepGeom(gB)
             rgB.Compact()
 
-            devs = xBrep_edgeDeviations.getDeviations(rgB)
+            devs = spb_Brep_edgeFromTrimDeviations.getDeviations(rgB)
 
             idx_Fs_Found = []
 
@@ -718,7 +717,7 @@ def processBrepObjects(rdBreps, **kwargs):
         gs_MultiBrepReturn = []
 
         for gB in gBreps[keyRetrimUs]:
-            NEs = rs.coercebrep(gB).DuplicateNakedEdgeCurves(outer=True, inner=True)
+            NEs = rs.coercebrep(gB).DuplicateNakedEdgeCurves(True, True) # nakedOuter, nakedInner
             rc = xBrep_splitSurfaceWithCurves.processBrepObjects(
                 [gB],
                 NEs,
@@ -916,14 +915,14 @@ def processBrepObjects(rdBreps, **kwargs):
 
         sc.escape_test()
 
-        rc = xBrep_facesWithShortBorderLength.processBrepObjects(
+        rc = spb_Brep_Faces_withShortBorderLength.processBrepObjects(
                 gBreps[keySearchUs],
                 fMaxLength=2.01*fTol_Small,
                 bExtract=True,
                 bEcho=False,
                 bDebug=False)
         if not rc:
-            print "xBrep_facesWithShortBorderLength returned None."
+            print "spb_Brep_Faces_withShortBorderLength returned None."
             if bEchoCmdPrompt: Rhino.RhinoApp.SetCommandPrompt(sCmdPrompt0 + " done.")
             return []
 
@@ -964,10 +963,14 @@ def processBrepObjects(rdBreps, **kwargs):
 
         for gBrep in gBreps[keySearchUs]:
             rgBrep = getBrepGeom(gBrep)
-            rc = spb_Brep_sliverFaces.getFaces(
+            rc = spb_Brep_Faces_Sliver.getFaces(
                 rgBrep,
-                fOverlap_MinAllowed=fTol_Small,
-            )
+                fMaxSliverWidth=fTol_Small,
+                bSkipFacesWithShortEdges=False,
+                bSkipSliverCheckOfShortEdges=True,
+                fMaxShortEdgeLength=fTol_EdgeForJoin,
+                bEntireFaceMustBeASliver=True
+                )
             iCt_Faces = rgBrep.Faces.Count
             rgBrep.Dispose()
             idx_rgFaces_Found = rc[0]
@@ -1007,7 +1010,7 @@ def processBrepObjects(rdBreps, **kwargs):
 
         for gBrep in gBreps[keySearchUs]:
             rgBrep = getBrepGeom(gBrep)
-            rc = xBrep_smallAreaFaces.getFaces(
+            rc = spb_Brep_findFaces_SmallArea.getFaces(
                 rgBrep,
                 fAreaMinTol=(1.01*fTol_Small)**2.0,
                 bEcho=False,
@@ -1113,7 +1116,7 @@ def processBrepObjects(rdBreps, **kwargs):
 
 
         iCt_Joined = 0
-        rc = xBrep_join.joinBrepObjects(
+        rc = spb_Brep_Join.joinBrepObjects(
             gBreps0=gBs,
             fJoinTol=fTol_EdgeForJoin,
             bByLayer=True,
@@ -1122,10 +1125,10 @@ def processBrepObjects(rdBreps, **kwargs):
             bEcho=False,
             bDebug=False
         )
-        # TODO: Add return GUIDs for bUseUiJoinCmd==True version of xBrep_join.joinBrepObjects.
+        # TODO: Add return GUIDs for bUseUiJoinCmd==True version of spb_Brep_Join.joinBrepObjects.
         #if not rc:
         #    # In case bUseUiJoinCmd == True can better handle the join.:
-        #        rc = xBrep_join.joinBrepObjects(
+        #        rc = spb_Brep_Join.joinBrepObjects(
         #            gBreps0=gBs,
         #            fJoinTol=fTol_EdgeForJoin,
         #            bByLayer=True,
@@ -1402,7 +1405,7 @@ def processBrepObjects(rdBreps, **kwargs):
         NBs_All = []
         for gB0 in gBreps[keysOfTrimming]:
             for border in (
-                xBrep_nakedEdgeLoop.createClosedCrvs_2EdgesPerVertexOnly(getBrepGeom(gB0))
+                spb_Brep_nakedEdgeLoop.createClosedCrvs_2EdgesPerVertexOnly(getBrepGeom(gB0))
             ):
                 NBs_All.append(border)
 
@@ -1598,7 +1601,7 @@ def processBrepObjects(rdBreps, **kwargs):
         removeSlitsFromFaces('remaining')
 
     if bCorrectETols:
-        extractFacesWithEdgeTolError('remaining', 'monoface-to-retrim-to-itself')
+        extractFacesWithEdgeFromTrimTolError('remaining', 'monoface-to-retrim-to-itself')
         retrimFaceSrfsWithExistingEdges('monoface-to-retrim-to-itself')
         gBreps['remaining'].extend(gBreps['monoface-to-retrim-to-itself'])
 
@@ -1790,22 +1793,8 @@ def main():
         print "Not supported yet."
         return
 
-    bDebug = Opts.values['bDebug']
 
-
-    if bDebug:
-        print "Running with Debug mode on."
-        import sys
-        for sModule in list(sys.modules):
-            if sModule[0] == 'x':
-                try:
-                    reload(sys.modules[sModule])
-                    print "{} reloaded.".format(sModule)
-                except:
-                    # This is for any module name changes.
-                    print "{} NOT reloaded. ********".format(sModule)
-    else:
-        sc.doc.Views.RedrawEnabled = False
+    if not Opts.values['bDebug']: sc.doc.Views.RedrawEnabled = False
 
     processBrepObjects(rdObjs)
 

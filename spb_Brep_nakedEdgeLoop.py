@@ -1,15 +1,17 @@
 """
+"""
+
+#! python 2  Must be on a line less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
 160924: Created.
-161003: Created curves are now selected when script ends.
-171227: Name changed from dupBorderSelect to duplicateBorderSelect.
-        Modularizations.
-180101: Now all edges are returned from rgCurvesOfBorders when Curve.JoinCurves doesn't create a single, closed curve.
-180915-16: Refactored and externalized some functions to another function.
-        Name changed from duplicateBorderSelect.py to dupBorderSelect.py.
-191110-12: Returned some functions from another module.  Added more functions.
-200109: Modified a function name.
-200205: Refactored 2 functions into 1.
-200602: Modified some variable names.
+...
+250221: Added command options. Bug fix in printed output.
+
+TODO:
+    Move createClosedCrvs_2EdgesPerVertexOnly and getNakedEdgeIndices_2EdgesPerVertexOnly
+    into their own script with a UI?
 """
 
 import Rhino
@@ -19,6 +21,108 @@ import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from System import Guid
+
+
+class Opts:
+
+    keys = []
+    values = {}
+    names = {}
+    riOpts = {}
+    listValues = {}
+    stickyKeys = {}
+
+
+    key = 'fJoinTol'; keys.append(key)
+    #values[key] = sc.doc.ModelAbsoluteTolerance
+    value = 1e-6 * Rhino.RhinoMath.UnitScale(
+        Rhino.UnitSystem.Millimeters,
+        sc.doc.ModelUnitSystem)
+    values[key] = float(format(value, '.0e'))
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'fMaxEdgeLengthToSkip'; keys.append(key)
+    values[key] = 1.0 * sc.doc.ModelAbsoluteTolerance
+    #value = 1e-3 * Rhino.RhinoMath.UnitScale(
+    #    Rhino.UnitSystem.Millimeters,
+    #    sc.doc.ModelUnitSystem)
+    #values[key] = float(format(value, '.0e'))
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'bEcho'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bDebug'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+
+    for key in keys:
+        if key not in names:
+            names[key] = key[1:]
+
+
+    # Load sticky.
+    for key in stickyKeys:
+        _debug = sc.sticky
+        if stickyKeys[key] in sc.sticky:
+            if key in riOpts:
+                riOpts[key].CurrentValue = values[key] = sc.sticky[stickyKeys[key]]
+            else:
+                values[key] = sc.sticky[stickyKeys[key]]
+
+
+    @classmethod
+    def addOption(cls, go, key):
+
+        idxOpt = None
+
+        if key in cls.riOpts:
+            if key[0] == 'b':
+                idxOpt = go.AddOptionToggle(
+                        cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'f':
+                idxOpt = go.AddOptionDouble(
+                    cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'i':
+                idxOpt = go.AddOptionInteger(
+                    englishName=cls.names[key], intValue=cls.riOpts[key])[0]
+        elif key in cls.listValues:
+            idxOpt = go.AddOptionList(
+                englishOptionName=cls.names[key],
+                listValues=cls.listValues[key],
+                listCurrentIndex=cls.values[key])
+        else:
+            print("{} is not a valid key in Opts.".format(key))
+
+        return idxOpt
+
+
+    @classmethod
+    def setValue(cls, key, idxList=None):
+
+        if key in ('fJoinTol', 'fMaxEdgeLengthToSkip'):
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
+                cls.riOpts[key].CurrentValue = Rhino.RhinoMath.ZeroTolerance
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
+            return
+
+        if key in cls.riOpts:
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
+            return
+
+        if key in cls.listValues:
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = idxList
+
+        print("Invalid key?")
+
 
 #
 # Functions only used externally.
@@ -98,7 +202,7 @@ def getNakedEdgeIndices_2EdgesPerVertexOnly(brep):
                 # Start a new set of border edges.
                 idxs_nakedEdges_perBorder.append([])
 
-    #print idxs_nakedEdges_perBorder
+    #print(idxs_nakedEdges_perBorder
 
     return idxs_nakedEdges_perBorder
 
@@ -129,7 +233,7 @@ def createClosedCrvs_2EdgesPerVertexOnly(brep, bDebug=False):
             if bDebug:
                 s  = "More than 1 closed curve joined for a single border."
                 s += "  This brep will not be used for trimming."
-                print s
+                print(s)
             return
 
         rgCrv_Joined = rgCrvs_Joined[0]
@@ -186,25 +290,49 @@ def convertObjrefsToSortedBrepsAndEdges(objrefs):
 
 
 def getInput():
-    
-    # Get trimmed edges of breps.
+    """
+    Get naked edges of breps.
+    """
+
     go = ri.Custom.GetObject()
 
     go.GeometryFilter = Rhino.DocObjects.ObjectType.EdgeFilter
     go.GeometryAttributeFilter = (ri.Custom.GeometryAttributeFilter.BoundaryEdge)
 
-    go.SetCommandPrompt("Select at least one edge of each naked edge loop")
+    go.SetCommandPrompt("Select one edge of each naked edge loop")
 
-    go.EnablePreSelect(False, True)
+    go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
 
-    res = go.GetMultiple(1, 0)
+    idxs_Opts = {}
 
-    if res != ri.GetResult.Object: return
-    
-    objrefs = go.Objects()
-    go.Dispose()
+    def addOption(key): idxs_Opts[key] = Opts.addOption(go, key)
 
-    return objrefs
+    while True:
+        go.ClearCommandOptions()
+
+        idxs_Opts.clear()
+
+        addOption('fJoinTol')
+        addOption('fMaxEdgeLengthToSkip')
+        addOption('bEcho')
+        addOption('bDebug')
+
+        res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
+
+        if res == ri.GetResult.Cancel:
+            go.Dispose()
+            return
+
+        if res == ri.GetResult.Object:
+            objrefs = go.Objects()
+            go.Dispose()
+            return objrefs
+
+        # An option was selected.
+        for key in idxs_Opts:
+            if go.Option().Index == idxs_Opts[key]:
+                Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                break
 
 
 def getEdgeIndicesOfBorders(rhBrep, idxs_Edges, bDebug=False):
@@ -212,6 +340,7 @@ def getEdgeIndicesOfBorders(rhBrep, idxs_Edges, bDebug=False):
     Parameter:
         rhBrep
         idxs_Edges: List of BrepEdge indices or None if all borders (naked edges) are to be returned.
+        bDebug: bool
     Loop through each target edge of the brep:
         Find adjacent naked edges using vertices.
         Accumulate edges in a list of a naked edge loop.
@@ -221,103 +350,116 @@ def getEdgeIndicesOfBorders(rhBrep, idxs_Edges, bDebug=False):
         The edges are in order in border loop.
     """
 
-    rgBrep = rs.coercebrep(rhBrep)
+    rgBrep = rhBrep if isinstance(rhBrep, rg.Brep) else rs.coercebrep(rhBrep)
     if not rgBrep.IsValid:
-        print "Warning!  Brep is not valid.  Check results."
-    
+        print("Warning!  Brep is not valid.  Check results.")
+
     idxs_Es_perBorder = [] # 1-level deep list.
-    
+
     if not idxs_Edges:
         idxs_Edges = [edge.EdgeIndex for edge in rgBrep.Edges if edge.Valence == rg.EdgeAdjacency.Naked]
-    
+
     for idx_Edge in idxs_Edges:
         if bDebug:
-            print '-'*80
-            sEval = 'idx_Edge'; print sEval+':', eval(sEval)
-        
+            print('-'*80)
+            sEval = 'idx_Edge'; print(sEval+':', eval(sEval))
+
         # Skip edges that are already in join list.
         if idx_Edge in [i for b in idxs_Es_perBorder for i in b]:
             continue # To next edge.
-        
+
         rgEdge = rgBrep.Edges[idx_Edge]
         idx_rgVertex_Start0 = rgEdge.StartVertex.VertexIndex
-        if bDebug: sEval = 'idx_rgVertex_Start0'; print sEval+':', eval(sEval)
+        if bDebug: sEval = 'idx_rgVertex_Start0'; print(sEval+':', eval(sEval))
         idx_rgVertex_Last = None
-        if bDebug: sEval = 'idx_rgVertex_Last'; print sEval+':', eval(sEval)
+        if bDebug: sEval = 'idx_rgVertex_Last'; print(sEval+':', eval(sEval))
         idxs_Edges_in_border = []
-        
+
         # Accumulate indices of a border of edges.
         while True:
-            if bDebug: print '-'*40
+            if bDebug: print('-'*40)
             sc.escape_test()
             idxs_Edges_in_border.append(idx_Edge)
             rgVertex_Now = rgEdge.EndVertex
             idx_Vertex_Now = rgVertex_Now.VertexIndex
-            if bDebug: sEval = 'idx_Vertex_Now'; print sEval+':', eval(sEval)
-            
+            if bDebug: sEval = 'idx_Vertex_Now'; print(sEval+':', eval(sEval))
+
             # When does this happen?
-            if bDebug: sEval = 'idx_Vertex_Now == idx_rgVertex_Last'; print sEval+':', eval(sEval)
+            if bDebug: sEval = 'idx_Vertex_Now == idx_rgVertex_Last'; print(sEval+':', eval(sEval))
             if idx_Vertex_Now == idx_rgVertex_Last:
                 if bDebug:
-                    print "End vertex matches the last end vertex, so using the start vertex instead."
+                    print("End vertex matches the last end vertex, so using the start vertex instead.")
                 rgVertex_Now = rgEdge.StartVertex
-                if bDebug: sEval = 'rgVertex_Now'; print sEval+':', eval(sEval)
+                if bDebug: sEval = 'rgVertex_Now'; print(sEval+':', eval(sEval))
                 idx_Vertex_Now = rgVertex_Now.VertexIndex
-                if bDebug: sEval = 'idx_Vertex_Now'; print sEval+':', eval(sEval)
+                if bDebug: sEval = 'idx_Vertex_Now'; print(sEval+':', eval(sEval))
             
             # Break out of while loop if this is the last edge of naked edge border.
-            if bDebug: sEval = 'idx_Vertex_Now == idx_rgVertex_Start0'; print sEval+':', eval(sEval)
+            if bDebug: sEval = 'idx_Vertex_Now == idx_rgVertex_Start0'; print(sEval+':', eval(sEval))
             if idx_Vertex_Now == idx_rgVertex_Start0:
                 break
             
-            if bDebug: sEval = 'rgVertex_Now.EdgeIndices()'; print sEval+':', eval(sEval)
+            if bDebug: sEval = 'rgVertex_Now.EdgeIndices()'; print(sEval+':', eval(sEval))
             # Find next adjacent naked edge.
-            for idx_Edge_at_Vertext in rgVertex_Now.EdgeIndices():
-                if bDebug: sEval = 'idx_Edge_at_Vertext'; print sEval+':', eval(sEval)
+            
+            idx_Es_V_Now = rgVertex_Now.EdgeIndices()
+            
+            for idx_Edge_at_Vertext in idx_Es_V_Now:
+                if bDebug: sEval = 'idx_Edge_at_Vertext'; print(sEval+':', eval(sEval))
                 rgEdge = rgBrep.Edges[idx_Edge_at_Vertext]
-                if bDebug: sEval = 'idx_Edge_at_Vertext != idx_Edge'; print sEval+':', eval(sEval)
-                if bDebug: sEval = 'idx_Edge_at_Vertext not in idxs_Edges_in_border'; print sEval+':', eval(sEval)
-                if bDebug: sEval = 'rgEdge.Valence == rg.EdgeAdjacency.Naked'; print sEval+':', eval(sEval)
+                
+                if bDebug:
+                    sEval = 'idx_Edge_at_Vertext != idx_Edge'; print(sEval+':', eval(sEval))
+                    sEval = 'idx_Edge_at_Vertext not in idxs_Edges_in_border'; print(sEval+':', eval(sEval))
+                    sEval = 'rgEdge.Valence == rg.EdgeAdjacency.Naked'; print(sEval+':', eval(sEval))
+                
                 if (
                         idx_Edge_at_Vertext != idx_Edge and
                         idx_Edge_at_Vertext not in idxs_Edges_in_border and
                         rgEdge.Valence == rg.EdgeAdjacency.Naked
                 ):
                     idx_Edge = idx_Edge_at_Vertext
-                    if bDebug: sEval = 'idx_Edge'; print sEval+':', eval(sEval)
+                    if bDebug: sEval = 'idx_Edge'; print(sEval+':', eval(sEval))
                     idx_rgVertex_Last = idx_Vertex_Now
-                    if bDebug: sEval = 'idx_rgVertex_Last'; print sEval+':', eval(sEval)
+                    if bDebug: sEval = 'idx_rgVertex_Last'; print(sEval+':', eval(sEval))
                     break
-            else: print "Next adjacent naked edge not found!"
-        
+            else: print("Next adjacent naked edge not found!")
+
         idxs_Es_perBorder.append(idxs_Edges_in_border)
-    
+
     return idxs_Es_perBorder
 
 
-def get_joined_curves(rhBrep, idxs_Edges_per_border, bEcho=True, bDebug=False):
+def removeIndicesOfShortEdges(rhBrep, idxs_Edges_in_border, fMaxEdgeLengthToSkip=None):
+    rgBrep = rhBrep if isinstance(rhBrep, rg.Brep) else rs.coercebrep(rhBrep)
+    for idx in reversed(idxs_Edges_in_border):
+        fLength = rgBrep.Edges[idx].GetLength()
+        if fLength <= fMaxEdgeLengthToSkip:
+            idxs_Edges_in_border.remove(idx)
+
+
+def get_joined_curves(rhBrep, idxs_Edges_per_border, fJoinTol=None, bEcho=True, bDebug=False):
     """
     Parameters:
         rhBrep: rg.Brep, rd.BrepObject, or (GUID of brep)
         idxs_Edges_per_border: These are ordered to border loop.
-        bEcho,
+        fJoinTol
+        bEcho
         bDebug
         
     Returns on success:
         list(rg.Curve (0-level deep))
     """
-    
+
     rgBrep = rs.coercebrep(rhBrep)
-    
+
     rgCrvs_Borders = []
-    
-    # Notice that joinTolerance is not provided to JoinCurves.
-    
-    for edgesOfBorder in idxs_Edges_per_border:
-        rgEdges_in_border = [rgBrep.Edges[idx] for idx in edgesOfBorder]
-        rgCrvs = rg.Curve.JoinCurves(rgEdges_in_border)
+
+    for idxEs_of_border in idxs_Edges_per_border:
+        rgEdges_in_border = [rgBrep.Edges[idx] for idx in idxEs_of_border]
+        rgCrvs = rg.Curve.JoinCurves(rgEdges_in_border, joinTolerance=fJoinTol)
         rgCrvs_Borders.extend(rgCrvs)
-    
+
     return rgCrvs_Borders
 
 
@@ -335,19 +477,31 @@ def add_CurvesOfBorders(rgCrvs, bEcho=True, bDebug=False):
     return gCurves_borders
 
 
-def processBrep(rgBrep, idxs_Trims, bEcho=True, bDebug=False):
-    
-    idxs_Edges_per_border = getEdgeIndicesOfBorders(rgBrep, idxs_Trims, bDebug)
+def processBrep(rgBrep, idxs_Trims, fMaxEdgeLengthToSkip=None, fJoinTol=None, bEcho=True, bDebug=False):
+
+    idxs_Edges_per_border = getEdgeIndicesOfBorders(
+        rgBrep,
+        idxs_Trims,
+        bDebug=bDebug)
     if idxs_Edges_per_border is None: return
-    
-    rgCrvs_borders = get_joined_curves(rgBrep, idxs_Edges_per_border, bEcho, bDebug)
-    if rgCrvs_borders is None: return
-    
-    gCurves_borders = add_CurvesOfBorders(rgCrvs_borders, bEcho, bDebug)
-    return gCurves_borders
+
+    if fMaxEdgeLengthToSkip:
+        for idxEs_of_border in idxs_Edges_per_border:
+            removeIndicesOfShortEdges(
+                rgBrep,
+                idxEs_of_border,
+                fMaxEdgeLengthToSkip=fMaxEdgeLengthToSkip)
+
+    rgCrvs_Borders = get_joined_curves(
+        rgBrep,
+        idxs_Edges_per_border,
+        fJoinTol=fJoinTol,
+        bEcho=bEcho,
+        bDebug=bDebug)
+    return rgCrvs_Borders
 
 
-def processBrepObjects(rhBreps, idx_Trims_PerBrep, bEcho=True, bDebug=False):
+def processBrepObjects(rhBreps, idx_Trims_PerBrep, fMaxEdgeLengthToSkip=None, fJoinTol=None, bEcho=True, bDebug=False):
     """
     Parameters:
         rdBreps, # list(rd.BrepObject's or GUID's of them)
@@ -357,31 +511,61 @@ def processBrepObjects(rhBreps, idx_Trims_PerBrep, bEcho=True, bDebug=False):
     Returns on success:
         list(list(GUIDs of curves) per brep))
     """
-    
+
     gCurves_Borders_PerBrep = [] # 1-level deep list nesting.
-    
+
     for rhBrep, idxs_Trims in zip(rhBreps, idx_Trims_PerBrep):
         rgBrep_In = rs.coercebrep(rhBrep)
-        gCurves_Borders_PerBrep.append(
-            processBrep(rgBrep_In, idxs_Trims, bEcho, bDebug))
+
+        rgCrvs_Borders = processBrep(
+            rgBrep_In,
+            idxs_Trims,
+            fMaxEdgeLengthToSkip=fMaxEdgeLengthToSkip,
+            fJoinTol=fJoinTol,
+            bEcho=bEcho,
+            bDebug=bDebug)
+        if rgCrvs_Borders is None:
+            continue
+
+        gCurves_Borders = add_CurvesOfBorders(
+            rgCrvs_Borders,
+            bEcho,
+            bDebug)
+
+        if gCurves_Borders is None:
+            continue
+
+        gCurves_Borders_PerBrep.append(gCurves_Borders)
     
     return gCurves_Borders_PerBrep
 
 
-def main(bEcho=True, bDebug=False):
-    
+def main():
+
     objrefs = getInput()
     if not objrefs: return
 
+    fJoinTol = Opts.values['fJoinTol']
+    fMaxEdgeLengthToSkip = Opts.values['fMaxEdgeLengthToSkip']
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
+
+    #if not bDebug: sc.doc.Views.RedrawEnabled=False
+
     rc = convertObjrefsToSortedBrepsAndEdges(objrefs)
     if rc is None: return
-    
+
     gBreps, idxs_Edges_per_Brep = rc
-    
+
     sc.doc.Objects.UnselectAll()
     
     gCurves_Borders_PerBrep = processBrepObjects(
-        gBreps, idxs_Edges_per_Brep, bEcho, bDebug)
+        gBreps,
+        idxs_Edges_per_Brep,
+        fMaxEdgeLengthToSkip=fMaxEdgeLengthToSkip,
+        fJoinTol=fJoinTol,
+        bEcho=bEcho,
+        bDebug=bDebug)
     if gCurves_Borders_PerBrep is None: return
     
     sc.doc.Views.Redraw()
@@ -390,14 +574,15 @@ def main(bEcho=True, bDebug=False):
     iOpenCurve_ct = 0
     for gCurves_borders in gCurves_Borders_PerBrep:
         for gCurve in gCurves_borders:
-            if not rs.IsCurveClosed(gCurve): iOpenCurve_ct += iOpenCurve_ct
+            if not rs.IsCurveClosed(gCurve):
+                iOpenCurve_ct += 1
             gCurve_ct += 1
     
     if not iOpenCurve_ct:
-        print "{} curve(s) added to document, and all are closed.".format(gCurve_ct)
+        print("{} curve(s) added to document, and all are closed.".format(gCurve_ct))
     else:
-        print "{} curve(s) added to document, and {} are open.".format(
-                gCurve_ct, iOpenCurve_ct)
+        print("{} curve(s) added to document, and {} are open.".format(
+                gCurve_ct, iOpenCurve_ct))
 
 
-if __name__ == '__main__': main(bEcho=bool(1), bDebug=bool(0))
+if __name__ == '__main__': main()

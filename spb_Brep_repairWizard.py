@@ -11,7 +11,7 @@
 210426, 220118, 220315
 220317: Imported a function.  Import-related update.
 220420: Repaired for Rhino 7+ due to a RhinoCommon 7.17 script-breaking change.
-220914-15, 221122, 240402, 250123, 0215: Import-related updates.
+220914-15, 221122, 240402, 250123, 0215,22: Import-related updates.
 
 TODO:
 Continuing replacing xBrepFace_trimToNakedEdges with other modules.
@@ -38,11 +38,11 @@ import spb_Brep_edgeFromTrimDeviations
 import spb_Brep_Faces_withShortBorderLength
 import xBrep_findFaceByBorderBoundingBox
 import xBrep_invalid
-import spb_Brep_Join
-import spb_Brep_nakedEdgeLoop
-import xBrep_rebuildEdges
 import spb_Brep_Faces_Sliver
 import spb_Brep_findFaces_SmallArea
+import spb_Brep_Join
+import spb_Brep_nakedEdgeLoop
+import spb_Brep_rebuildEdges
 import xBrep_splitSurfaceWithCurves
 import xBrepObject
 import xCurve
@@ -792,7 +792,7 @@ def processBrepObjects(rdBreps, **kwargs):
         sc.escape_test()
 
 
-        rc = xBrep_rebuildEdges.processBrepObjects(
+        rc = spb_Brep_rebuildEdges.processBrepObjects(
             gBreps[keySearchUs],
             fRebuildNakedTol=fTol_EdgeForRebuild,
             bEcho=bDebug if len(gBreps[keySearchUs]) <= 10 else False,

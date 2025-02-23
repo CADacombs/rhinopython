@@ -7,7 +7,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 """
 160924: Created.
 ...
-250221: Added command options. Bug fix in printed output.
+250221,22: Added command options. Bug fix in printed output.
 
 TODO:
     Move createClosedCrvs_2EdgesPerVertexOnly and getNakedEdgeIndices_2EdgesPerVertexOnly
@@ -42,7 +42,7 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'fMaxEdgeLengthToSkip'; keys.append(key)
+    key = 'fMinSegLengthToKeep'; keys.append(key)
     values[key] = 1.0 * sc.doc.ModelAbsoluteTolerance
     #value = 1e-3 * Rhino.RhinoMath.UnitScale(
     #    Rhino.UnitSystem.Millimeters,
@@ -106,7 +106,7 @@ class Opts:
     @classmethod
     def setValue(cls, key, idxList=None):
 
-        if key in ('fJoinTol', 'fMaxEdgeLengthToSkip'):
+        if key in ('fJoinTol', 'fMinSegLengthToKeep'):
             if cls.riOpts[key].CurrentValue < 0.0:
                 cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
             elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
@@ -313,7 +313,7 @@ def getInput():
         idxs_Opts.clear()
 
         addOption('fJoinTol')
-        addOption('fMaxEdgeLengthToSkip')
+        addOption('fMinSegLengthToKeep')
         addOption('bEcho')
         addOption('bDebug')
 
@@ -430,11 +430,11 @@ def getEdgeIndicesOfBorders(rhBrep, idxs_Edges, bDebug=False):
     return idxs_Es_perBorder
 
 
-def removeIndicesOfShortEdges(rhBrep, idxs_Edges_in_border, fMaxEdgeLengthToSkip=None):
+def removeIndicesOfShortEdges(rhBrep, idxs_Edges_in_border, fMinSegLengthToKeep=None):
     rgBrep = rhBrep if isinstance(rhBrep, rg.Brep) else rs.coercebrep(rhBrep)
     for idx in reversed(idxs_Edges_in_border):
         fLength = rgBrep.Edges[idx].GetLength()
-        if fLength <= fMaxEdgeLengthToSkip:
+        if fLength < fMinSegLengthToKeep:
             idxs_Edges_in_border.remove(idx)
 
 
@@ -477,7 +477,7 @@ def add_CurvesOfBorders(rgCrvs, bEcho=True, bDebug=False):
     return gCurves_borders
 
 
-def processBrep(rgBrep, idxs_Trims, fMaxEdgeLengthToSkip=None, fJoinTol=None, bEcho=True, bDebug=False):
+def processBrep(rgBrep, idxs_Trims, fMinSegLengthToKeep=None, fJoinTol=None, bEcho=True, bDebug=False):
 
     idxs_Edges_per_border = getEdgeIndicesOfBorders(
         rgBrep,
@@ -485,12 +485,12 @@ def processBrep(rgBrep, idxs_Trims, fMaxEdgeLengthToSkip=None, fJoinTol=None, bE
         bDebug=bDebug)
     if idxs_Edges_per_border is None: return
 
-    if fMaxEdgeLengthToSkip:
+    if fMinSegLengthToKeep:
         for idxEs_of_border in idxs_Edges_per_border:
             removeIndicesOfShortEdges(
                 rgBrep,
                 idxEs_of_border,
-                fMaxEdgeLengthToSkip=fMaxEdgeLengthToSkip)
+                fMinSegLengthToKeep=fMinSegLengthToKeep)
 
     rgCrvs_Borders = get_joined_curves(
         rgBrep,
@@ -501,7 +501,7 @@ def processBrep(rgBrep, idxs_Trims, fMaxEdgeLengthToSkip=None, fJoinTol=None, bE
     return rgCrvs_Borders
 
 
-def processBrepObjects(rhBreps, idx_Trims_PerBrep, fMaxEdgeLengthToSkip=None, fJoinTol=None, bEcho=True, bDebug=False):
+def processBrepObjects(rhBreps, idx_Trims_PerBrep, fMinSegLengthToKeep=None, fJoinTol=None, bEcho=True, bDebug=False):
     """
     Parameters:
         rdBreps, # list(rd.BrepObject's or GUID's of them)
@@ -520,7 +520,7 @@ def processBrepObjects(rhBreps, idx_Trims_PerBrep, fMaxEdgeLengthToSkip=None, fJ
         rgCrvs_Borders = processBrep(
             rgBrep_In,
             idxs_Trims,
-            fMaxEdgeLengthToSkip=fMaxEdgeLengthToSkip,
+            fMinSegLengthToKeep=fMinSegLengthToKeep,
             fJoinTol=fJoinTol,
             bEcho=bEcho,
             bDebug=bDebug)
@@ -546,7 +546,7 @@ def main():
     if not objrefs: return
 
     fJoinTol = Opts.values['fJoinTol']
-    fMaxEdgeLengthToSkip = Opts.values['fMaxEdgeLengthToSkip']
+    fMinSegLengthToKeep = Opts.values['fMinSegLengthToKeep']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
@@ -562,7 +562,7 @@ def main():
     gCurves_Borders_PerBrep = processBrepObjects(
         gBreps,
         idxs_Edges_per_Brep,
-        fMaxEdgeLengthToSkip=fMaxEdgeLengthToSkip,
+        fMinSegLengthToKeep=fMinSegLengthToKeep,
         fJoinTol=fJoinTol,
         bEcho=bEcho,
         bDebug=bDebug)
@@ -570,19 +570,27 @@ def main():
     
     sc.doc.Views.Redraw()
     
-    gCurve_ct = 0
-    iOpenCurve_ct = 0
+    iCt_Crvs_added = 0
+    iCt_Open = 0
     for gCurves_borders in gCurves_Borders_PerBrep:
         for gCurve in gCurves_borders:
             if not rs.IsCurveClosed(gCurve):
-                iOpenCurve_ct += 1
-            gCurve_ct += 1
+                iCt_Open += 1
+            iCt_Crvs_added += 1
     
-    if not iOpenCurve_ct:
-        print("{} curve(s) added to document, and all are closed.".format(gCurve_ct))
+    if iCt_Crvs_added == 1:
+        if not iCt_Open:
+            print("1 closed curve added to document.")
+        else:
+            print("1 open curve added to document.")
     else:
-        print("{} curve(s) added to document, and {} are open.".format(
-                gCurve_ct, iOpenCurve_ct))
+        if iCt_Open == 0:
+            print("{} closed curves added to document.".format(iCt_Crvs_added))
+        elif iCt_Open == iCt_Crvs_added:
+            print("{} open curves added to document.".format(iCt_Open))
+        else:
+            print("{} open and {} closed curves added to document.".format(
+                iCt_Open, iCt_Crvs_added-iCt_Open))
 
 
 if __name__ == '__main__': main()

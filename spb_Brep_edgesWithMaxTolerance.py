@@ -15,7 +15,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 241124: Added and modified some options.
 241125: Refactored.
 241128: Modified some printed output.
-250223: Now, only the absolute maximum is the target, whether it be the single maximum of all or each of the input breps.
+250223-24: Now, only the absolute maximum is the target, whether it be the single maximum of all or each of the input breps.
 """
 
 import Rhino
@@ -50,7 +50,7 @@ class Opts:
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fSearchTol'; keys.append(key)
-    values[key] = sc.doc.ModelAbsoluteTolerance
+    values[key] = 10.0 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -317,12 +317,12 @@ def processBreps(rhBreps, **kwargs):
                 round(fSearchTol, sc.doc.ModelDistanceDisplayPrecision))
         ):
             if len(rhBreps) == 1:
-                sLogs.append("Maximum Edge.Tolerance is {} ({} less than search tol.).".format(
+                sLogs.append("maximum Edge.Tolerance is {} ({} less than search tol.).".format(
                         formatDistance(maxTol_ThisB),
                         formatDistance(fSearchTol-maxTol_ThisB)))
             else:
                 sLogs.append(
-                    "Maximum Edge.Tolerance of the brep is <= {} (search tol.).".format(
+                    "maximum Edge.Tolerance of the brep <= {} (search tol.).".format(
                         fSearchTol))
             continue # to next brep.
 
@@ -341,22 +341,25 @@ def processBreps(rhBreps, **kwargs):
 
         if not bOutOfTolFound:
             if len(rhBreps) == 1:
-                sLogs.append("Maximum Edge.Tolerance is {} ({} less than search tol.).".format(
+                sLogs.append("maximum Edge.Tolerance is {} ({} less than search tol.).".format(
                         formatDistance(maxTol_ThisB),
                         formatDistance(fSearchTol-maxTol_ThisB)))
             else:
                 sLogs.append(
-                    "Maximum Edge.Tolerance is <= {} (search tol.).".format(
+                    "maximum Edge.Tolerance <= {} (search tol.).".format(
                         fSearchTol))
 
             continue # to next brep.
 
-    if sLogs:
-        s = "\n".join("[{}] {}".format(sLogs.count(sLog), sLog) for sLog in set(sLogs))
-    else:
-        s = ""
+    if bEcho and sLogs:
+        print("\n".join("{} edges with {}".format(sLogs.count(sLog), sLog) for sLog in set(sLogs)))
 
     if bPerBrep:
+        if bOnlyOutOfSearchTol and not rgB_maxTol_AllBs:
+            if bEcho:
+                print("No edges tolerances are greater than the search tolerance.")
+            return
+
         iCt_Found = 0
         for rgB, idxs_E in zip(rgB_maxTol_AllBs, idxEs_Maxima_AllBs):
             for idx_E in idxs_E:
@@ -370,9 +373,15 @@ def processBreps(rhBreps, **kwargs):
                     gDot_Out = _addDot(edge, iDotHeight, attr_Out)
                     if gDot_Out != gDot_Out.Empty:
                         gDots_Out.append(gDot_Out)
-        s += " {} edges within {} of max. edge tol. per Brep.".format(
-            iCt_Found, 10**-sc.doc.ModelDistanceDisplayPrecision)
+        if bEcho:
+            s = "{} edges within {} of max. edge tol. per Brep.".format(
+                iCt_Found, 10**-sc.doc.ModelDistanceDisplayPrecision)
     else:
+        if bOnlyOutOfSearchTol and not fTols_Max_AllBs:
+            if bEcho:
+                print("No edges tolerances are greater than the search tolerance.")
+            return
+
         fTol_Max_All = max(fTols_Max_AllBs)
         iCt_Found = 0
         for rgB, idxs_E in zip(rgB_maxTol_AllBs, idxEs_Maxima_AllBs):
@@ -389,19 +398,21 @@ def processBreps(rhBreps, **kwargs):
                         if gDot_Out != gDot_Out.Empty:
                             gDots_Out.append(gDot_Out)
 
-        if iCt_Found:
-            s += " {} edges found within {} of {}.".format(
-                iCt_Found, 10.0**-sc.doc.ModelDistanceDisplayPrecision, formatDistance(fTol_Max_All))
-        else:
-            s += " Max. tol. of all edges is {}.".format(
-                formatDistance(max(fTols_Max_AllBs)))
+        if bEcho:
+            if iCt_Found:
+                s = " {} edges found within {} of {}.".format(
+                    iCt_Found, 10.0**-sc.doc.ModelDistanceDisplayPrecision, formatDistance(fTol_Max_All))
+            else:
+                s = " Max. tol. of all edges is {}.".format(
+                    formatDistance(max(fTols_Max_AllBs)))
 
-    if bDupCrv:
-        s += " {} curves added.".format(len(gCrvs_Out))
-    if bDot:
-        s += " {} dots added.".format(len(gDots_Out))
+    if bEcho:
+        if bDupCrv:
+            s += " {} curves added.".format(len(gCrvs_Out))
+        if bDot:
+            s += " {} dots added.".format(len(gDots_Out))
 
-    print(s)
+        print(s)
 
 
 def main():

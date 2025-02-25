@@ -10,6 +10,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 190413: Added reference to replace local function.
 200618: Added PerFaceColor support for V7.
 250222: Added command options.
+250224: Bug fixes.
 """
 
 import Rhino
@@ -232,7 +233,7 @@ def duplicateBrepPerLoops(rgBrep_In, idxLoops_ToDetach, bEcho=None, bDebug=None)
     
     rgB_Out = rg.Brep()
     
-    #printBrepElementCounts(rgBrep1)
+    #printBrepElementCounts(rgB_Out)
     
     # Outer loop.
     
@@ -283,7 +284,7 @@ def duplicateBrepPerLoops(rgBrep_In, idxLoops_ToDetach, bEcho=None, bDebug=None)
                 and
                 rgB_Out.Loops.Count > 0
         ):
-            if bDebug: print("Outer loop is already in rgBrep1.  Continue to next loop.")
+            if bDebug: print("Outer loop is already in rgB_Out.  Continue to next loop.")
             continue
         
         if bDebug: print("Copy all related Brep elements of this loop to Brep1.")
@@ -589,15 +590,15 @@ def processBrep(gB_In, idx_rgTrims=None, bDetachAll=None, bAllSimilar=None, bDup
         rgB_Res = duplicateBrepPerLoops(rgBrep_In, idxLoops_ToDetach)
         
         if rgB_Res is None:
-            sEval = 'rgBrep1'; print(sEval+':', eval(sEval))
+            sEval = 'rgB_Res'; print(sEval+':', eval(sEval))
             return False
         if not rgB_Res.IsValid:
-            sEval = 'rgBrep1.IsValid'; print(sEval+':', eval(sEval))
+            sEval = 'rgB_Res.IsValid'; print(sEval+':', eval(sEval))
             b, sLog = rgB_Res.IsValidWithLog()
             if not b: print(sLog)
             return False
         
-        if bDebug: sEval = 'rgBrep1.Loops.Count'; print(sEval+':', eval(sEval))
+        if bDebug: sEval = 'rgB_Res.Loops.Count'; print(sEval+':', eval(sEval))
         
         if all(bAddCurve_successes):
             bReplaced = sc.doc.Objects.Replace(gB_In, rgB_Res)

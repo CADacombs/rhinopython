@@ -1,4 +1,10 @@
 """
+"""
+
+#! python 2  Must be on a line less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
 171209: Created.
 ...
 200202: Import-related update.
@@ -7,6 +13,7 @@
 210426: Import-related update.
 210630: Modified an option default value.
 250222: Import-related update.
+250225: Modified an option default value.
 """
 
 import Rhino
@@ -24,14 +31,14 @@ import spb_Brep_rebuildEdges
 
 
 sOpts = (
-        'fAngleTol',
-        'bRebuildEdges',
-        'bRebuildOnlyOutOfTol',
-        'fRebuildEdgesTol',
-        'bRepeat',
-        'bEcho',
-        'bDebug',
-)
+    'fAngleTol',
+    'bRebuildEdges',
+    'bRebuildOnlyOutOfTol',
+    'fRebuildEdgesTol',
+    'bRepeat',
+    'bEcho',
+    'bDebug',
+    )
 
 
 class Opts():
@@ -44,7 +51,7 @@ class Opts():
 
 
     key = 'fAngleTol'; keys.append(key)
-    values[key] = 1.0
+    values[key] = min((0.1, sc.doc.ModelAngleToleranceDegrees))
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
@@ -249,6 +256,8 @@ def mergeEdges(gBreps, fAngleTol=None):
     """
     if fAngleTol is None: fAngleTol = Opts.values['fAngleTol']
     
+    fAngleTol_Rad = Rhino.RhinoMath.ToRadians(fAngleTol)
+    
     Rhino.RhinoApp.SetCommandPrompt("Merging ...")
     
     gBreps_WithEdgesMerged = []
@@ -264,7 +273,7 @@ def mergeEdges(gBreps, fAngleTol=None):
         
         iCt_Edges_beforeMergeAll = rgB_In.Edges.Count
         
-        rgB_Out.Edges.MergeAllEdges(angleTolerance=Rhino.RhinoMath.ToRadians(fAngleTol))
+        rgB_Out.Edges.MergeAllEdges(angleTolerance=fAngleTol_Rad)
         
         iCt_Edges_afterMergeAll = rgB_Out.Edges.Count
         

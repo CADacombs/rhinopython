@@ -3,13 +3,15 @@ This script wraps _Rotate3D with the additional option of inferring the rotation
 from a post-selected object, e.g., linear curve, arc curve, cylinder.
 """
 
-#! python3
+#! python 2  Must be on a line less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 240731-0801: Created.
 240805: All options of _Rotate3D are now available, therefore this script can be used
         in place of that command.
 240901: Bug fix related to behavior of GetObject.CustomGeometryFilter.
+250225: Bug fix concerning the active CPlane. Translated from Python 3 to 2.
 """
 
 import Rhino
@@ -127,12 +129,12 @@ def getAxisFromArc(arc):
             rg.Point3d(0.0, 0.0, arc.Radius),
         )
     if not line_Axis.IsValid:
-        print(f"{line_Axis.IsValid = }")
+        sEval = "line_Axis.IsValid"; print(sEval,'=',eval(sEval))
     line_Axis.Transform(xform)
     return line_Axis
 
 
-def getAxisFromCrv(crv: rg.Curve, fLineTol: float, fArcTol: float):
+def getAxisFromCrv(crv, fLineTol, fArcTol):
     if isinstance(crv, rg.LineCurve):
         return crv.Line
 
@@ -148,7 +150,7 @@ def getAxisFromCrv(crv: rg.Curve, fLineTol: float, fArcTol: float):
         return getAxisFromArc(arc)
 
 
-def isLineOrArc(crv: rg.Curve, fLineTol: float, fArcTol: float):
+def isLineOrArc(crv, fLineTol, fArcTol):
     if isinstance(crv, (rg.LineCurve, rg.ArcCurve)):
         return True
 
@@ -158,7 +160,7 @@ def isLineOrArc(crv: rg.Curve, fLineTol: float, fArcTol: float):
     return crv.IsArc(tolerance=fArcTol)
 
 
-def getAxisFromFace(face: rg.BrepFace, fFaceTol: float):
+def getAxisFromFace(face, fFaceTol):
     bSuccess, cone = face.TryGetCone(tolerance=fFaceTol)
     if bSuccess:
         return rg.Line(cone.BasePoint, cone.ApexPoint)
@@ -169,7 +171,6 @@ def getAxisFromFace(face: rg.BrepFace, fFaceTol: float):
 
     bSuccess, torus = face.TryGetTorus(tolerance=fFaceTol)
     if bSuccess:
-        torus: rg.Torus
         return rg.Line(torus.Plane.Origin, torus.Plane.Normal)
 
 
@@ -181,8 +182,6 @@ def getInput_ObjForRotAxis():
     def customGeomFilter(rdObj, geom, compIdx):
         # print(rdObj, geom, compIdx.ComponentIndexType, compIdx.Index
 
-        rgC: rg.Curve
-
         if isinstance(geom, rg.Curve):
             return isLineOrArc(geom, Opts.values['fLineTol'], Opts.values['fArcTol'])
         elif isinstance(geom, rg.BrepFace):
@@ -192,7 +191,7 @@ def getInput_ObjForRotAxis():
             )
             return bool(line_Axis)
         else:
-            print(f"{geom = }")
+            sEval = "geom"; print(sEval,'=',eval(sEval))
 
         return False
 
@@ -259,7 +258,7 @@ def getInput_ObjForRotAxis():
                 break
 
 
-def getAxisFromObjRef(objref_Axis: rd.ObjRef, fLineTol: float, fArcTol: float, fFaceTol: float):
+def getAxisFromObjRef(objref_Axis, fLineTol, fArcTol, fFaceTol):
 
     crv_In = objref_Axis.Curve()
 
@@ -279,7 +278,8 @@ def getAxisFromObjRef(objref_Axis: rd.ObjRef, fLineTol: float, fArcTol: float, f
             if line_Axis is None:
                 raise Exception("Cannot obtain reference axis from face.")
         else:
-            raise Exception(f"Axis extraction from {face_In} not implemented yet.")
+            raise Exception(
+                "Axis extraction from {} not implemented yet.".format(face_In))
 
     return line_Axis
 
@@ -362,7 +362,6 @@ def main():
 
     sc.doc.Objects.UnselectAll()
 
-
     objref_Axis = getInput_ObjForRotAxis()
     if objref_Axis is None:
         return
@@ -379,13 +378,15 @@ def main():
         fArcTol,
         fFaceTol)
 
+    #sc.doc.Objects.AddLine(line_Axis), sc.doc.Views.Redraw(); 1/0
+
     sc.doc.Objects.UnselectAll()
 
     for o in objrefs_ToRotate:
         sc.doc.Objects.Select(o)
 
     Rhino.RhinoApp.RunScript(
-        script="_Rotate3D {} {}".format(
+        script="_Rotate3D w{} w{}".format(
             line_Axis.From,
             line_Axis.To,
         ),

@@ -217,7 +217,7 @@ def mergeEdges_V5(gBreps, fAngleTol=None):
     cts_Edges0 = []
     for gBrep in gBreps:
         if sc.escape_test(throw_exception=False, reset=False):
-            print "Break in edges count."
+            print("Break in edges count.")
             break
         cts_Edges0.append(edgeCount_All(gBrep))
     
@@ -238,7 +238,7 @@ def mergeEdges_V5(gBreps, fAngleTol=None):
     cts_Edges1 = []
     for gBrep in gBreps:
         if sc.escape_test(throw_exception=False, reset=False):
-            print "Break in edges count."
+            print("Break in edges count.")
             break
         cts_Edges1.append(edgeCount_All(gBrep))
     
@@ -264,7 +264,7 @@ def mergeEdges(gBreps, fAngleTol=None):
     
     for gBrep in gBreps:
         if sc.escape_test(throw_exception=False, reset=False):
-            print "Break in edges count."
+            print("Break in edges count.")
             break
         
         rgB_In = rs.coercebrep(gBrep)
@@ -321,7 +321,7 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
         s += "  RebuildOnlyOutOfTol: {}".format(bRebuildOnlyOutOfTol)
     else:
         s += "  Edges will not be rebuilt."
-    print s
+    print(s)
     
     Rhino.RhinoApp.SetCommandPrompt(prompt="Recording starting edge counts ...")
     nEdges0 = edgeCount_All(gBreps)
@@ -330,15 +330,15 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
     iStep = 1
     
     if bRebuildEdges and bRepeat:
-        print "STEP {}: 1st merging of edges".format(iStep)
+        print("STEP {}: 1st merging of edges".format(iStep))
     #else:
     #    s = "Merging edges"
     
     gBreps_WithEdgesMerged = mergeEdges(gBreps, fAngleTol)
 
     if not gBreps_WithEdgesMerged:
-        print "None of the {} edges / {} naked edges were merged.".format(
-                nEdges0, nNakedEdges0)
+        print("None of the {} edges / {} naked edges were merged.".format(
+                nEdges0, nNakedEdges0))
         nEdges1 = nEdges0
         nNakedEdges1 = nNakedEdges0
     else:
@@ -346,7 +346,7 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
         nEdges1 = edgeCount_All(gBreps)
         nNakedEdges1 = edgeCount_Naked(gBreps)
         
-        print createEdgeCountReport(nEdges0, nNakedEdges0, nEdges1, nNakedEdges1, len(gBreps))
+        print(createEdgeCountReport(nEdges0, nNakedEdges0, nEdges1, nNakedEdges1, len(gBreps)))
     
     if not bRebuildEdges:
         return
@@ -354,9 +354,9 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
     iStep = 2
     
     if bRepeat:
-        print "STEP {}: 1st rebuilding of edges".format(iStep)
+        print("STEP {}: 1st rebuilding of edges".format(iStep))
     else:
-        print "Rebuilding edges"
+        print("Rebuilding edges")
     Rhino.RhinoApp.SetCommandPrompt(prompt=s+' ...')
     
     sc.doc.Objects.UnselectAll()
@@ -375,9 +375,10 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
     )
 
     if gBreps_EdgesRebuilt:
-        print "  {} of {} breps have had their edges rebuilt.".format(len(gBreps_EdgesRebuilt), len(gBreps))
+        print("  {} of {} breps have had their edges rebuilt.".format(
+            len(gBreps_EdgesRebuilt), len(gBreps)))
     else:
-        print "  No edges were rebuilt, so breps will not be further processed."
+        print("  No edges were rebuilt, so breps will not be further processed.")
         bRepeat = False
     
     if not bRepeat:
@@ -389,13 +390,13 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
     Rhino.RhinoApp.SetCommandPrompt(prompt=s+' ...')
     
     gBreps_WithEdgesMerged = mergeEdges(gBreps, fAngleTol)
-    print s
+    print(s)
     if not gBreps_WithEdgesMerged:
-        print "None of the {} edges / {} naked edges were merged.".format(
-                nEdges1, nNakedEdges1)
+        print("None of the {} edges / {} naked edges were merged.".format(
+                nEdges1, nNakedEdges1))
         nEdges2 = nEdges1
         nNakedEdges2 = nNakedEdges1
-        print "Rebuilding edges not repeated because no edges were merged after the previous rebuild."
+        print("Rebuilding edges not repeated because no edges were merged after the previous rebuild.")
     else:
         iStep = 4
         
@@ -403,7 +404,10 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
         nEdges2 = edgeCount_All(gBreps)
         nNakedEdges2 = edgeCount_Naked(gBreps)
         
-        print createEdgeCountReport(nEdges1, nNakedEdges1, nEdges2, nNakedEdges2, len(gBreps))
+        print(
+            createEdgeCountReport(
+                nEdges1, nNakedEdges1, nEdges2, nNakedEdges2, len(gBreps))
+            )
         
         # 2nd Rebuild edges.
         s = "STEP {}: 2nd rebuilding of edges".format(iStep)
@@ -423,15 +427,19 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
                 bEcho=True,
                 bDebug=bDebug
         )
-        print s
+        print(s)
         if gBreps_EdgesRebuilt:
-            print "{} of {} breps have had their edges rebuilt.".format(len(gBreps_EdgesRebuilt), len(gBreps))
+            print("{} of {} breps have had their edges rebuilt.".format(
+                len(gBreps_EdgesRebuilt), len(gBreps)))
         else:
-            print "No edges were rebuilt."
+            print("No edges were rebuilt.")
     
     xBrep_compact.processBrepObjects(gBreps, bEcho=False, bDebug=bDebug)
     
-    print createEdgeCountReport(nEdges0, nNakedEdges0, nEdges2, nNakedEdges2, len(gBreps), sPrefix="Total ")
+    print(
+        createEdgeCountReport(
+            nEdges0, nNakedEdges0, nEdges2, nNakedEdges2, len(gBreps), sPrefix="Total ")
+        )
 
 
 def main():

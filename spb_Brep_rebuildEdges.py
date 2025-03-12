@@ -16,6 +16,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210426: Added fSearchTol.
 210630: Modified an option default value.  Added fRebuildSharedTol.
 250224: Disabled Standardize and Compact. Modified an option default value.
+250304: Bug fix that was skipping some rebuilt results.
 
 TODO:
     Investigate problem with brep as demonstrated by use of Brep.Standardize.
@@ -291,6 +292,9 @@ def _compute_max_edge_tol_of_face(rgFace, fRebuildNakedTol=None, bRebuildVertice
     rgB_1F_NotRebuilt = rgFace.DuplicateFace(False)
     rgB_1F_Rebuilt = rgB_1F_NotRebuilt.DuplicateBrep()
 
+    #fZeroTol = 1e-6 * Rhino.RhinoMath.UnitScale(
+    #    Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+
     tolerance = min((0.1*fRebuildNakedTol, 1e-5))
 
     rgB_1F_Rebuilt.Faces[0].RebuildEdges(
@@ -367,12 +371,115 @@ def _dotCurveMidpoint(rgCrv, text='', rgb=(255, 255, 255)):
     rs.ObjectColor(rs.AddTextDot(text, pt), rgb)
 
 
+def _get_curve_type_counts(rgBrep):
+    nACs = nLCs = nNCs = nPCs = nPLCs = 0
+
+    for e in rgBrep.Edges:
+        c = e.EdgeCurve
+        if isinstance(c, rg.ArcCurve):
+            nACs += 1
+        elif isinstance(c, rg.LineCurve):
+            nLCs += 1
+        elif isinstance(c, rg.NurbsCurve):
+            nNCs += 1
+        elif isinstance(c, rg.PolyCurve):
+            nPCs += 1
+        elif isinstance(c, rg.PolylineCurve):
+            nPLCs += 1
+        else:
+            raise Exception("{} is not valid.".format(c.GetType()))
+
+        return nACs, nLCs, nNCs, nPCs, nPLCs
+
+
+def _are_there_any_changes_in_curve_type_counts(rgBrep_A, rgBrep_B):
+    rvs_A = _get_curve_type_counts(rgBrep_A)
+    rvs_B = _get_curve_type_counts(rgBrep_B)
+    for a, b in zip(rvs_A, rvs_B):
+        if a != b:
+            return True
+    return False
+
+
+def _get_CP_count(rgBrep):
+    """
+    Only CP counts of EdgeCurves that are already NurbsCurves, not translation to NurbsCurves.
+    """
+    nPts = 0
+    for edge in rgBrep.Edges:
+        ec = edge.EdgeCurve
+        if isinstance(ec, rg.NurbsCurve):
+            nPts += ec.Points.Count
+    return nPts
+
+
+def _get_rebuilt_devs_of_brep_edge_curves(rgB_In, rgB_Out, fRebuildNakedTol):
+    #fZeroTol = 1e-6 * Rhino.RhinoMath.UnitScale(
+    #    Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+
+    tolerance = min((fRebuildNakedTol, 1e-5))
+
+    fDevs = []
+
+    for iE in xrange(rgB_In.Edges.Count):
+        curveA = rgB_In.Edges[iE].EdgeCurve
+        curveB = rgB_Out.Edges[iE].EdgeCurve
+        rvs = rg.Curve.GetDistancesBetweenCurves(curveA, curveB, tolerance=0.1*fRebuildNakedTol)
+        (
+            bSuccess,
+            maxDistance,
+            maxDistanceParameterA,
+            maxDistanceParameterB,
+            minDistance,
+            minDistanceParameterA,
+            minDistanceParameterB,
+            ) = rvs
+
+        if not bSuccess:
+            return
+
+        fDevs.append(maxDistance)
+
+        continue
+
+
+        # TODO: Decide whether to implement some double check or replacement of GetDistancesBetweenCurves.
+    #    ptA_FromGDBC = curveA.PointAt(maxDistanceParameterA)
+    #    ptB_FromGDBC = curveB.PointAt(maxDistanceParameterB)
+    #    rc = curveA.ClosestPoint(ptB_FromGDBC)
+    #    if rc[0]:
+    #        ptA_ClosestToOnB = curveA.PointAt(maxDistance)
+    #    rc = curveB.ClosestPoint(ptA_FromGDBC)
+    #    if rc[0]:
+    #        ptB_ClosestToOnA = curveB.PointAt(maxDistance)
+    #    if (
+    #        ptA_FromGDBC.DistanceTo(ptB_ClosestToOnA) > tolerance
+    #        or
+    #        ptB_FromGDBC.DistanceTo(ptA_ClosestToOnB) > tolerance
+    #    ):
+    #        if maxDistance < 0.001:
+    #            s += "  But EdgeCurve deviation of {:.2e} found.".format(maxDistance)
+    #        else:
+    #            s += "  But EdgeCurve deviation of {:.4f} found.".format(maxDistance)
+    #        if bEcho: print(s)
+    #        break
+    #    if bDebug: print("Bad maxDistance from GetDistancesBetweenCurves.")
+    #else:
+    #    if None not in fEdgeDevs_perFace:
+    #        rgB_Out.Dispose()
+    #        return None, s + " All curve deviations are within {}.".format(tolerance)
+
+
+    return fDevs
+
+
 def processBrep(rgBrep, fRebuildNakedTol=None, bRebuildOnlyOutOfTol=True, fSearchTol=None, bRebuildSharedEdges=False, fRebuildSharedTol=None, bRebuildVertices=None, bAddDot=False, iDotHeight=None, bEcho=True, bDebug=False):
     """
     Parameters:
         rgBrep
         fRebuildNakedTol
         bRebuildOnlyOutOfTol
+        fSearchTol
         bRebuildSharedEdges
         bRebuildVertices
         bAddDot
@@ -391,26 +498,8 @@ def processBrep(rgBrep, fRebuildNakedTol=None, bRebuildOnlyOutOfTol=True, fSearc
 
     rgB_In = rgBrep
 
-    iCt_Cps_In = iCt_Cps_Out = 0
-
-    iCt_Cps_In = iCt_LineCs_Out = iCt_ArcCs_In = iCt_PolyCs_In = iCt_PLCs_In = 0
-    iCt_Cps_Out = iCt_LineCs_B1 = iCt_ArcCs_Out = iCt_PolyCs_Out = iCt_PLCs_Out = 0
-
-    for e in rgB_In.Edges:
-        c = e.EdgeCurve
-        if isinstance(c, rg.NurbsCurve):
-            iCt_Cps_In += c.Points.Count
-        elif isinstance(c, rg.LineCurve):
-            iCt_LineCs_Out += 1
-        elif isinstance(c, rg.ArcCurve):
-            iCt_ArcCs_In += 1
-        elif isinstance(c, rg.PolyCurve):
-            iCt_PolyCs_In += 1
-        elif isinstance(c, rg.PolylineCurve):
-            iCt_PLCs_In += 1
-        else:
-            1/0
-
+    if bRebuildOnlyOutOfTol and (fSearchTol is None):
+        fSearchTol = fRebuildNakedTol
 
     fEdgeTols_In = [rgE.Tolerance for rgE in rgB_In.Edges]
     if bDebug: sEval = "max(fEdgeTols_In)"; print(sEval,'=',eval(sEval))
@@ -436,7 +525,10 @@ def processBrep(rgBrep, fRebuildNakedTol=None, bRebuildOnlyOutOfTol=True, fSearc
         max(fEdgeTols_In) -
         max(fEdgeTols_after_SetTolBoxesAndFlags))
 
-    bReportedTolCorrected = maxDiscrepancyOfReportedTol > 0.1 * sc.doc.ModelAbsoluteTolerance
+    fZeroTol = 1e-6 * Rhino.RhinoMath.UnitScale(
+        Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+
+    bReportedTolCorrected = maxDiscrepancyOfReportedTol > fZeroTol
 
     if bEcho:
         s  = "Max. of all input brep's BrepEdge.Tolerance"
@@ -445,9 +537,6 @@ def processBrep(rgBrep, fRebuildNakedTol=None, bRebuildOnlyOutOfTol=True, fSearc
             _formatDistance(max(fEdgeTols_In)),
             _formatDistance(max(fEdgeTols_after_SetTolBoxesAndFlags)))
         print(s)
-
-    #fZeroTol = 1e-6 * Rhino.RhinoMath.UnitScale(
-    #    Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
 
     fEdgeDevs_perFace = []
     for rgF in rgB_In.Faces:
@@ -462,10 +551,11 @@ def processBrep(rgBrep, fRebuildNakedTol=None, bRebuildOnlyOutOfTol=True, fSearc
             _formatDistance(max(fEdgeDevs_perFace))))
 
 
-    if fSearchTol is None:
+    if not bRebuildOnlyOutOfTol:
         # Will rebuild all.
         idx_Fs_toRE = range(rgB_Out.Faces.Count)
     else:
+        # Wil rebuild only out of tol.
         if all(fEdgeDevs_perFace) and max(fEdgeDevs_perFace) <= fSearchTol:
             idx_Fs_toRE = []
         else:
@@ -540,12 +630,31 @@ def processBrep(rgBrep, fRebuildNakedTol=None, bRebuildOnlyOutOfTol=True, fSearc
         
         if bFaceHasAllNakedEdges:
             # Using fRebuildNakedTol.
-            if rgFace1.RebuildEdges(
-                tolerance=fRebuildNakedTol,
-                rebuildSharedEdges=False,
-                rebuildVertices=bRebuildVertices
-            ):
-                idx_Fs_withREs.append(iF)
+            fTolerance_WIP = fRebuildNakedTol
+            i = 0
+            while i < 10:
+                sc.escape_test()
+                if not rgFace1.RebuildEdges(
+                    tolerance=fTolerance_WIP,
+                    rebuildSharedEdges=False,
+                    rebuildVertices=bRebuildVertices
+                ):
+                    raise Exception("RebuildEdges failed.")
+                setTolerancesBoxesAndFlags(rgB_Out)
+                fEdgeTols_after_SetTolBoxesAndFlags = [rgE.Tolerance for rgE in rgB_Out.Edges]
+                if max(fEdgeTols_after_SetTolBoxesAndFlags) <= fRebuildNakedTol:
+                    idx_Fs_withREs.append(iF)
+                    if fTolerance_WIP < fRebuildNakedTol:
+                        print("Rebuilt within {} using that value for the tolerance argument failed, so used {} instead.".format(
+                            fRebuildNakedTol,
+                            fTolerance_WIP))
+                    break
+                fTolerance_WIP *= 0.9
+                i += 1
+            else:
+                raise Exception("Could not RebuildEdges to tolerance of {}. Last tolerance argument: {}".format(
+                    fRebuildNakedTol,
+                    fTolerance_WIP))
         elif bFaceHasAllInteriorEdges:
             if bRebuildSharedEdges:
                 if rgFace1.RebuildEdges(
@@ -615,83 +724,49 @@ def processBrep(rgBrep, fRebuildNakedTol=None, bRebuildOnlyOutOfTol=True, fSearc
     if bDebug: sEval = "max(fEdgeTols_after_SetTolBoxesAndFlags)"; print(sEval,'=',eval(sEval))
 
 
-    for e in rgB_Out.Edges:
-        c = e.EdgeCurve
-        if isinstance(c, rg.NurbsCurve):
-            iCt_Cps_Out += c.Points.Count
-        elif isinstance(c, rg.LineCurve):
-            iCt_LineCs_B1 += 1
-        elif isinstance(c, rg.ArcCurve):
-            iCt_ArcCs_Out += 1
-        elif isinstance(c, rg.PolyCurve):
-            iCt_PolyCs_Out += 1
-        elif isinstance(c, rg.PolylineCurve):
-            iCt_PLCs_Out += 1
+
+    nCPs_In = _get_CP_count(rgB_In)
+    nCPs_Out = _get_CP_count(rgB_Out)
+    nCPs_delta = nCPs_Out - nCPs_In
+    bChangeInNCPtCts = nCPs_Out != nCPs_In
+
+    bChangeInCrvTypeCts = _are_there_any_changes_in_curve_type_counts(rgB_In, rgB_Out)
+
+
+
+    if not bRebuildOnlyOutOfTol:
+
+        tolerance = min((fRebuildNakedTol, 1e-5))
+
+        ss = []
+        if not (bChangeInCrvTypeCts or bChangeInNCPtCts):
+            ss.append("No change in curve type counts or NurbsCurve point counts.")
+
+        rv = _get_rebuilt_devs_of_brep_edge_curves(rgB_In, rgB_Out, fRebuildNakedTol)
+        if rv is None:
+            if bEcho:
+                ss.append(" GetDistancesBetweenCurves could not be obtained.")
+                ss.append(" Assuming edge has changed.")
+                print(" ".join(ss))
+        elif max(rv) > tolerance:
+            pass
         else:
-            1/0
+            ss.append("All curve deviations are within {}.".format(tolerance))
+            rgB_Out.Dispose()
+            return None, " ".join(ss)
 
-    ct_delta_Cp = iCt_Cps_Out - iCt_Cps_In
-
-    bChangeInCrvTypeCts = (
-            iCt_LineCs_B1 != iCt_LineCs_Out
-            or
-            iCt_ArcCs_Out != iCt_ArcCs_In
-            or
-            iCt_PolyCs_Out != iCt_PolyCs_In
-            or 
-            iCt_PLCs_Out != iCt_PLCs_In
-    )
-
-    bChangeInNCPtCts = iCt_Cps_Out != iCt_Cps_In
-
-    if not (bChangeInCrvTypeCts or bChangeInNCPtCts):
-        s  = "No change in curve type counts or NurbsCurve point counts."
-        
-        for iE in xrange(rgB_In.Edges.Count):
-            c0 = rgB_In.Edges[iE].EdgeCurve
-            c1 = rgB_Out.Edges[iE].EdgeCurve
-            rc = rg.Curve.GetDistancesBetweenCurves(c0, c1, tolerance=0.1*fRebuildNakedTol)
-            if not rc[0]:
-                s += "  EdgeCurve deviation could not be obtained."
-                s += "  Assuming edge has changed."
-                if bEcho: print(s)
-                break
-            if rc[1] > fRebuildNakedTol:
-                tA = rc[2]
-                ptA_FromGDBC = c0.PointAt(tA)
-                tB = rc[3]
-                ptB_FromGDBC = c1.PointAt(tB)
-                rc = c0.ClosestPoint(ptB_FromGDBC)
-                if rc[0]:
-                    ptA_ClosestToOnB = c0.PointAt(rc[1])
-                rc = c1.ClosestPoint(ptA_FromGDBC)
-                if rc[0]:
-                    ptB_ClosestToOnA = c1.PointAt(rc[1])
-                if (
-                        ptA_FromGDBC.DistanceTo(ptB_ClosestToOnA) > fRebuildNakedTol
-                        or
-                        ptB_FromGDBC.DistanceTo(ptA_ClosestToOnB) > fRebuildNakedTol
-                ):
-                    if rc[1] < 0.001:
-                        s += "  But EdgeCurve deviation of {:.2e} found.".format(rc[1])
-                    else:
-                        s += "  But EdgeCurve deviation of {:.4f} found.".format(rc[1])
-                    if bEcho: print(s)
-                    break
-                if bDebug: print("Bad maxDistance from GetDistancesBetweenCurves.")
-        else:
-            if None not in fEdgeDevs_perFace:
-                rgB_Out.Dispose()
-                return None, s + " All curve deviations are within search tolerance."
 
     if bEcho:
-        s  = "Total edge control point count change:"
-        s +=  " {}{} ({} -> {}).".format(
-            '+' if ct_delta_Cp > 0 else '',
-            ct_delta_Cp,
-            iCt_Cps_In,
-            iCt_Cps_Out)
-        print(s)
+        if not bChangeInCrvTypeCts:
+            print("No change in curve type counts.")
+
+        if nCPs_delta == 0:
+            print("No change in edge curve control point count of {}.".format(nCPs_In))
+        else:
+            print("Total edge control point count change: {:+} ({} -> {}).".format(
+                nCPs_delta,
+                nCPs_In,
+                nCPs_Out))
 
         fEdgeDevs_perFace = []
         for rgF in rgB_Out.Faces:
@@ -704,12 +779,8 @@ def processBrep(rgBrep, fRebuildNakedTol=None, bRebuildOnlyOutOfTol=True, fSearc
         print("Computed maximum edge tolerance of resultant brep: {}.".format(
             _formatDistance(max(fEdgeDevs_perFace))))
 
-    if bDebug:
-        print(iCt_Cps_In, iCt_LineCs_Out, iCt_ArcCs_In)
-        print(iCt_Cps_Out, iCt_LineCs_B1, iCt_ArcCs_Out)
 
-
-    return rgB_Out, None
+    return rgB_Out, "Edges were rebuilt."
 
 
 def _coerceBrepObject(rhObj):
@@ -762,7 +833,7 @@ def processBrepObjects(rhBreps, **kwargs):
 
         rgB0 = rdBrep_In.BrepGeometry
 
-        rc = processBrep(
+        rv = processBrep(
             rgBrep=rgB0,
             fRebuildNakedTol=fRebuildNakedTol,
             bRebuildOnlyOutOfTol=bRebuildOnlyOutOfTol,
@@ -775,11 +846,18 @@ def processBrepObjects(rhBreps, **kwargs):
             bEcho=bEcho if len(rhBreps) == 1 else False,
             bDebug=bDebug
         )
-        if not rc[0]:
-            sLogs.append(rc[1])
+        if not rv:
+            raise Exception("rv is not supposed to be {}.".format(rv))
+        rgB_Out, sLog = rv
+        if not rgB_Out:
+            if not sLog:
+                raise Exception("sLog is not supposed to be {}.".format(sLog))
+            sLogs.append(sLog)
         else:
-            rgB_Out = rc[0]
-            sLogs.append(rc[1])
+            if sLog:
+                sLogs.append(sLog)
+            else:
+                sLog
             rgBreps1.append(rgB_Out)
             if bReplace:
                 bSuccess = sc.doc.Objects.Replace(rdBrep_In.Id, rgB_Out)

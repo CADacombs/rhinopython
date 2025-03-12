@@ -17,6 +17,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 231030: Modified an option default value.
 231106: Added printed info of result.
 250107: Corrected printed output of pipe's face count.
+250301: Bug fix in printed output.
 
 TODO: Create pipes at multiple tolerances?
 """
@@ -272,7 +273,7 @@ def main():
             rdB = sc.doc.Objects.FindId(g)
             if rgB.Faces.Count != rdB.BrepGeometry.Faces.Count:
                 print("Faces count of Geometry.Brep: {}".format(
-                    rgB.BrepGeometry.Faces.Count))
+                    rgB.Faces.Count))
                 print("Faces count of BrepObject added to document: {}".format(
                     rdB.BrepGeometry.Faces.Count))
             iCt_Faces += rdB.BrepGeometry.Faces.Count

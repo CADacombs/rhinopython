@@ -16,6 +16,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 241125: Refactored.
 241128: Modified some printed output.
 250223-24: Now, only the absolute maximum is the target, whether it be the single maximum of all or each of the input breps.
+250304: Modified an option default.
 """
 
 import Rhino
@@ -50,7 +51,7 @@ class Opts:
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fSearchTol'; keys.append(key)
-    values[key] = 10.0 * sc.doc.ModelAbsoluteTolerance
+    values[key] = 1.0 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 

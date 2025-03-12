@@ -14,6 +14,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210630: Modified an option default value.
 250222: Import-related update.
 250225: Modified an option default value.
+250227: Modified an argument to an external function.
 """
 
 import Rhino
@@ -363,7 +364,7 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
     gBreps_EdgesRebuilt = spb_Brep_rebuildEdges.processBrepObjects(
             gBreps,
             fRebuildNakedTol=fRebuildEdgesTol,
-            fSearchTol=2.0*fRebuildEdgesTol,
+            fSearchTol=fRebuildEdgesTol,
             bRebuildOnlyOutOfTol=bRebuildOnlyOutOfTol,
             bRebuildSharedEdges=True,
             bRebuildVertices=True,
@@ -417,7 +418,7 @@ def processBrepObjects(gBreps, fAngleTol=None, bRebuildEdges=None, bRebuildOnlyO
         gBreps_EdgesRebuilt = spb_Brep_rebuildEdges.processBrepObjects(
                 gBreps,
                 fRebuildNakedTol=fRebuildEdgesTol,
-                fSearchTol=2.0*fRebuildEdgesTol,
+                fSearchTol=fRebuildEdgesTol,
                 bRebuildOnlyOutOfTol=bRebuildOnlyOutOfTol,
                 bRebuildSharedEdges=True,
                 bRebuildVertices=True,

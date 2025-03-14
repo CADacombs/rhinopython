@@ -5,7 +5,7 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-250311-12: Created.
+250311-13: Created.
 
 TODO:
     WIP: Only allow linear curves to be selected.
@@ -23,13 +23,12 @@ class Opts:
     values = {}
     names = {}
     riOpts = {}
-    riAddOpts = {}
+    listValues = {}
     stickyKeys = {}
 
 
     key = 'fScaleFactor'; keys.append(key)
     values[key] = 2.0
-    names[key] = 'ScaleFactor'
     riOpts[key] = ri.Custom.OptionDouble(
             initialValue=values[key],
             setLowerLimit=True,
@@ -47,21 +46,24 @@ class Opts:
 
     key = 'bCopy'; keys.append(key)
     values[key] = False
-    names[key] = 'Copy'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
     values[key] = True
-    names[key] = 'Echo'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bDebug'; keys.append(key)
     values[key] = False
-    names[key] = 'Debug'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
+
+
+    for key in keys:
+        if key not in names:
+            names[key] = key[1:]
+
 
     # Load sticky.
     for key in stickyKeys:

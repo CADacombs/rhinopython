@@ -5,7 +5,7 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-250312: Created.
+250312-13: Created.
 
 TODO:
     WIP: Only allow arc-shaped curves to be selected.
@@ -23,7 +23,7 @@ class Opts:
     values = {}
     names = {}
     riOpts = {}
-    riAddOpts = {}
+    listValues = {}
     stickyKeys = {}
 
 
@@ -45,23 +45,26 @@ class Opts:
         limit=Rhino.RhinoMath.ZeroTolerance)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.ModelUnitSystem)
 
-    #key = 'bCopy'; keys.append(key)
-    #values[key] = False
-    #names[key] = 'Copy'
-    #riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    #stickyKeys[key] = '{}({})'.format(key, __file__)
+    key = 'bAddArcIfInputIsNotArcCrv'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
     values[key] = True
-    names[key] = 'Echo'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bDebug'; keys.append(key)
     values[key] = False
-    names[key] = 'Debug'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
+
+
+    for key in keys:
+        if key not in names:
+            names[key] = key[1:]
+
 
     # Load sticky.
     for key in stickyKeys:
@@ -110,6 +113,15 @@ class Opts:
         #    sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
         #    return
 
+        if key == 'fTol_IsArc':
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < cls.riOpts[key].InitialValue:
+                cls.riOpts[key].CurrentValue = Rhino.RhinoMath.ZeroTolerance
+
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
+            return
+
         if key in cls.riOpts:
             sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
             return
@@ -145,7 +157,7 @@ def getInput(bDebug=False):
 
         #addOption('fScaleFactor')
         addOption('fTol_IsArc')
-        #addOption('bCopy')
+        addOption('bAddArcIfInputIsNotArcCrv')
         addOption('bEcho')
         addOption('bDebug')
 
@@ -161,17 +173,51 @@ def getInput(bDebug=False):
             go.Dispose()
             return objrefs
 
-        #if res == ri.GetResult.Number:
-        #    key = 'fScaleFactor'
-        #    Opts.riOpts[key].CurrentValue = go.Number()
-        #    Opts.setValue(key)
-        #    continue
+        if res == ri.GetResult.Number:
+            key = 'fTol_IsArc'
+            Opts.riOpts[key].CurrentValue = go.Number()
+            Opts.setValue(key)
+            continue
 
         # An option was selected.
         for key in idxs_Opts:
             if go.Option().Index == idxs_Opts[key]:
                 Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
+
+
+def _formatDistance(fDistance, fPrecision=None):
+    if fDistance is None:
+        return "(None)"
+    if fDistance == Rhino.RhinoMath.UnsetValue:
+        return "(Infinite)"
+    if fPrecision is None:
+        fPrecision = sc.doc.ModelDistanceDisplayPrecision
+
+    if fDistance < 10.0**(-(fPrecision-1)):
+        # For example, if fDistance is 1e-5 and fPrecision == 5,
+        # the end of this script would display only one digit.
+        # Instead, this return displays 2 digits.
+        return "{:.2e}".format(fDistance)
+
+    return "{:.{}f}".format(fDistance, fPrecision)
+
+
+def _formatRadius(radius):
+    if sc.doc.ModelUnitSystem == Rhino.UnitSystem.Millimeters:
+        return _formatDistance(radius)
+
+    return "{} {} [{} millimeters]".format(
+        _formatDistance(radius),
+        sc.doc.GetUnitSystemName(
+            modelUnits=True,
+            capitalize=False,
+            singular=False,
+            abbreviate=False),
+        _formatDistance(radius*Rhino.RhinoMath.UnitScale(
+            sc.doc.ModelUnitSystem, Rhino.UnitSystem.Millimeters),
+            fPrecision=4)
+        )
 
 
 def main():
@@ -181,11 +227,13 @@ def main():
 
     #fScaleFactor = Opts.values['fScaleFactor']
     fTol_IsArc = Opts.values['fTol_IsArc']
-    #bCopy = Opts.values['bCopy']
+    bAddArcIfInputIsNotArcCrv = Opts.values['bAddArcIfInputIsNotArcCrv']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
+
+    radii = []
 
     for objref in objrefs:
         rgC_In = objref.Curve()
@@ -204,9 +252,13 @@ def main():
             rgC_In_NotProxy = rgC_In
 
         if isinstance(rgC_In_NotProxy, rg.ArcCurve):
+            bIsArcCrv = True
             arc = rgC_In_NotProxy.Arc
+        else:
+            bIsArcCrv = False
 
         radius = arc.Radius
+        radii.append(radius)
 
         plane = arc.Plane
 
@@ -220,6 +272,24 @@ def main():
         sc.doc.Objects.AddSurface(ps)
 
         sc.doc.Objects.AddLine(line)
+
+        if bAddArcIfInputIsNotArcCrv and not bIsArcCrv:
+            sc.doc.Objects.AddArc(arc)
+
+    if bEcho:
+        if len(objrefs) == 1:
+            if len(radii) == 0:
+                print("Curve is not arc-shaped.")
+            else:
+                print("Curve's radius is {}.".format(_formatRadius(radius)))
+        else:
+            if len(radii) == 0:
+                print("None of the curves are arc-shaped.")
+            elif len(objrefs) > 10:
+                print("Arc-shaped curves found.")
+            else:
+                print("Curves' radii: {}".format(
+                    ", ".join([_formatRadius(radius) for radius in radii])))
 
     sc.doc.Views.RedrawEnabled = True
 

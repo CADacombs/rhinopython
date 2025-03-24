@@ -17,6 +17,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 250106-07: Created.
 250112-13: Added routine to support curves that already overlap. Refactored.
 250114: Added routine to lengthen each curve when length to PlaneSurface fails for both curves.
+250324: Bug fix.
 
 TODO:
     Add coincident tolerance, e.g., max((0.1*sc.ModelDistanceTolerance, 1e-4))
@@ -494,7 +495,7 @@ def processCurveObjects(rhCrv_In_A, rhCrv_In_B, curveEnd_A, curveEnd_B, bReplace
         if bReplace:
             gOut = rdCs_In[iC].Id
             bReplaced = sc.doc.Objects.Replace(gOut, rgC_Out)
-            if bReplace:
+            if bReplaced:
                 gOuts[iC] = gOut
             else:
                 if bEcho: print("Curve could not be replaced.")

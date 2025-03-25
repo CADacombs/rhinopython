@@ -10,6 +10,12 @@
 210503: Now, curves on SENW are ignored for retrim when underlying surface is not being replaced.
 210929: is3dPointOnFace now converts non-NurbsSurfaces into NurbsSurfaces on ClosestPoint fails.
 220317: Updated to use a new overload.  Import-related update.
+230830: Disabled a routine in splitFace for testing purposes.
+230901: Added code for debugging.
+250324: Added routines that adjust curves to meet with natural corners and/or sides of surfaces.
+        Added check for surfaces that create bad breps.
+        Changed 2.0 to 1.8 to match Rhino (8)'s tolerances for joining curves.
+        Modified what is used for curve joining tolerance.
 """
 
 import Rhino
@@ -22,17 +28,6 @@ from System import Random
 
 import xCurve
 import xSurface
-
-
-def formatDistance(fDistance):
-    if fDistance is None:
-        return "(No deviation was provided.)"
-    if fDistance == 0.0:
-        return "Exactly zero"
-    if fDistance < 10.0**(-(sc.doc.DistanceDisplayPrecision-3)):
-        return "{:.1e}".format(fDistance)
-    else:
-        return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
 
 
 def createPoint3dOnInterior(rgFace, fMinDistFromBorder=None, bDebug=False):
@@ -68,7 +63,7 @@ def createPoint3dOnInterior(rgFace, fMinDistFromBorder=None, bDebug=False):
     v_Shrunk = domV_Shrunk.Mid
 
     # To3dCurve will include curves of seams.  This is advantageous in this circumstance.
-    rgCrvs_fromLoops = [loop.To3dCurve() for loop in rgFace.Loops]
+    cs_All_loops_for_split = [loop.To3dCurve() for loop in rgFace.Loops]
 
     rand = Random()
 
@@ -96,7 +91,7 @@ def createPoint3dOnInterior(rgFace, fMinDistFromBorder=None, bDebug=False):
             if ptFaceRel == rg.PointFaceRelation.Interior:
                 # If point is not at least fMinDistFromBorder from border (all edges),
                 # continue searching.
-                for c in rgCrvs_fromLoops:
+                for c in cs_All_loops_for_split:
                     b, t = c.ClosestPoint(pt)
                     if not b: raise ValueError("ClosestPoint failed in createPointOnFace.")
     
@@ -104,7 +99,7 @@ def createPoint3dOnInterior(rgFace, fMinDistFromBorder=None, bDebug=False):
                     if dist < fMinDistFromBorder:
                         break # to get another u and v.
                 else: # Good point
-                    for c in rgCrvs_fromLoops: c.Dispose()
+                    for c in cs_All_loops_for_split: c.Dispose()
                     rgB_1F.Dispose()
                     if bDebug: sEval = "i"; print sEval+':',eval(sEval)
                     return pt
@@ -168,6 +163,15 @@ def is3dPointOnFace(rgFace, pt, fTolerance=None):
         ptFaceRel = isParameterPointOnFace_beforeV7(
             rgFace, u, v, fTolerance)
 
+    if ptFaceRel == rg.PointFaceRelation.Interior:
+        pass
+    elif ptFaceRel == rg.PointFaceRelation.Exterior:
+        pass
+    elif ptFaceRel == rg.PointFaceRelation.Boundary:
+        pass
+    else:
+        pass
+
     return ptFaceRel
 
 
@@ -208,6 +212,337 @@ def isParameterPointOnFace_beforeV7(rgFace, u, v, f3dTolerance=None):
         return ptFaceRel # Exterior or boundary.
 
 
+def separate_short_curves_from_others_in_loop(cs_ofLoop, fTol_MinDistBetweenOpenEnds=None):
+    """
+    """
+
+    if fTol_MinDistBetweenOpenEnds is None:
+        fTol_MinDistBetweenOpenEnds = 1.8 * sc.doc.ModelAbsoluteTolerance
+
+    cs_WIP = []
+    cs_Shorts = []
+    for c in cs_ofLoop:
+        
+        # 250324: Commented out and replaced by below this comment block.
+        #fLength = c.GetLength()
+        #if fLength > max(fSplitTol, fEdgeLen_Min):
+        #    cs_WIP.append(c)
+        #else:
+        #    c.Dispose()
+        
+        if c.IsClosed:
+            if len(cs_ofLoop) > 1:
+                print("Closed curve found in loop of {}.".format(len(cs_ofLoop)))
+                return
+
+            fLength = c.GetLength()
+            if fLength <= (2.0 * fTol_MinDistBetweenOpenEnds):
+                import rhinoscriptsyntax as rs
+                point = c.PointAt(c.Domain.Mid)
+                rs.AddTextDot(
+                    text="Tiny trim loop?",
+                    point=point)
+                break
+        
+            cs_WIP.append(c)
+            continue
+        
+        fDist_BtwnEndPts = c.PointAtStart.DistanceTo(c.PointAtEnd)
+        if fDist_BtwnEndPts <= fTol_MinDistBetweenOpenEnds:
+            fLength = c.GetLength()
+            if fLength >= (2.0 * fDist_BtwnEndPts): # 2.0 is a guess. See print below.
+                import rhinoscriptsyntax as rs
+                #_rgB = rgFace.DuplicateFace(duplicateMeshes=False)
+                #_rgB.Faces.ShrinkFaces()
+                #_rgF = _rgB.Faces[0]
+                #point = _rgF.PointAt(u=_rgF.Domain(0).Mid, v=_rgF.Domain(1).Mid)
+                point = c.PointAt(c.Domain.Mid)
+                rs.AddTextDot(
+                    text="Large loop in trim?",
+                    point=point)
+                #_rgB.Dispose()
+                print("End points are close but length is at least double the distance."
+                    "This face will not be retrimmed."
+                    "Dot added.")
+                return
+            #sEval="c.IsDocumentControlled"; print(sEval,'=',eval(sEval))
+            #c.Dispose()
+            cs_Shorts.append(c)
+            continue
+
+        cs_WIP.append(c)
+
+    return cs_WIP, cs_Shorts
+
+
+def rebuild_short_contiguous_crvs(cs_Short, fTol_MinDistBetweenOpenEnds=None):
+    """
+    """
+
+    if fTol_MinDistBetweenOpenEnds is None:
+        fTol_MinDistBetweenOpenEnds = 1.8 * sc.doc.ModelAbsoluteTolerance
+
+    joinTolerance = 1e-6 * Rhino.RhinoMath.UnitScale(
+        Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+
+    cs_joined = rg.Curve.JoinCurves(cs_Short, joinTolerance=joinTolerance)
+
+    cs_Out = []
+
+    for cs in cs_joined:
+        if not isinstance(cs, (rg.PolyCurve, rg.PolylineCurve)):
+            continue
+
+        fDist = cs.PointAtStart.DistanceTo(cs.PointAtEnd)
+
+        if fDist <= fTol_MinDistBetweenOpenEnds:
+            continue
+
+        rebuilt = cs.Rebuild(
+            pointCount=4,
+            degree=3,
+            preserveTangents=False)
+
+        rvs = rg.Curve.GetDistancesBetweenCurves(cs, rebuilt, tolerance=0.1*joinTolerance)
+        if not rvs[0]:
+            continue
+
+        if rvs[1] > 0.1 * sc.doc.ModelAbsoluteTolerance:
+            continue
+
+        cs_Out.append(rebuilt)
+
+    return cs_Out
+
+
+def _getNaturalCornerPts(srf):
+    return (
+        srf.PointAt(srf.Domain(0).Min, srf.Domain(1).Min),
+        srf.PointAt(srf.Domain(0).Min, srf.Domain(1).Max),
+        srf.PointAt(srf.Domain(0).Max, srf.Domain(1).Min),
+        srf.PointAt(srf.Domain(0).Max, srf.Domain(1).Max)
+        )
+
+
+def _getCrvsOfIsoCrvs(srf):
+    return (
+        srf.IsoCurve(direction=1, constantParameter=srf.Domain(0).T0),
+        srf.IsoCurve(direction=0, constantParameter=srf.Domain(1).T0),
+        srf.IsoCurve(direction=1, constantParameter=srf.Domain(0).T1),
+        srf.IsoCurve(direction=0, constantParameter=srf.Domain(1).T1)
+        )
+
+
+def tryToExtendCrvToNearPtOfSet(crv_In, side, pts_Target, tolerance):
+    dists = []
+    if side == rg.CurveEnd.Start:
+        pt_c = crv_In.PointAtStart
+    elif side == rg.CurveEnd.End:
+        pt_c = crv_In.PointAtEnd
+    else:
+        raise Exception("{} passed as the side.".format(side))
+
+    for pt_Target in pts_Target:
+        dist = pt_c.DistanceTo(pt_Target)
+        dists.append(dist)
+
+    if min(dists) > tolerance:
+        return
+
+    idx_Winner = dists.index(min(dists))
+
+    return crv_In.Extend(
+        side=side,
+        style=rg.CurveExtensionStyle.Smooth,
+        endPoint=pts_Target[idx_Winner])
+
+
+def tryToSetCrvEndToPtOfSet(crv_In, side, pts_Target, tolerance):
+    dists = []
+    if side == rg.CurveEnd.Start:
+        pt_c = crv_In.PointAtStart
+        setPoint = rg.Curve.SetStartPoint
+    elif side == rg.CurveEnd.End:
+        pt_c = crv_In.PointAtEnd
+        setPoint = rg.Curve.SetEndPoint
+    else:
+        raise Exception("{} passed as the side.".format(side))
+
+    for pt_Target in pts_Target:
+        dist = pt_c.DistanceTo(pt_Target)
+        dists.append(dist)
+
+    if min(dists) > tolerance:
+        return
+
+    idx_Winner = dists.index(min(dists))
+
+    crv_Out = crv_In.DuplicateCurve()
+
+    bSuccess = setPoint(crv_Out, point=pts_Target[idx_Winner])
+
+    if bSuccess:
+        return crv_Out
+
+    crv_Out.Dispose()
+
+
+def tryToExtendCrvToNearCrvOfSet(crv_In, side, crvs_Target, tolerance):
+    dists = []
+    if side == rg.CurveEnd.Start:
+        pt_c = crv_In.PointAtStart
+    elif side == rg.CurveEnd.End:
+        pt_c = crv_In.PointAtEnd
+    else:
+        raise Exception("{} passed as the side.".format(side))
+
+    for crv_Target in crvs_Target:
+        bSuccess, t = crv_Target.ClosestPoint(pt_c)
+        dist = pt_c.DistanceTo(crv_Target.PointAt(t))
+        dists.append(dist)
+
+    if min(dists) > tolerance:
+        return
+
+    idx_Winner = dists.index(min(dists))
+
+    return crv_In.Extend(
+        side=side,
+        style=rg.CurveExtensionStyle.Smooth,
+        geometry=[crvs_Target[idx_Winner]])
+
+
+def is_pt_near_a_pt_in_set(pt_toTest, pts_Ref, tolerance):
+    for pt_Ref in pts_Ref:
+        dist = pt_toTest.DistanceTo(pt_Ref)
+        if dist <= tolerance:
+            return True
+    return False
+
+
+def is_pt_near_a_crv_of_set(pt_toTest, crvs_Ref, tolerance):
+    for crv_Ref in crvs_Ref:
+        bSuccess, t = crv_Ref.ClosestPoint(pt_toTest)
+        dist = pt_toTest.DistanceTo(crv_Ref.PointAt(t))
+        if dist <= tolerance:
+            return True
+    return False
+
+
+def tryToAdjustCrvEndsToSENW(crv_In, rgSrf_toSplit, tolerance):
+    zeroTol = 1e-6 * Rhino.RhinoMath.UnitScale(
+        Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+
+    pts_Corner = _getNaturalCornerPts(rgSrf_toSplit)
+
+    bStartIsAtCorner = is_pt_near_a_pt_in_set(
+        crv_In.PointAtStart, pts_Corner, tolerance=zeroTol)
+
+    bEndIsAtCorner = is_pt_near_a_pt_in_set(
+        crv_In.PointAtEnd, pts_Corner, tolerance=zeroTol)
+
+    if bStartIsAtCorner and bEndIsAtCorner:
+        return
+
+    bProcessStart = not bStartIsAtCorner and is_pt_near_a_pt_in_set(
+        crv_In.PointAtStart, pts_Corner, tolerance=tolerance)
+    bProcessEnd = not bEndIsAtCorner and is_pt_near_a_pt_in_set(
+        crv_In.PointAtEnd, pts_Corner, tolerance=tolerance)
+
+    crv_Out = None
+    crv_WIP = crv_In
+
+    if bProcessStart:
+        rv = tryToExtendCrvToNearPtOfSet(
+            crv_WIP,
+            side=rg.CurveEnd.Start,
+            pts_Target=pts_Corner,
+            tolerance=tolerance)
+        if rv:
+            crv_Out = crv_WIP = rv
+        else:
+            rv = tryToSetCrvEndToPtOfSet(
+                crv_WIP,
+                side=rg.CurveEnd.Start,
+                pts_Target=pts_Corner,
+                tolerance=tolerance)
+            if rv:
+                crv_Out = crv_WIP = rv
+
+    if bProcessEnd:
+        rv = tryToExtendCrvToNearPtOfSet(
+            crv_WIP,
+            side=rg.CurveEnd.End,
+            pts_Target=pts_Corner,
+            tolerance=tolerance)
+        if rv:
+            crv_Out = crv_WIP = rv
+        else:
+            rv = tryToSetCrvEndToPtOfSet(
+                crv_WIP,
+                side=rg.CurveEnd.End,
+                pts_Target=pts_Corner,
+                tolerance=tolerance)
+            if rv:
+                crv_Out = crv_WIP = rv
+
+    bStartIsAtCorner = is_pt_near_a_pt_in_set(
+        crv_In.PointAtStart, pts_Corner, tolerance=zeroTol)
+
+    bEndIsAtCorner = is_pt_near_a_pt_in_set(
+        crv_In.PointAtEnd, pts_Corner, tolerance=zeroTol)
+
+    if bStartIsAtCorner and bEndIsAtCorner:
+        return crv_Out
+
+    isoCrvs = _getCrvsOfIsoCrvs(rgSrf_toSplit)
+
+    bStartIsOnSide = is_pt_near_a_crv_of_set(
+        crv_In.PointAtStart, isoCrvs, tolerance=zeroTol)
+
+    bEndIsAtCorner = is_pt_near_a_crv_of_set(
+        crv_In.PointAtEnd, isoCrvs, tolerance=zeroTol)
+
+    if bStartIsOnSide and bEndIsAtCorner:
+        return crv_Out
+
+    bProcessStart = not bStartIsOnSide and is_pt_near_a_crv_of_set(
+        crv_In.PointAtStart, isoCrvs, tolerance=tolerance)
+    bProcessEnd = not bEndIsAtCorner and is_pt_near_a_crv_of_set(
+        crv_In.PointAtEnd, isoCrvs, tolerance=tolerance)
+
+    if (not bProcessStart) and (not bProcessEnd):
+        return crv_Out
+
+    if bProcessStart:
+        rv = tryToExtendCrvToNearCrvOfSet(
+            crv_WIP,
+            side=rg.CurveEnd.Start,
+            crvs_Target=isoCrvs,
+            tolerance=tolerance)
+        if rv:
+            crv_Out = crv_WIP = rv
+
+    if bProcessEnd:
+        rv = tryToExtendCrvToNearCrvOfSet(
+            crv_WIP,
+            side=rg.CurveEnd.End,
+            crvs_Target=isoCrvs,
+            tolerance=tolerance)
+
+        if rv:
+            crv_Out = crv_WIP = rv
+
+    return crv_Out
+
+
+def _isTrim_SENW(rgTrim):
+    return (rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.South or
+            rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.East or
+            rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.North or
+            rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.West)
+
+
 def splitFace(rgFace, **kwargs):
     """
     Parameters:
@@ -233,7 +568,7 @@ def splitFace(rgFace, **kwargs):
     rgCrvs_Splitters_Replacement = setOpt('rgCrvs_Splitters_Replacement', None)
     fSplitTol = setOpt('fSplitTol', sc.doc.ModelAbsoluteTolerance)
     bTrimToSegs = setOpt('bTrimToSegs', True)
-    fEdgeLen_Min = setOpt('fEdgeLen_Min', 2.0*sc.doc.ModelAbsoluteTolerance)
+    fEdgeLen_Min = setOpt('fEdgeLen_Min', 1.8*sc.doc.ModelAbsoluteTolerance)
     bOutputTrimmingCrvs = setOpt('bOutputTrimmingCrvs', False)
     bEcho = setOpt('bEcho', True)
     bDebug = setOpt('bDebug', True)
@@ -244,43 +579,52 @@ def splitFace(rgFace, **kwargs):
     rgF_In = rgFace
 
     rgSrf_toSplit = rgF_In.UnderlyingSurface() if rgSrf_Replacement is None else rgSrf_Replacement
-    
-    # Reject surfaces that contain natural edges < 2 * fSplitTol.
-    for iDir, t in zip(
-        (0, 0, 1, 1),
-        (rgSrf_toSplit.Domain(1).T0, rgSrf_toSplit.Domain(1).T1,
-            rgSrf_toSplit.Domain(0).T0, rgSrf_toSplit.Domain(1).T1,),
-    ):
-        isoCrv = rgSrf_toSplit.IsoCurve(iDir, t)
-        fLength = isoCrv.GetLength()
-        isoCrv.Dispose()
-        if 0.0 < fLength <= 2.0 * sc.doc.ModelAbsoluteTolerance:
+
+    if not xSurface.is_srf_valid_for_brep(rgSrf_toSplit):
+        if isinstance(rgSrf_toSplit, rg.NurbsSurface):
             return
+        rv = xSurface.repair_srf_invalid_for_brep(rgSrf_toSplit)
+        if rv is None: return
+        rgSrf_toSplit = rv
 
+    # Reject surfaces that contain natural edges < 2 * fSplitTol.
+    # 230830: Disabled this to enable surfaces with poles and to find examples where this routine is useful.
+    #    for iDir, t in zip(
+    #        (0, 0, 1, 1),
+    #        (rgSrf_toSplit.Domain(1).T0, rgSrf_toSplit.Domain(1).T1,
+    #            rgSrf_toSplit.Domain(0).T0, rgSrf_toSplit.Domain(1).T1,),
+    #    ):
+    #        isoCrv = rgSrf_toSplit.IsoCurve(iDir, t)
+    #        fLength = isoCrv.GetLength()
+    #        isoCrv.Dispose()
+    #        if 0.0 < fLength <= 1.8 * sc.doc.ModelAbsoluteTolerance:
+    #            return
 
-    fEdgeDevs = []
-    for idxE in rgF_In.AdjacentEdges():
-        fEdgeDev = rgF_In.Brep.Edges[idxE].Tolerance
-        if fEdgeDev is not None:
-            fEdgeDevs.append(fEdgeDev)
-    fMaxEdgeDev = max(fEdgeDevs)
+    # 250324: Commented out.
+    #fEdgeTols = []
+    #for idxE in rgF_In.AdjacentEdges():
+    #    fEdgeDev = rgF_In.Brep.Edges[idxE].Tolerance
+    #    if fEdgeDev is not None:
+    #        fEdgeTols.append(fEdgeDev)
+    #fMaxEdgeTol = max(fEdgeTols)
 
-
-    def trimIsSenw(rgTrim):
-        return (rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.South or
-                rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.East or
-                rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.North or
-                rgTrim.IsoStatus == Rhino.Geometry.IsoStatus.West)
 
 
     # Although splits may be successful if trims include seams,
     # they are avoided for cleaner input.  Otherwise, this could be used:
-    # rgCrvs_fromLoops = [loop.To3dCurve() for loop in rgFace_In.Loops]
+    # cs_All_loops_for_split = [loop.To3dCurve() for loop in rgFace_In.Loops]
 
-    rgCrvs_fromLoops = []
+    isoCrvs = _getCrvsOfIsoCrvs(rgSrf_toSplit)
+
+    cs_All_loops_for_split = []
+
     for iL in range(rgF_In.Loops.Count):
         rgL = rgF_In.Loops[iL]
         cs_ofLoop = []
+
+        bNaturalEdgesSkipped = False
+        bNearNaturalEdgeSkipped = False
+
         for iT in range(rgL.Trims.Count):
             rgT = rgL.Trims[iT]
             if rgT.TrimType == rg.BrepTrimType.Seam: continue
@@ -292,52 +636,79 @@ def splitFace(rgFace, **kwargs):
 
             if rgSrf_Replacement is None:
                 # Ignore curves on SENW.
-                if trimIsSenw(rgT):
+                if _isTrim_SENW(rgT):
                     if bDebug: print "SENW curve ignored."
+                    bNaturalEdgesSkipped = True
                     continue
 
-            cs_ofLoop.append(rgT.Edge.DuplicateCurve())
-        
+            crv_EdgeDup = rgT.Edge.DuplicateCurve()
+
+            for isoCrv in isoCrvs:
+                rvs = rg.Curve.GetDistancesBetweenCurves(crv_EdgeDup, isoCrv, tolerance=0.1*fSplitTol)
+                if not rvs[0]:
+                    continue
+                if rvs[1] <= fSplitTol:
+                    bNearNaturalEdgeSkipped = True
+                    break
+            else:
+                cs_ofLoop.append(crv_EdgeDup)
+
         #for c in cs_ofLoop: sc.doc.Objects.AddCurve(c)
         #sc.doc.Views.Redraw(); 1/0
         
-        cs_WIP = []
-        for c in cs_ofLoop:
-            fLength = c.GetLength()
-            if fLength > max(fSplitTol, fEdgeLen_Min):
-                # Before including fEdgeLen_Min, adjacent LineCurves would
-                # sometimes become PolylineCurves from JoinCurves, with
-                # entire PolylineCurve counted as 1 segment.
-                cs_WIP.append(c)
-            else:
-                c.Dispose()
+        rvs = separate_short_curves_from_others_in_loop(
+            cs_ofLoop,
+            fTol_MinDistBetweenOpenEnds=fEdgeLen_Min)
+        if rvs is None:
+            return
         
-        cs_ofLoop = cs_WIP[:]
+        cs_toJoin, cs_Short = rvs
         
-        fJoinTol = max(2.0*fMaxEdgeDev, 2.0*fSplitTol, fEdgeLen_Min)
+        if cs_Short:
+            rvs = rebuild_short_contiguous_crvs(
+                cs_Short, 
+                fTol_MinDistBetweenOpenEnds=fEdgeLen_Min)
+            if rvs:
+                cs_toJoin.extend(rvs)
+
+        if len(cs_toJoin) == 0:
+            continue
+
+        #cs_toJoin = cs_WIP[:]
+        
+        #250324: Replaced this line with below: fJoinTol = max(2.0*fMaxEdgeTol, 2.0*fSplitTol, fEdgeLen_Min)
+        fJoinTol = fEdgeLen_Min
         
         rgCrvs_Joined = rg.Curve.JoinCurves(
-            cs_ofLoop,
+            cs_toJoin,
             joinTolerance=fJoinTol)
 
         #for c in rgCrvs_Joined: sc.doc.Objects.AddCurve(c)
-        #    sc.doc.Views.Redraw(); 1/0
+        #sc.doc.Views.Redraw(); 1/0
+
 
         for c in rgCrvs_Joined:
-        #    if not c.IsClosed:
-        #        if len(cs_ofLoop) == 2:
-        #            print "Loop may be thin and didn't close."
-        #            return
-        #        
-        #        sc.doc.Objects.AddCurve(c); sc.doc.Views.Redraw()
-        #        raise ValueError("Curve is not closed.")
-            rgCrvs_fromLoops.append(c)
+            # Open loop is OK if natural edges were skipped.
+            if not c.IsClosed:
+                if not bNaturalEdgesSkipped and not bNearNaturalEdgeSkipped:
+                    if len(cs_toJoin) == 2:
+                        print "Loop may be thin and didn't close."
+                        return
 
-    #for c in rgCrvs_fromLoops: sc.doc.Objects.AddCurve(c)
+                    sc.doc.Objects.AddCurve(c); sc.doc.Views.Redraw()
+                    raise ValueError("Curve is not closed.")
+
+                rv = tryToAdjustCrvEndsToSENW(c, rgSrf_toSplit, tolerance=fJoinTol)
+                if rv:
+                    c = rv
+
+            cs_All_loops_for_split.append(c)
+
+    #for c in cs_All_loops_for_split: sc.doc.Objects.AddCurve(c)
     #sc.doc.Views.Redraw()
     #return
 
-    rgCrvs_Splitters_WIP = [c.Duplicate() for c in rgCrvs_fromLoops]
+    rgCrvs_Splitters_WIP = [c.Duplicate() for c in cs_All_loops_for_split]
 
     rc = xCurve.getCurvesToSplitSurface(
         rgCrvs_Splitters_WIP, rgSrf_toSplit, fSplitTol)
@@ -364,8 +735,9 @@ def splitFace(rgFace, **kwargs):
 
     rgCrvs_Splitters = rgCrvs_Splitters_WIP
 
-    if bDebug or bOutputTrimmingCrvs: map(sc.doc.Objects.AddCurve, rgCrvs_Splitters)
-    if bDebug: sc.doc.Objects.AddSurface(rgSrf_toSplit)
+    if bOutputTrimmingCrvs: map(sc.doc.Objects.AddCurve, rgCrvs_Splitters)
+    #if bDebug and not bOutputTrimmingCrvs: map(sc.doc.Objects.AddCurve, rgCrvs_Splitters)
+    #if bDebug: sc.doc.Objects.AddSurface(rgSrf_toSplit)
 
     rc = xSurface.splitSurfaceIntoBrep(
         rgSrf_toSplit,
@@ -391,7 +763,7 @@ def retrimFace(rgFace, **kwargs):
         rgCrvs_Splitters_Replacement=None, # If None, 3D curves of rgFace loops are used.
         fSplitTol=sc.doc.ModelAbsoluteTolerance,
         bTrimToSegs=True,
-        fEdgeLen_Min=2.0*sc.doc.ModelAbsoluteTolerance,
+        fEdgeLen_Min,
         bOutputSplitOnFail=False,
         bOutputTrimmingCrvs=False,
         bEcho=True,
@@ -409,7 +781,7 @@ def retrimFace(rgFace, **kwargs):
     rgCrvs_Splitters_Replacement = setOpt('rgCrvs_Splitters_Replacement', None)
     fSplitTol = setOpt('fSplitTol', sc.doc.ModelAbsoluteTolerance)
     bTrimToSegs = setOpt('bTrimToSegs', True)
-    fEdgeLen_Min = setOpt('fEdgeLen_Min', 2.0*sc.doc.ModelAbsoluteTolerance)
+    fEdgeLen_Min = setOpt('fEdgeLen_Min', 1.8*sc.doc.ModelAbsoluteTolerance)
     bOutputSplitOnFail = setOpt('bOutputSplitOnFail', False)
     bOutputTrimmingCrvs = setOpt('bOutputTrimmingCrvs', False)
     bEcho = setOpt('bEcho', True)
@@ -524,7 +896,7 @@ def createModifiedFace(rgFace_In, surfaceFunc, bDebug=False):
         rgCrvs_Splitters_Replacement=None, # If None, 3D curves of rgFace loops are used.
         fSplitTol=sc.doc.ModelAbsoluteTolerance,
         bTrimToSegs=True,
-        fEdgeLen_Min=2.0*sc.doc.ModelAbsoluteTolerance,
+        fEdgeLen_Min=1.8*sc.doc.ModelAbsoluteTolerance,
         bOutputSplitOnFail=False,
         bOutputTrimmingCrvs=False,
         bDebug=bDebug)

@@ -1,11 +1,21 @@
 """
+This script retrims faces. This is often helpful in brep repair.
+
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums, https://discourse.mcneel.com/
+"""
+
+#! python 2  Must be on a line number less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
 160629-30: Created.
 ...
 200518-28, 0613,15: Refactored.  Simplified main function and removed option to create oppositely trimmed faces.
 200618: Added PerFaceColor support for V7.
 200619, 0729: Import-related update.
 210503: Import-related update.
-210630: Modified an option default value.
+210630, 250324: Modified an option default value.
 
 
 When joined curves are used for splitting, edges traversing the joins will be 
@@ -81,7 +91,7 @@ class Opts:
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fEdgeLen_Min'; keys.append(key)
-    values[key] = 2.0 * sc.doc.ModelAbsoluteTolerance
+    values[key] = 1.8 * sc.doc.ModelAbsoluteTolerance
     names[key] = 'EdgeLengthMinTol'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     riAddOpts[key] = addOptionDouble(key, names, riOpts)
@@ -174,11 +184,14 @@ def getInput():
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select surfaces to retrim")
+    go.SetCommandPrompt("Select faces to retrim")
+    go.SetCommandPromptDefault("All normal breps when none are selected")
 
     go.GeometryFilter = rd.ObjectType.Surface
     #go.GeometryAttributeFilter = (
     #        ri.Custom.GeometryAttributeFilter.OpenSurface)
+
+    go.AcceptNothing(True)
 
     go.AlreadySelectedObjectSelect = True
     go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
@@ -218,11 +231,21 @@ def getInput():
         if res == ri.GetResult.Cancel:
             go.Dispose()
             return
-        
+
         if res == ri.GetResult.Object:
             objrefs = go.Objects()
             go.Dispose()
-            return tuple([objrefs] + [Opts.values[key] for key in Opts.keys])
+            return objrefs
+
+        if res == ri.GetResult.Nothing:
+            oes = rd.ObjectEnumeratorSettings()
+            oes.LockedObjects = False
+            oes.ObjectTypeFilter = rd.ObjectType.Brep
+            rdBs = list(sc.doc.Objects.GetObjectList(oes))
+            go.Dispose()
+            if len(rdBs) == 0: return
+
+            return rdBs
 
         # An option was selected or a number was entered.
 
@@ -239,7 +262,61 @@ def getInput():
         go.ClearCommandOptions()
 
 
-def processBrepObject(rhFaces, **kwargs):
+def _getSortedBrepIdsAndFaces(rhObjs):
+    """
+    Parameters:
+        list(objrefs and/or rd.BrepObjects)
+    Returns:
+        list(Brep GUIDs)
+        list(lists(integers of Face indices) per brep)
+    """
+
+    gBreps_In = []
+    idxs_Faces_perBrep = []
+
+    for rhObj in rhObjs:
+
+        if isinstance(rhObj, rd.ObjRef):
+            objref = rhObj
+            gB_In = objref.ObjectId
+            rdBrep_In = objref.Object()
+            rgBrep_In = rdBrep_In.BrepGeometry
+            idx_CompIdx = objref.GeometryComponentIndex.Index
+        elif isinstance(rhObj, rd.BrepObject):
+            rdBrep_In = rhObj
+            gB_In = rdBrep_In.Id
+            rgBrep_In = rdBrep_In.BrepGeometry
+            idx_CompIdx = None
+        else:
+            raise Exception("{} passed to _getSortedBrepIdsAndFaces. Needs to be Objref or BrepObject.".format(
+                rhObj.GetType().Name))
+
+        #            if not rgBrep_In.IsValid:
+        #                print("Brep {} is invalid.  Fix first.".format(gB_In)
+        #                rgBrep_In.Dispose()
+        #                continue
+
+        if idx_CompIdx in (None, -1):
+            if gB_In in gBreps_In:
+                idxs_Faces_perBrep[gBreps_In.index(gB_In)] = range(rgBrep_In.Faces.Count)
+            else:
+                gBreps_In.append(gB_In)
+                idxs_Faces_perBrep.append(range(rgBrep_In.Faces.Count))
+        else:
+            rgFace_Brep0 = objref.Face()
+            if gB_In in gBreps_In:
+                if rgFace_Brep0 in idxs_Faces_perBrep[gBreps_In.index(gB_In)]:
+                    continue
+                else:
+                    idxs_Faces_perBrep[gBreps_In.index(gB_In)].append(rgFace_Brep0.FaceIndex)
+            else:
+                gBreps_In.append(gB_In)
+                idxs_Faces_perBrep.append([rgFace_Brep0.FaceIndex])
+
+    return gBreps_In, idxs_Faces_perBrep
+
+
+def processBrepObjects(rhFaces, **kwargs):
     """
     """
 
@@ -276,49 +353,6 @@ def processBrepObject(rhFaces, **kwargs):
             return rdObj
 
 
-    def getSortedBrepIdsAndFaces(objrefs):
-        """
-        Parameters:
-            list(objrefs)
-        Returns:
-            list(Brep GUIDs)
-            list(lists(integers of Face indices) per brep)
-        """
-        
-        gBreps_In = []
-        idxs_Faces_perBrep = []
-    
-        for o in objrefs:
-            gB_In = o.ObjectId
-            rdBrep_In = o.Object()
-            rgBrep_In = o.Brep()
-        
-            #            if not rgBrep_In.IsValid:
-            #                print "Brep {} is invalid.  Fix first.".format(gB_In)
-            #                rgBrep_In.Dispose()
-            #                continue
-        
-            idx_CompIdx = o.GeometryComponentIndex.Index
-            if idx_CompIdx == -1:
-                if gB_In in gBreps_In:
-                    idxs_Faces_perBrep[gBreps_In.index(gB_In)] = range(rgBrep_In.Faces.Count)
-                else:
-                    gBreps_In.append(gB_In)
-                    idxs_Faces_perBrep.append(range(rgBrep_In.Faces.Count))
-            else:
-                rgFace_Brep0 = o.Face()
-                if gB_In in gBreps_In:
-                    if rgFace_Brep0 in idxs_Faces_perBrep[gBreps_In.index(gB_In)]:
-                        continue
-                    else:
-                        idxs_Faces_perBrep[gBreps_In.index(gB_In)].append(rgFace_Brep0.FaceIndex)
-                else:
-                    gBreps_In.append(gB_In)
-                    idxs_Faces_perBrep.append([rgFace_Brep0.FaceIndex])
-
-        return gBreps_In, idxs_Faces_perBrep
-
-
     def dotSrf(rgSrf, text='', iDotHeight=14, rgb=(255, 255, 255)):
     
         rgDot = dotGeometryAtSurfaceCentroid(
@@ -338,7 +372,7 @@ def processBrepObject(rhFaces, **kwargs):
         if gDot != Guid.Empty: return rgDot
 
 
-    gBs_In, idxs_F_perB = getSortedBrepIdsAndFaces(rhFaces)
+    gBs_In, idxs_F_perB = _getSortedBrepIdsAndFaces(rhFaces)
     if not gBs_In: return
 
     idxs_AtTenths = [int(round(0.1*i*len(gBs_In),0)) for i in range(10)]
@@ -347,11 +381,11 @@ def processBrepObject(rhFaces, **kwargs):
 
     for iB, gB_In in enumerate(gBs_In):
         if bDebug:
-            print '-'*80 + '\n' + '-'*80
-            print "Phase 1"
+            print('-'*80 + '\n' + '-'*80)
+            print("Phase 1")
         
         if sc.escape_test(False):
-            print "Searching interrupted by user."
+            print("Searching interrupted by user.")
             return
         
         if iB in idxs_AtTenths:
@@ -391,9 +425,9 @@ def processBrepObject(rhFaces, **kwargs):
 
         if bEcho:
             if len(idxFaces_TrimSuccess) != len(idxs_F_perB[iB]):
-                print "{} faces of {} could not be calculated.".format(
+                print("{} faces of {} could not be calculated.".format(
                     len(idxs_F_perB[iB]) - len(idxFaces_TrimSuccess),
-                    gB_In)
+                    gB_In))
 
         if bExtractNotAdd:
             rc = xBrepObject.replaceFaces(
@@ -408,7 +442,7 @@ def processBrepObject(rhFaces, **kwargs):
                 if bDotFailures:
                     dotSrf(rgFace_In, '', (255, 0, 0))
                 if bEcho:
-                    print "Attempt to replace {} has failed.".format(gB_In)
+                    print("Attempt to replace {} has failed.".format(gB_In))
         else:
             gB = sc.doc.Objects.AddBrep(rgB_1F_Retrimmed)
             if gB == Guid.Empty:
@@ -416,7 +450,7 @@ def processBrepObject(rhFaces, **kwargs):
                 if bDotFailures:
                     dotSrf(rgFace_In, '', (255, 0, 0))
                 if bEcho:
-                    print "Attempt to add a new monoface brep has failed."
+                    print("Attempt to add a new monoface brep has failed.")
             else:
                 gBs_1F_Success_allBreps.append(gB)
 
@@ -425,25 +459,23 @@ def processBrepObject(rhFaces, **kwargs):
 
     if bEcho:
         if bExtractNotAdd:
-            print "Replaced {} faces with retrimmed monoface breps.".format(
-                len(set(gBs_1F_Success_allBreps)))
+            print("Replaced {} faces with retrimmed monoface breps.".format(
+                len(set(gBs_1F_Success_allBreps))))
         else:
-            print "Added {} retrimmed monoface breps.".format(
-                len(gBs_1F_Success_allBreps))
+            print("Added {} retrimmed monoface breps.".format(
+                len(gBs_1F_Success_allBreps)))
 
     return gBs_1F_Success_allBreps
 
 
 def main():
     
-    rc = getInput()
-    if rc is None: return
-
-    obref_Faces = rc[0]
+    rhFaces = getInput()
+    if rhFaces is None: return
 
     Rhino.RhinoApp.SetCommandPrompt("Working ...")
 
-    rc = processBrepObject(obref_Faces)
+    rc = processBrepObjects(rhFaces)
 
     sc.doc.Views.Redraw()
 

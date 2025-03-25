@@ -13,6 +13,9 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 200223: Bug fix in creating circular Arc in getArcCurve.
 200619, 220317: Added functions.
 230108: Bug fix in filterCurvesOnSurface for ignoring curves with only endpoints on face.
+230814: Replaced a couple references to ModelAbsoluteTolerance with tolerance parameter.
+230901: Added code for debugging.
+250324: Added code for Rhino V5.
 """
 
 import Rhino
@@ -379,20 +382,26 @@ def filterCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolerance
 
         strongBox_points = StrongBox[Array[rg.Point3d]]()
 
-        rc = crv.DivideByLength(
-            fSamplingResolution,
-            includeEnds=True,
-            points=strongBox_points)
+        if Rhino.RhinoApp.ExeVersion == 5:
+            rc = crv.DivideByLength(
+                fSamplingResolution,
+                includeStart=True,
+                points=strongBox_points)
+        else:
+            rc = crv.DivideByLength(
+                fSamplingResolution,
+                includeEnds=True,
+                points=strongBox_points)
 
         if rc:
             return list(strongBox_points.Value)
 
         crv_GetLength = crv.GetLength()
 
-        if crv_GetLength <= sc.doc.ModelAbsoluteTolerance:
+        if crv_GetLength <= fTolerance:
             if bDebug:
                 print("No points for curve that is {} long.".format(
-                    crv.GetLength()))
+                    crv_GetLength))
                 #sc.doc.Objects.AddCurve(crv)
             return []
         else:
@@ -417,6 +426,9 @@ def filterCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolerance
             
             if rc:
                 iCt_CrvPts_On_Face += 1
+            else:
+                pass
+                #sc.doc.Objects.AddPoint(pt); 1/0
 
         return iCt_CrvPts_On_Face
 
@@ -468,10 +480,10 @@ def filterCurvesOnSurface(rgCrvs_In, rgSrf, fSamplingResolution=None, fTolerance
         else:
             crv_GetLength = crv.GetLength()
             
-            if crv_GetLength <= sc.doc.ModelAbsoluteTolerance:
+            if crv_GetLength <= fTolerance:
                 if bDebug:
                     print("No points for curve that is {} long.".format(
-                        crv.GetLength()))
+                        crv_GetLength))
                     #sc.doc.Objects.AddCurve(crv)
                 return
             else:

@@ -17,6 +17,7 @@
 210604: Bug fix in knot multiplicity routine.
 220317: Added splitSurfaceIntoBrep.
 220623: Bug fix.
+250324: Added functions concerning surfaces that create bad breps. Bug fix in a debug routine.
 
 Known Issues with RhinoCommon:
     
@@ -231,6 +232,46 @@ def shortSenws(rgSrf, fSenwLen_MinAllowed, bEcho=False):
     return iSenwsWithinPtSpread
 
 
+def is_srf_valid_for_brep(rgSrf):
+    """
+    Returns:
+        rg.NurbsSurfaceNew surface if input was invalid and/or created an invalid brep.
+    """
+
+    if not rgSrf.IsValid:
+        sEval = "rgSrf"; print(sEval,'=',eval(sEval))
+        sEval = "rgSrf.IsValid"; print(sEval,'=',eval(sEval))
+        return False
+
+    _rgB = rgSrf.ToBrep()
+    if not _rgB.IsValid:
+        sEval = "_rgB.IsValid"; print(sEval,'=',eval(sEval))
+        _rgB.Dispose()
+        return False
+
+    _rgB.Dispose()
+    return True
+
+
+def repair_srf_invalid_for_brep(rgSrf_In):
+    if isinstance(rgSrf_In, rg.NurbsSurface):
+        return
+
+    print("ToNurbsSurface() ...")
+    rgSrf_Out = rgSrf_In.ToNurbsSurface()
+    if not rgSrf_Out.IsValid:
+        rgSrf_Out.Dispose()
+        return
+    _rgB = rgSrf_Out.ToBrep()
+    sEval = "_rgB.IsValid"; print(sEval,'=',eval(sEval))
+    if not _rgB.IsValid:
+        _rgB.Dispose()
+        return
+    _rgB.Dispose()
+    
+    return rgSrf_Out
+
+
 def splitSurfaceIntoBrep(rgSrf_toSplit, rgCrvs_Splitters, **kwargs):
     """
     Parameters:
@@ -256,11 +297,21 @@ def splitSurfaceIntoBrep(rgSrf_toSplit, rgCrvs_Splitters, **kwargs):
     if isinstance(rgSrf_toSplit, rg.BrepFace):
         rgFace_toSplit = rgSrf_toSplit
         rgBrep_TempForUnderlyingSrf = None
+        rgSrf_Underlying = rgFace_toSplit.UnderlyingSurface()
     elif isinstance(rgSrf_toSplit, rg.Surface):
+        rgSrf_Underlying = rgSrf_toSplit
         rgBrep_TempForUnderlyingSrf = rgSrf_toSplit.ToBrep()
         rgFace_toSplit = rgBrep_TempForUnderlyingSrf.Faces[0]
     else:
         return
+
+
+    #if not is_srf_valid_for_brep(rgSrf_Underlying):
+    #    if isinstance(rgSrf_Underlying, rg.NurbsSurface):
+    #        return
+    #    rv = repair_srf_invalid_for_brep(rgSrf_Underlying)
+    #    if rv is None: return
+    #    rgSrf_Underlying = rv
 
 
     def getFormattedDistance(fDistance):
@@ -274,7 +325,8 @@ def splitSurfaceIntoBrep(rgSrf_toSplit, rgCrvs_Splitters, **kwargs):
     # Create tolerance loop.
     if bTryOtherTolsOnFail:
         fTols_toTry = []
-        for tolMultiplier in 1.0, 0.5, 2.0, 0.25, 4.0, 0.125, 8.0, 0.0625, 16.0:
+        #for tolMultiplier in 1.0, 0.5, 2.0, 0.25, 4.0, 0.125, 8.0, 0.0625, 16.0:
+        for tolMultiplier in 1.0, 0.5, 0.1:
             tol = tolMultiplier * fTolerance
             fTols_toTry.append(tol)
     else:
@@ -296,12 +348,15 @@ def splitSurfaceIntoBrep(rgSrf_toSplit, rgCrvs_Splitters, **kwargs):
         if bDebug: sEval='rgB_Split'; print sEval+':',eval(sEval)
         
         if rgB_Split is None:
-            if bDebug:
+            if bDebug and fTol_toTry == fTolerance:
                 print "  Failed at fTol_toTry=={}.".format(
                     getFormattedDistance(fTol_toTry))
-                for c in crvs:
+                #_rgB = rgFace_toSplit.DuplicateFace(duplicateMeshes=False)
+                sc.doc.Objects.AddSurface(rgFace_toSplit)
+                for c in rgCrvs_Splitters:
                     sc.doc.Objects.AddCurve(c)
                 sc.doc.Views.Redraw()
+                1/0
         elif rgB_Split.Faces.Count == rgFace_toSplit.Brep.Faces.Count:
             if bDebug:
                     if rgB_Split.Faces.Count == 1:

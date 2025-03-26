@@ -21,6 +21,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 230826, 0915: Modified an option default value.
 240402: Added an option to skip short edges in deviation checks.
 240526, 250324: Modified an option default value.
+250325: Added the option where the MaxSliverWidth value is also used for the MaxShortEdgeLength.
 """
 
 import Rhino
@@ -60,6 +61,11 @@ class Opts():
     values[key] = True
     names[key] = 'DevCheckOfShortEdges'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Include', 'Skip')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bUseSliverTolForEdgeLengthTol'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fMaxShortEdgeLength'; keys.append(key)
@@ -211,7 +217,9 @@ def getInput():
         addOption('bSkipFacesWithShortEdges')
         if not Opts.values['bSkipFacesWithShortEdges']:
             addOption('bSkipSliverCheckOfShortEdges')
-        addOption('fMaxShortEdgeLength')
+        addOption('bUseSliverTolForEdgeLengthTol')
+        if not Opts.values['bUseSliverTolForEdgeLengthTol']:
+            addOption('fMaxShortEdgeLength')
         addOption('bEntireFaceMustBeASliver')
         addOption('bExtract')
         addOption('bEcho')
@@ -338,7 +346,7 @@ def _indexPairsOfOverlappingCurves(rgCrvs, fMaxSliverWidth, bEntireFaceMustBeASl
     return idx_rgCrvs_OverlapPairs, fOverlap_Face_MaxBelowTol
 
 
-def getFaces(rgBrep, **kwargs):
+def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxShortEdgeLength, bEntireFaceMustBeASliver, bEcho=True, bDebug=False):
     """
     Search all faces of brep for slivers.
 
@@ -358,15 +366,15 @@ def getFaces(rgBrep, **kwargs):
     """
 
 
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
+    #def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
 
-    fMaxSliverWidth = getOpt('fMaxSliverWidth')
-    bSkipFacesWithShortEdges = getOpt('bSkipFacesWithShortEdges')
-    bSkipSliverCheckOfShortEdges = getOpt('bSkipSliverCheckOfShortEdges')
-    fMaxShortEdgeLength = getOpt('fMaxShortEdgeLength')
-    bEntireFaceMustBeASliver = getOpt('bEntireFaceMustBeASliver')
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
+    #fMaxSliverWidth = getOpt('fMaxSliverWidth')
+    #bSkipFacesWithShortEdges = getOpt('bSkipFacesWithShortEdges')
+    #bSkipSliverCheckOfShortEdges = getOpt('bSkipSliverCheckOfShortEdges')
+    #fMaxShortEdgeLength = getOpt('fMaxShortEdgeLength')
+    #bEntireFaceMustBeASliver = getOpt('bEntireFaceMustBeASliver')
+    #bEcho = getOpt('bEcho')
+    #bDebug = getOpt('bDebug')
 
 
     rgB = rgBrep
@@ -517,12 +525,15 @@ def processBrepObjects(rhBreps0, **kwargs):
     fMaxSliverWidth = getOpt('fMaxSliverWidth')
     bSkipFacesWithShortEdges = getOpt('bSkipFacesWithShortEdges')
     bSkipSliverCheckOfShortEdges = getOpt('bSkipSliverCheckOfShortEdges')
+    bUseSliverTolForEdgeLengthTol = getOpt('bUseSliverTolForEdgeLengthTol')
     fMaxShortEdgeLength = getOpt('fMaxShortEdgeLength')
     bEntireFaceMustBeASliver = getOpt('bEntireFaceMustBeASliver')
     bExtract = getOpt('bExtract')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
+    if bUseSliverTolForEdgeLengthTol:
+        fMaxShortEdgeLength = fMaxSliverWidth
 
     fOverlap_Min_All = fOverlap_Max_All = None
     fOverlaps_BelowTol_AllBreps = []
@@ -663,6 +674,7 @@ def main():
     fMaxSliverWidth = Opts.values['fMaxSliverWidth']
     bSkipFacesWithShortEdges = Opts.values['bSkipFacesWithShortEdges']
     bSkipSliverCheckOfShortEdges = Opts.values['bSkipSliverCheckOfShortEdges']
+    bUseSliverTolForEdgeLengthTol = Opts.values['bUseSliverTolForEdgeLengthTol']
     fMaxShortEdgeLength = Opts.values['fMaxShortEdgeLength'] if Opts.values['bSkipFacesWithShortEdges'] else 0.0
     bEntireFaceMustBeASliver = Opts.values['bEntireFaceMustBeASliver']
     bExtract = Opts.values['bExtract']
@@ -678,7 +690,7 @@ def main():
         fMaxSliverWidth=fMaxSliverWidth,
         bSkipFacesWithShortEdges=bSkipFacesWithShortEdges,
         bSkipSliverCheckOfShortEdges=bSkipSliverCheckOfShortEdges,
-        fMaxShortEdgeLength=fMaxShortEdgeLength,
+        fMaxShortEdgeLength=fMaxSliverWidth if bUseSliverTolForEdgeLengthTol else fMaxShortEdgeLength,
         bEntireFaceMustBeASliver=bEntireFaceMustBeASliver,
         bExtract=bExtract,
         bEcho=bEcho,

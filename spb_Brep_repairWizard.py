@@ -11,7 +11,7 @@
 210426, 220118, 220315
 220317: Imported a function.  Import-related update.
 220420: Repaired for Rhino 7+ due to a RhinoCommon 7.17 script-breaking change.
-220914-15, 221122, 240402, 250123, 0215,22: Import-related updates.
+220914-15, 221122, 240402, 250123, 0215,22, 0325: Import-related updates.
 
 TODO:
 Continuing replacing xBrepFace_trimToNakedEdges with other modules.
@@ -37,9 +37,9 @@ import spb_Brep_correctEdgeTolerances
 import spb_Brep_edgeFromTrimDeviations
 import spb_Brep_Faces_withShortBorderLength
 import xBrep_findFaceByBorderBoundingBox
-import xBrep_invalid
 import spb_Brep_Faces_Sliver
 import spb_Brep_findFaces_SmallArea
+import spb_Brep_invalid
 import spb_Brep_Join
 import spb_Brep_nakedEdgeLoop
 import spb_Brep_rebuildEdges
@@ -519,7 +519,7 @@ def processBrepObjects(rdBreps, **kwargs):
 
         if keyExtracted not in gBreps: gBreps[keyExtracted] = []
 
-        rc = xBrep_invalid.extractBadFaces(
+        rc = spb_Brep_invalid.extractBadFaces(
             gBreps[keySearchUs],
             bEcho=bDebug,
             bDebug=bDebug)
@@ -534,7 +534,7 @@ def processBrepObjects(rdBreps, **kwargs):
         for gBrep in gBs_Bad:
             removeMicroEdges(gBs_Bad)
             for i in reversed(range(len(gBs_Bad))):
-                if xBrep_invalid.isValid(gBs_Bad[i]):
+                if spb_Brep_invalid.isValid(gBs_Bad[i]):
                     gBs_Good.append(gBs_Bad[i])
                     del gBs_Bad[i]
                     print "MicroEdge(s) found" \

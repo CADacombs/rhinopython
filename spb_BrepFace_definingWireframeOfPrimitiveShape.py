@@ -1,0 +1,546 @@
+"""
+This script will create reference geometry for BrepFaces whose shapes are can be represented
+by primitives (analytic shapes).
+
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums, https://discourse.mcneel.com/
+"""
+
+#! python 2  Must be on a line number less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
+170529: Created.
+171010: Bug fix: Line layer for plane representation is now set to the current layer.
+190207, ..., 0529: Updated an import name.
+190603: Commented out seam creation of cylinders.
+190807: Import-related change.
+190830: Added an import to make cylinder finite when needed.
+191118: Import-related update.
+201212: Added point to output for plane that can be used for snapping.
+210312: Line for plane is now 10 mm long for mm models.
+210316: Modified and option default value.
+210327: Added Opts.  Refactored.  Changed tolerances used by TryGet... methods.  Added more info to printed output.
+210328: Added normal vector to printed feedback of plane.
+210703: Added bOnlyCenterPtForSphere and bOnlyMainAxisForOtherRev.
+250326: Now prints value of vector of a cylinder's axis.
+"""
+
+import Rhino
+import Rhino.DocObjects as rd
+import Rhino.Geometry as rg
+import Rhino.Input as ri
+import scriptcontext as sc
+
+import xBlock
+import xBrepFace_tryGetPrimitiveShape
+import xPrimitiveShape
+
+import math
+
+
+MYZERO = 1e-6 * Rhino.RhinoMath.UnitScale(
+    Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+
+
+class Opts:
+
+    keys = []
+    values = {}
+    names = {}
+    riOpts = {}
+    listValues = {}
+    stickyKeys = {}
+
+
+    key = 'fShapeTol'; keys.append(key)
+    values[key] = 0.001 * sc.doc.ModelAbsoluteTolerance
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'bAddCrvs'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bOnlyCenterPtForSphere'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bOnlyMainAxisForOtherRev'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bEcho'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bDebug'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+
+    for key in keys:
+        if key not in names:
+            names[key] = key[1:]
+
+
+    # Load sticky.
+    for key in stickyKeys:
+        if stickyKeys[key] in sc.sticky:
+            if key in riOpts:
+                riOpts[key].CurrentValue = values[key] = sc.sticky[stickyKeys[key]]
+            else:
+                # For OptionList.
+                values[key] = sc.sticky[stickyKeys[key]]
+
+
+    @classmethod
+    def addOption(cls, go, key):
+
+        idxOpt = None
+
+        if key in cls.riOpts:
+            if key[0] == 'b':
+                idxOpt = go.AddOptionToggle(
+                        cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'f':
+                idxOpt = go.AddOptionDouble(
+                    cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'i':
+                idxOpt = go.AddOptionInteger(
+                    englishName=cls.names[key], intValue=cls.riOpts[key])[0]
+        else:
+            idxOpt = go.AddOptionList(
+                englishOptionName=cls.names[key],
+                listValues=cls.listValues[key],
+                listCurrentIndex=cls.values[key])
+
+        if not idxOpt: print("Add option for {} failed.".format(key))
+
+        return idxOpt
+
+
+    @classmethod
+    def setValue(cls, key, idxList=None):
+
+        if key == 'fShapeTol':
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
+                print("TryGet(shape) methods appear to use ZeroTolerance" \
+                    " as the minimum when less is input.")
+                cls.riOpts[key].CurrentValue = Rhino.RhinoMath.ZeroTolerance
+
+        if key in cls.riOpts:
+            cls.values[key] = cls.riOpts[key].CurrentValue
+        elif key in cls.listValues:
+            cls.values[key] = idxList
+        else:
+            return
+
+        sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+
+
+def getInput():
+    """
+    Get face with optional input.
+    """
+
+    go = ri.Custom.GetObject()
+
+    go.SetCommandPrompt("Select face")
+
+    go.GeometryFilter = (
+        rd.ObjectType.Surface |
+        rd.ObjectType.InstanceReference)
+
+    go.AcceptNumber(True, True)
+    go.EnableHighlight(False)
+    
+    rgFace = None
+
+    idxs_Opt = {}
+
+    while rgFace is None:
+        while True:
+            go.ClearCommandOptions()
+
+            idxs_Opt.clear()
+
+            def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
+
+            addOption('fShapeTol')
+            addOption('bAddCrvs')
+            if Opts.values['bAddCrvs']:
+                addOption('bOnlyCenterPtForSphere')
+                addOption('bOnlyMainAxisForOtherRev')
+            addOption('bEcho')
+            addOption('bDebug')
+
+            res = go.Get()
+
+            if res == ri.GetResult.Cancel:
+                go.Dispose()
+                return
+
+            if res == ri.GetResult.Object:
+                objref = go.Object(0)
+                rdObj = objref.Object()
+                ptPicked = objref.SelectionPoint()
+        
+                if go.ObjectsWerePreselected:
+                    if rdObj.ObjectType == rd.ObjectType.Brep:
+                        rgObj = rdObj.BrepGeometry
+                    elif rdObj.ObjectType == rd.ObjectType.Extrusion:
+                        rgObj = rdObj.Geometry.ToBrep()
+                    else:
+                        sc.doc.Objects.UnselectAll() # Necessary if instance reference was preselected.
+                        sc.doc.Views.Redraw()
+                        continue
+                    if rgObj.Faces.Count == 1: rgFace = rgObj.Faces[0]
+                if rdObj.ObjectType == rd.ObjectType.InstanceReference:
+                    rgFace, ptPicked = xBlock.tryPickedFaceOfBlock(rdObj, ptPicked)
+                else: rgFace = objref.Face() # This also works for ExtrusionObject.
+        
+                if rgFace is None:
+                    sc.doc.Objects.UnselectAll() # Necessary when gb.Get() is repeated.
+                else:
+                    go.Dispose()
+
+                    return (
+                        rgFace,
+                        Opts.values['fShapeTol'],
+                        Opts.values['bAddCrvs'],
+                        Opts.values['bOnlyCenterPtForSphere'],
+                        Opts.values['bOnlyMainAxisForOtherRev'],
+                        Opts.values['bEcho'],
+                        Opts.values['bDebug'],
+                        )
+
+            if res == ri.GetResult.Number:
+                key = 'fShapeTol'
+                Opts.riOpts[key].CurrentValue = go.Number()
+                Opts.setValue(key)
+                continue
+
+            # An option was selected.
+            for key in idxs_Opt:
+                if go.Option().Index == idxs_Opt[key]:
+                    Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                    break
+
+
+def _formatDistance(fDistance, fPrecision=None):
+    if fDistance is None:
+        return "(None)"
+    if fDistance == Rhino.RhinoMath.UnsetValue:
+        return "(Infinite)"
+    if fPrecision is None:
+        fPrecision = sc.doc.ModelDistanceDisplayPrecision
+
+    if fDistance < 10.0**(-(fPrecision-1)):
+        # For example, if fDistance is 1e-5 and fPrecision == 5,
+        # the end of this script would display only one digit.
+        # Instead, this return displays 2 digits.
+        return "{:.2e}".format(fDistance)
+
+    return "{:.{}f}".format(fDistance, fPrecision)
+
+
+def printOutput(rgShape, fTol):
+    """
+    """
+
+    def decimalPlacesForZero():
+        return int(abs(math.log10(abs(MYZERO)))) + 1
+
+    def myround(x):
+        return round(x, decimalPlacesForZero())
+
+    if isinstance(rgShape, rg.Plane):
+        print("Plane with normal vector {},{},{} found at a tolerance of {}.".format(
+            myround(rgShape.Normal.X),
+            myround(rgShape.Normal.Y),
+            myround(rgShape.Normal.Z),
+            fTol),
+              )
+    elif isinstance(rgShape, (rg.Cylinder, rg.Sphere)):
+        print("R{:.4f} cylinder with {},{},{} axis vector found at a tolerance of {}.".format(
+            rgShape.Radius,
+            myround(rgShape.Axis.X),
+            myround(rgShape.Axis.Y),
+            myround(rgShape.Axis.Z),
+            fTol,
+            ))
+    elif isinstance(rgShape, rg.Torus):
+        print("R{:.4f},r{:.4f} torus found at a tolerance of {}.".format(
+            rgShape.MajorRadius,
+            rgShape.MinorRadius,
+            fTol))
+    elif isinstance(rgShape, rg.Cone):
+        print("{:.2f} degree cone found at a tolerance of {}.".format(
+            rgShape.AngleInDegrees(),
+            fTol))
+    else:
+        print("What shape is this?: {}".format(
+            rgShape.GetType().Name.ToString(),
+            ))
+
+
+def getFaceShape(rgFace0, fShapeTol=None, bDebug=False):
+    """
+    """
+    
+    rgSrf = rgFace0.UnderlyingSurface()
+
+    fTols_ToTry = Rhino.RhinoMath.ZeroTolerance, 1e-9, 1e-8
+    
+    # Check whether face's UnderlyingSurface is already a primitive.
+    for fTol in fTols_ToTry:
+        if fShapeTol is not None and fShapeTol < fTol: break
+
+        if rgSrf.IsPlanar(fTol):
+            intervalU = rgSrf.Domain(0)
+            intervalV = rgSrf.Domain(1)
+            
+            rgShape = rg.Plane(rgSrf.PointAt(intervalU.Mid, intervalV.Mid),
+                    rgSrf.PointAt(intervalU.Mid + intervalU.Length / 2.0, intervalV.Mid),
+                    rgSrf.PointAt(intervalU.Mid, intervalV.Mid + intervalV.Length / 2.0))
+            return rgShape, fTol
+    
+    for fTol in fTols_ToTry:
+        if fShapeTol is not None and fShapeTol < fTol: break
+
+        b, rgShape = rgSrf.TryGetCylinder(fTol)
+        if b:
+            return rgShape, fTol
+        
+        b, rgShape = rgSrf.TryGetCone(fTol)
+        if b:
+            return rgShape, fTol
+        
+        b, rgShape = rgSrf.TryGetSphere(fTol)
+        if b:
+            return rgShape, fTol
+        
+        b, rgShape = rgSrf.TryGetTorus(fTol)
+        if b:
+            return rgShape, fTol
+    
+    if fShapeTol is None: return
+    
+    # Try to get the primitive of face
+    rc = xBrepFace_tryGetPrimitiveShape.tryGetPrimitiveShape(
+        rgFace0, fTolerance=fShapeTol)
+
+    if rc[0] is None:
+        print("No matching primitive found.")
+        return
+    
+    rgShape, fTol_PrimitiveMatch, bShrunkUsed = rc[0]
+    
+    typeShape = rgShape.GetType()
+    
+    if not rgShape.IsValid:
+        print("{} is not valid.".format(typeShape))
+        return
+    
+    if (typeShape == Rhino.Geometry.Plane or
+            typeShape == Rhino.Geometry.Cone or
+            typeShape == Rhino.Geometry.Sphere or
+            typeShape == Rhino.Geometry.Torus):
+        return rgShape, fTol_PrimitiveMatch
+    
+    # Perform any needed repair to the cylinder to make it usable.
+    if typeShape == rg.Cylinder:
+        rgCyl = rgShape
+        # Fix cylinder that is infinite (has 0 height).
+        if not rgCyl.IsFinite:
+            print("Making cylinder finite...")
+            rgBbox_Face = rgFace0.GetBoundingBox(True)
+            fAddLen = 1.1 * rgBbox_Face.Min.DistanceTo(rgBbox_Face.Max)
+            rgCyl.Height1 = -fAddLen
+            rgCyl.Height2 = fAddLen
+        
+        
+        #    for sAttr in dir(rgCyl):
+        #        if (sAttr != 'Unset' and sAttr != '__doc__' and
+        #                not callable(getattr(rgCyl, sAttr))):
+        #            sPrint = 'rgCyl.' + sAttr; print(sPrint + ':', eval(sPrint)
+    
+    #        sPrint = 'dir(rgCyl)'; print(sPrint + ':', eval(sPrint)
+        #sPrint = 'rgCyl.Unset'; print(sPrint + ':', eval(sPrint)
+    #        for sAttr in dir(rgCyl):
+    #            if (sAttr != 'Unset' and sAttr != '__doc__' and
+    #                    not callable(getattr(rgCyl, sAttr))):
+    #                sPrint = 'rgShape.' + sAttr; print(sPrint + ':', eval(sPrint)
+        
+        elif rgCyl.TotalHeight < 2.0*sc.doc.ModelAbsoluteTolerance:
+            print("Resultant height of cylinder is {}.".format(
+                    rgCyl.TotalHeight))
+            print("Using 100 times model's absolute tolerance.")
+            rgCyl.Height1 = -100.*sc.doc.ModelAbsoluteTolerance
+            rgCyl.Height2 = 100.*sc.doc.ModelAbsoluteTolerance
+        else:
+            # Increase length of cylinder so that surface is always larger than trim.
+            rgBbox_Face = rgFace0.GetBoundingBox(False)
+            rgLines = rgBbox_Face.GetEdges()
+            fMaxLen = 0
+            for rgLine in rgLines:
+                if rgLine.Length > fMaxLen: fMaxLen = rgLine.Length
+            fAddLen = 1.1 * fMaxLen
+            #fAddLen = 1.1 * rgBbox_Face.Min.DistanceTo(rgBbox_Face.Max)
+            rgCyl.Height1 = -fAddLen
+            rgCyl.Height2 = fAddLen
+        
+        return rgCyl, fTol_PrimitiveMatch
+        
+    else:
+        print("What happened?")
+        return
+
+
+def addWireframeOfShape(rgShape, rgFace0, bOnlyCenterPtForSphere=False, bOnlyMainAxisForOtherRev=False, bDebug=False):
+    """
+    """
+    
+    typeShape = rgShape.GetType()
+    
+    if typeShape == rg.Plane:
+        plane = rgShape
+        #        planeSrf = rg.PlaneSurface(plane, rg.Interval(0.0, 1.0), rg.Interval(0.0, 1.0))
+        #        sc.doc.Objects.AddSurface(planeSrf)
+        #sc.doc.Objects.AddLine(plane.Origin, plane.Origin + plane.XAxis)
+        #sc.doc.Objects.AddLine(plane.Origin, plane.Origin + plane.YAxis)
+        attr = rd.ObjectAttributes()
+        attr.LayerIndex = sc.doc.Layers.CurrentLayerIndex
+        attr.ObjectDecoration = rd.ObjectDecoration.EndArrowhead
+        sc.doc.Objects.AddPoint(plane.Origin)
+        units = sc.doc.ModelUnitSystem
+        fLineLen = 10.0 if units == Rhino.UnitSystem.Millimeters else 1.0
+        sc.doc.Objects.AddLine(plane.Origin, plane.Origin + fLineLen * plane.ZAxis, attr)
+        #sc.doc.Objects.AddPoint(plane.OriginX, plane.OriginY + rg.Point3d(plane.YAxis), plane.OriginZ)
+    
+    elif typeShape == rg.Cylinder:
+        cyl = rgShape
+        #sc.doc.Objects.AddPoint(cyl.Center)
+    #        if line_Axis.Length < 2.0 * sc.doc.ModelAbsoluteTolerance:
+    #            line_Axis.Length = 1.0
+    #            print("Line length was too short and was set to 1.0."
+        if not bOnlyMainAxisForOtherRev:
+            circle_Mid = cyl.CircleAt((cyl.Height1 + cyl.Height2) / 2.0)
+            sc.doc.Objects.AddCircle(circle_Mid)
+
+        if not cyl.IsFinite:
+            xPrimitiveShape.Cylinder.extendToObjectSize(cyl, rgFace0)
+        circle_Ht1 = cyl.CircleAt(cyl.Height1)
+        circle_Ht2 = cyl.CircleAt(cyl.Height2)
+        line_Axis = rg.Line(circle_Ht1.Center, circle_Ht2.Center)
+        sc.doc.Objects.AddLine(line_Axis)
+#        line_Profile = rg.Line(circle_Ht1.PointAt(0.0), circle_Ht2.PointAt(0.0))
+#        sc.doc.Objects.AddLine(line_Profile)
+    
+    elif typeShape == rg.Cone:
+        cone = rgShape
+        #sc.doc.Objects.AddPoint(cone.Center)
+        line_Axis = rg.Line(cone.BasePoint, cone.ApexPoint)
+        if line_Axis.Length < 2.0 * sc.doc.ModelAbsoluteTolerance:
+            line_Axis.Length = 1.0
+            print("Line length was too short and was set to 1.0.")
+        sc.doc.Objects.AddLine(line_Axis)
+
+        if not bOnlyMainAxisForOtherRev:
+            circle = rg.Circle(cone.Plane, cone.BasePoint, cone.Radius)
+            sc.doc.Objects.AddCircle(circle)
+            line_Profile = rg.Line(circle.PointAt(0.0), cone.ApexPoint)
+            sc.doc.Objects.AddLine(line_Profile)
+
+    elif typeShape == rg.Sphere:
+        sphere = rgShape
+        sc.doc.Objects.AddPoint(sphere.Center)
+
+        if not bOnlyCenterPtForSphere:
+            # sphere's EquatorialPlane may be invalid.  Just create a plane for Circle.
+            circle = rg.Circle(
+                plane=rg.Plane(sphere.Center, normal=rg.Vector3d.ZAxis),
+                radius=sphere.Radius)
+            sc.doc.Objects.AddCircle(circle)
+
+    elif typeShape == rg.Torus:
+        plane_Major = rgShape.Plane
+        
+        #sc.doc.Objects.AddPoint(plane_Major.Origin)
+        
+        if not bOnlyMainAxisForOtherRev:
+            circle_Major = rg.Circle(plane_Major, plane_Major.Origin, rgShape.MajorRadius)
+            sc.doc.Objects.AddCircle(circle_Major)
+            plane_Minor_Origin = (rg.Point3d(
+                    plane_Major.OriginX,
+                    plane_Major.OriginY,
+                    plane_Major.OriginZ) +
+                    rgShape.MajorRadius * rg.Point3d(plane_Major.XAxis))
+        
+        #sc.doc.Objects.AddPoint(plane_Minor_Origin)
+        
+        if not bOnlyMainAxisForOtherRev:
+            plane_Minor = rg.Plane(plane_Minor_Origin,
+                    plane_Major.XAxis,
+                    plane_Major.ZAxis)
+            circle_Minor = rg.Circle(plane_Minor, plane_Minor_Origin, rgShape.MinorRadius)
+            sc.doc.Objects.AddCircle(circle_Minor)
+        
+        #Add line representing axis.
+        line = rg.Line(plane_Major.Origin + rgShape.MinorRadius * plane_Major.ZAxis,
+                plane_Major.Origin - rgShape.MinorRadius * plane_Major.ZAxis)
+        sc.doc.Objects.AddLine(line)
+    
+    else:
+        print("What happened?")
+        return
+    
+    sc.doc.Views.Redraw()
+
+
+def main():
+    """
+    """
+    
+    rc = getInput()
+    if rc is None: return
+    (
+        rgFace0,
+        fShapeTol,
+        bAddCrvs,
+        bOnlyCenterPtForSphere,
+        bOnlyMainAxisForOtherRev,
+        bEcho,
+        bDebug,
+        ) = rc
+
+    rc = getFaceShape(
+        rgFace0,
+        fShapeTol=fShapeTol,
+        bDebug=bDebug)
+    if rc is None: return
+    rgShape, fTol_PrimitiveMatch = rc
+
+
+    if bEcho:
+        printOutput(rgShape, fTol_PrimitiveMatch)
+
+
+    if bAddCrvs:
+        addWireframeOfShape(
+            rgShape,
+            rgFace0,
+            bOnlyCenterPtForSphere=bOnlyCenterPtForSphere,
+            bOnlyMainAxisForOtherRev=bOnlyMainAxisForOtherRev,
+            bDebug=bDebug)
+
+
+if __name__ == '__main__': main()

@@ -22,10 +22,12 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 250109-10,15: Reenabled the RhinoCommon method.
         Disabled support for BrepEdges until script is working properly for just wires.
         Refactored.
+250204: Bug fix.
+250326: Reimplemented the _Join routine for Rhino < 8.12.
 
 TODO:
     Reenable support for BrepEdges.
-    Possibly reenable support for < 8.12.
+    Possibly reenable RC routine for < 8.12.
         The indices of the joined input are not returned by V5's JoinCurves method and overloads.
 
 _Join (at least in V8.14) appears to use 1.8 * ModelAbsoluteTolerance as the
@@ -43,6 +45,10 @@ import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from System import Guid
+
+
+MYZERO = 1e-6 * Rhino.RhinoMath.UnitScale(
+    Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
 
 
 class Opts():
@@ -160,6 +166,23 @@ class Opts():
         sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
+def _formatDistance(fDistance, fPrecision=None):
+    if fDistance is None:
+        return "(None)"
+    if fDistance == Rhino.RhinoMath.UnsetValue:
+        return "(Infinite)"
+    if fPrecision is None:
+        fPrecision = sc.doc.ModelDistanceDisplayPrecision
+
+    if fDistance < 10.0**(-(fPrecision-1)):
+        # For example, if fDistance is 1e-5 and fPrecision == 5,
+        # the end of this script would display only one digit.
+        # Instead, this return displays 2 digits.
+        return "{:.2e}".format(fDistance)
+
+    return "{:.{}f}".format(fDistance, fPrecision)
+
+
 def _isCurveJoinable(rdCrv):
     """Joinable is valid and open."""
     rgC = rdCrv.CurveGeometry
@@ -212,24 +235,30 @@ def getInput():
 
     def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
+    bPre812 = (
+        Rhino.RhinoApp.ExeVersion < 8 or
+        (Rhino.RhinoApp.ExeVersion == 8 and Rhino.RhinoApp.ExeServiceRelease < 12)
+        )
+
     while True:
         go.ClearCommandOptions()
-
         idxs_Opt.clear()
-
 
         addOption('fJoinTol')
         idxs_Opt['Toggle'] = go.AddOption("ToggleFilters")
         addOption('bByLayer')
         addOption('bByColor')
-        #addOption('bUseUiJoinCmd')
-        if not Opts.values['bUseUiJoinCmd']:
-            addOption('bSimpleJoin')
+        if not bPre812:
+            addOption('bUseUiJoinCmd')
+            if not Opts.values['bUseUiJoinCmd']:
+                addOption('bSimpleJoin')
         addOption('bEcho')
         addOption('bDebug')
 
 
-        res = go.GetMultiple(minimumNumber=2, maximumNumber=0)
+        res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
+        # minimumNumber isn't set to 2 because when only 1 curve is selected, 
+        # ri.GetResult.Nothing is triggered.
 
         if res == ri.GetResult.Cancel:
             go.Dispose()
@@ -312,99 +341,6 @@ def getInput():
                 gCrvs_FromEdge.append(gCrv)
     
     go.Dispose()
-
-
-def joinCurves_using_RC_method(rgCrvs_In, fJoinTol=None, bSimpleJoin=False, bDebug=False):
-    """
-    Returns:
-        list(rg.Curves from Join)
-        list(int of indices of rgCrvs_In)
-        str: Error
-    """
-
-    if len(rgCrvs_In) == 0:
-        return None, None, "No curves in set to join."
-
-    if len(rgCrvs_In) < 2:
-        return None, None, "Only 1 curves in set to join."
-
-    if fJoinTol is None:
-        fJoinTol = 1.8 * sc.doc.ModelAbsoluteTolerance # The same as _Join for curves (per Rhino 8.14).
-
-
-    rgCs_Joined, idxs_Out_per_In = rg.Curve.JoinCurves(
-        rgCrvs_In,
-        joinTolerance=fJoinTol,
-        preserveDirection=False,
-        simpleJoin=bSimpleJoin)
-
-
-    #sEval = "len(rgCs_Joined)"; print(sEval, '=', eval(sEval))
-    #sEval = "max(idxs_Out_per_In) + 1"; print(sEval, '=', eval(sEval))
-    #sEval = "idxs_Out_per_In"; print(sEval, '=', eval(sEval))
-    #print(idxs_Out_per_In)
-
-    #for rgC_Joined in rgCs_Joined:
-    #    sc.doc.Objects.AddCurve(rgC_Joined)
-    #sc.doc.Views.Redraw()
-    #return
-
-    idxs_Out_per_In = list(idxs_Out_per_In)
-
-    rgCs_Out = [] # Actual joins, not all output from JoinCurves.
-    idxs_In_perOut = []
-    for idx_Joined in range(len(rgCs_Joined)):
-        if idxs_Out_per_In.count(idx_Joined) > 1:
-            rgCs_Out.append(rgCs_Joined[idx_Joined])
-            idxs_In_perOut.append([])
-
-    #sEval = "len(rgCs_Out)"; print(sEval, '=', eval(sEval))
-
-
-    for idx_In, idx_Out_per_In in enumerate(idxs_Out_per_In):
-        iCt = idxs_Out_per_In.count(idx_Out_per_In)
-        if iCt > 1:
-            idxs_In_perOut[idx_Out_per_In].append(idx_In)
-
-    return rgCs_Out, idxs_In_perOut, None
-
-    """
-    For simpleJoin=True,
-    Set True to use the simple joining method. In general, set this parameter to false.
-    (https://developer.rhino3d.com/api/rhinocommon/rhino.geometry.curve/joincurves)
-    
-    RhinoMergeCurves()
-    Description: Join a bunch of ON_Curves into one or more ON_Curves Parameters:
-    input_curves [in] Array of pointers to ON_Curves to be joined output [out] Array
-    of pointers to joined results join_tol [in] max distance between endpoints to be joined.
-    If join_tol < ON_EPSILON, use CRhinoDoc::AbsoluteTolerance() bPreserveDir [in] if TRUE,
-    don't reverse input curves to get them to join key [out] if non-null, curves[i] is part of output[key[i]] WARNING - key[i] may be -1 for some i, in particular if curves[i] is extremely short, key[i] will be -1 and curves[i] will not contribute to the joined results. Returns: @untitled table TRUE Success False Failure Remarks: Join as many of the input curves as have matching endpoints. If the input curve is a NURBS curve or a line, the endpoints within the specified tolerance are trued up to meet exactly. All of the input curves are copied and the caller must free the results. When curves are joined they are made into polycurves. Memory for the curves is allocated and becomes the responsibility of the caller.
-    (https://developer.rhino3d.com/api/cpp/group___rhino.html#ga422fa1a9386624b9cbdb77faaeb1bc5b)
-    """
-
-
-def join_Cmd(gCrvs0, fJoinTol=None, bEcho=False, bDebug=False):
-    if rs.SelectObjects(gCrvs0) == 0:
-        print(s + "Error!  Crvs should be selected.  Command stopped.")
-        return
-    
-    fModelTol_Start = sc.doc.ModelAbsoluteTolerance
-    fModelTol_ForJoin = sc.doc.ModelAbsoluteTolerance = fJoinTol / 1.8
-    print("ModelAbsoluteTolerance changed from {:.15f} to {:.15f}" \
-          " to use {:.15f} ({:.15f} / 1.8) join tolerance.".format(
-            fModelTol_Start,
-            sc.doc.ModelAbsoluteTolerance,
-            fJoinTol,
-            fJoinTol))
-    
-    rs.Command("_Join", bEcho)
-    
-    sc.doc.ModelAbsoluteTolerance = fModelTol_Start
-    print("ModelAbsoluteTolerance changed from {:.15f} to {:.15f}.".format(
-            fModelTol_ForJoin,
-            sc.doc.ModelAbsoluteTolerance))
-    
-    sc.doc.Objects.UnselectAll()
 
 
 def _getCurveObjects(rhCrvs):
@@ -504,6 +440,113 @@ def _separateInputIntoJoiningSets(rhCrvs, bByLayer=True, bByColor=True, bDebug=F
     raise Exception("What happened?")
 
 
+def joinCurves_using_RC_method(rgCrvs_In, fJoinTol=None, bSimpleJoin=False, bDebug=False):
+    """
+    Returns:
+        list(rg.Curves from Join)
+        list(int of indices of rgCrvs_In)
+        str: Error
+    """
+
+    if len(rgCrvs_In) == 0:
+        return None, None, "No curves in set to join."
+
+    if len(rgCrvs_In) < 2:
+        return None, None, "Only 1 curves in set to join."
+
+    if fJoinTol is None:
+        fJoinTol = 1.8 * sc.doc.ModelAbsoluteTolerance # The same as _Join for curves (per Rhino 8.14).
+
+
+    rgCs_Joined, idxs_Out_per_In = rg.Curve.JoinCurves(
+        rgCrvs_In,
+        joinTolerance=fJoinTol,
+        preserveDirection=False,
+        simpleJoin=bSimpleJoin)
+
+
+    #sEval = "len(rgCs_Joined)"; print(sEval, '=', eval(sEval))
+    #sEval = "max(idxs_Out_per_In) + 1"; print(sEval, '=', eval(sEval))
+    #sEval = "idxs_Out_per_In"; print(sEval, '=', eval(sEval))
+    #print(idxs_Out_per_In)
+
+    #for rgC_Joined in rgCs_Joined:
+    #    sc.doc.Objects.AddCurve(rgC_Joined)
+    #sc.doc.Views.Redraw()
+    #return
+
+    idxs_Out_per_In = list(idxs_Out_per_In)
+
+    rgCs_Out = [] # Actual joins, not all output from JoinCurves.
+    idxs_In_perOut = []
+    for idx_Joined in range(len(rgCs_Joined)):
+        if idxs_Out_per_In.count(idx_Joined) > 1:
+            rgCs_Out.append(rgCs_Joined[idx_Joined])
+            idxs_In_perOut.append([])
+
+    #sEval = "len(rgCs_Out)"; print(sEval, '=', eval(sEval))
+
+
+    for idx_In, idx_Out_per_In in enumerate(idxs_Out_per_In):
+        iCt = idxs_Out_per_In.count(idx_Out_per_In)
+        if iCt > 1:
+            idxs_In_perOut[idx_Out_per_In].append(idx_In)
+
+    return rgCs_Out, idxs_In_perOut, None
+
+    """
+    For simpleJoin=True,
+    Set True to use the simple joining method. In general, set this parameter to false.
+    (https://developer.rhino3d.com/api/rhinocommon/rhino.geometry.curve/joincurves)
+    
+    RhinoMergeCurves()
+    Description: Join a bunch of ON_Curves into one or more ON_Curves Parameters:
+    input_curves [in] Array of pointers to ON_Curves to be joined output [out] Array
+    of pointers to joined results join_tol [in] max distance between endpoints to be joined.
+    If join_tol < ON_EPSILON, use CRhinoDoc::AbsoluteTolerance() bPreserveDir [in] if TRUE,
+    don't reverse input curves to get them to join key [out] if non-null, curves[i] is part of output[key[i]] WARNING - key[i] may be -1 for some i, in particular if curves[i] is extremely short, key[i] will be -1 and curves[i] will not contribute to the joined results. Returns: @untitled table TRUE Success False Failure Remarks: Join as many of the input curves as have matching endpoints. If the input curve is a NURBS curve or a line, the endpoints within the specified tolerance are trued up to meet exactly. All of the input curves are copied and the caller must free the results. When curves are joined they are made into polycurves. Memory for the curves is allocated and becomes the responsibility of the caller.
+    (https://developer.rhino3d.com/api/cpp/group___rhino.html#ga422fa1a9386624b9cbdb77faaeb1bc5b)
+    """
+
+
+def join_Cmd(rdCrvs_In, fJoinTol=None, bEcho=False, bDebug=False):
+    """
+    rdCrvs_In: rd.BrepObjects or their GUIDs
+    """
+
+    if rs.SelectObjects(rdCrvs_In) == 0:
+        print(s + "Error!  Crvs should be selected.  Command stopped.")
+        return
+
+    if not Rhino.RhinoMath.EpsilonEquals(fJoinTol, 1.8*sc.doc.ModelAbsoluteTolerance, epsilon=MYZERO):
+        fModelTol_Saved = sc.doc.ModelAbsoluteTolerance
+        fModelTol_ForJoin = sc.doc.ModelAbsoluteTolerance = fJoinTol / 1.8
+        if bDebug:
+            print("ModelAbsTol was changed from {} to {}"
+                  " because _Join's tolerance is 1.8 * ModelAbsTol.".format(
+                      _formatDistance(fModelTol_Saved),
+                      _formatDistance(sc.doc.ModelAbsoluteTolerance)))
+        bChangedMAT = True
+    else:
+        bChangedMAT = False
+
+    rdObj_MostRecent = sc.doc.Objects.MostRecentObject()
+    uInt32_MostRecent = rdObj_MostRecent.RuntimeSerialNumber
+
+    rs.Command("_NoEcho _Join", bEcho)
+
+
+    if bChangedMAT:
+        sc.doc.ModelAbsoluteTolerance = fModelTol_Saved
+        if bDebug:
+            print("ModelAbsTol was returned to {}.".format(
+                _formatDistance(sc.doc.ModelAbsoluteTolerance)))
+
+    sc.doc.Objects.UnselectAll()
+
+    return list(sc.doc.Objects.AllObjectsSince(uInt32_MostRecent))
+
+
 def join_CurveObjects(rhCrvs_In, bByLayer=True, bByColor=True, bUseUiJoinCmd=False, bSimpleJoin=False, fJoinTol=None, bEcho=False, bDebug=False):
 
     rdCrvs_Separated = _separateInputIntoJoiningSets(rhCrvs_In, bByLayer, bByColor)
@@ -511,16 +554,41 @@ def join_CurveObjects(rhCrvs_In, bByLayer=True, bByColor=True, bUseUiJoinCmd=Fal
     gCs_Out = []
     iCt_gCs_Closed = 0
     gCs_DeleteFails = []
-    idxs_rgCrvs_perSet_Joined = []
+    rdCs_replaced_with_joins = []
 
     for rdCrvs_PerSet in rdCrvs_Separated:
-        rgCrvs_perSet = [rdC.CurveGeometry for rdC in rdCrvs_PerSet]
-        if bUseUiJoinCmd:
-            return # TODO: Reenable.
-            # Join using _Join command not considering object layer or color.
-            return join_Cmd(rgCrvs_perSet, fJoinTol, bEcho, bDebug)
+        if (bUseUiJoinCmd or
+            Rhino.RhinoApp.ExeVersion < 8 or
+            (Rhino.RhinoApp.ExeVersion == 8 and Rhino.RhinoApp.ExeServiceRelease < 12)
+        ):
+            fModelTol_Saved = sc.doc.ModelAbsoluteTolerance
+            try:
+                rdCs_Joins_this_set = join_Cmd(rdCrvs_PerSet, fJoinTol, bEcho, bDebug)
+            except Exception as e:
+                pass
+            else:
+                e = None
+            finally:
+                if sc.doc.ModelAbsoluteTolerance != fModelTol_Saved:
+                    sc.doc.ModelAbsoluteTolerance = fModelTol_Saved
+
+            if e:
+                raise
+
+            #sEval = ""; print(sEval,'=',eval(sEval))
+
+            if not rdCs_Joins_this_set:
+                continue
+
+            gCs_Out.extend([rdC.Id for rdC in rdCs_Joins_this_set])
+
+            iCt_gCs_Closed += sum([rdC.CurveGeometry.IsClosed for rdC in rdCs_Joins_this_set])
+
+            for rdC in rdCrvs_PerSet:
+                if rdC.IsDeleted:
+                    rdCs_replaced_with_joins.append(rdC)
         else:
-            # Join using RC's JoinCurves not considering object layer or color.
+            rgCrvs_perSet = [rdC.CurveGeometry for rdC in rdCrvs_PerSet]
             rvs = joinCurves_using_RC_method(
                 rgCrvs_perSet,
                 fJoinTol=fJoinTol,
@@ -529,27 +597,30 @@ def join_CurveObjects(rhCrvs_In, bByLayer=True, bByColor=True, bUseUiJoinCmd=Fal
             if rvs is None:
                 continue
 
-            rgCs_Joined, idxs_rgCrvs_perSet, sLog = rvs
+            (
+                rgCs_Joins_this_set,
+                idxs_rgCs_Joined_input_per_join_this_set,
+                sLog,
+                ) = rvs
 
-            if not rgCs_Joined:
+            if not rgCs_Joins_this_set:
                 if bDebug and sLog:
                     print(sLog)
                 continue
 
+            #print(rvs)
 
-            for idx_Joined, rgC_Joined in enumerate(rgCs_Joined):
-
-                # Use the first curve that was joined regardless of layer and color filter settings.
-                attr = rdCrvs_PerSet[idxs_rgCrvs_perSet[idx_Joined][0]].Attributes
+            for idx_Joined, rgC_Joined in enumerate(rgCs_Joins_this_set):
+                attr = rdCrvs_PerSet[idxs_rgCs_Joined_input_per_join_this_set[idx_Joined][0]].Attributes
 
                 gC_Out = sc.doc.Objects.AddCurve(rgC_Joined, attr)
 
                 if gC_Out != Guid.Empty:
                     gCs_Out.append(gC_Out)
-                    for idx_rdC_In in idxs_rgCrvs_perSet[idx_Joined]:
+                    for idx_rdC_In in idxs_rgCs_Joined_input_per_join_this_set[idx_Joined]:
                         bDeleted = sc.doc.Objects.Delete(rdCrvs_PerSet[idx_rdC_In], quiet=False)
                         if bDeleted:
-                            idxs_rgCrvs_perSet_Joined.append(rdCrvs_PerSet[idx_rdC_In])
+                            rdCs_replaced_with_joins.append(rdCrvs_PerSet[idx_rdC_In])
                         else:
                             gCs_DeleteFails.append(rdCrvs_PerSet[idx_rdC_In].Id)
 
@@ -557,17 +628,19 @@ def join_CurveObjects(rhCrvs_In, bByLayer=True, bByColor=True, bUseUiJoinCmd=Fal
                         iCt_gCs_Closed += 1
 
 
+    #print(rdCs_replaced_with_joins)
+
     if gCs_Out:
         if not gCs_DeleteFails:
             if iCt_gCs_Closed == len(gCs_Out):
                 print("Replaced {} curves with {} joined, closed curves.".format(
-                    len(idxs_rgCrvs_perSet_Joined),
+                    len(rdCs_replaced_with_joins),
                     len(gCs_Out),
                     )
                       )
             else:
                 print("Replaced {} curves with {} joined curves. {} of which are closed.".format(
-                    len(idxs_rgCrvs_perSet_Joined),
+                    len(rdCs_replaced_with_joins),
                     len(gCs_Out),
                     iCt_gCs_Closed),
                       )
@@ -582,12 +655,12 @@ def join_CurveObjects(rhCrvs_In, bByLayer=True, bByColor=True, bUseUiJoinCmd=Fal
 
 def main():
 
-    if Rhino.RhinoApp.ExeVersion < 8:
-        print("This script uses a method added to RhinoCommon 8.12. Rhino 7 is not current supported in this branch of the script.")
-        return
-    if Rhino.RhinoApp.ExeVersion == 8 and ExeServiceRelease < 12:
-        print("This script uses a method added to RhinoCommon 8.12. Upgrade your Rhino 8 to use this script.")
-        return
+    #if Rhino.RhinoApp.ExeVersion < 8:
+    #    print("This script uses a method added to RhinoCommon 8.12. Rhino 7 is not current supported in this branch of the script.")
+    #    return
+    #if Rhino.RhinoApp.ExeVersion == 8 and Rhino.RhinoApp.ExeServiceRelease < 12:
+    #    print("This script uses a method added to RhinoCommon 8.12. Upgrade your Rhino 8 to use this script.")
+    #    return
 
 
     gObjs_Preselected = [rdObj.Id for rdObj in sc.doc.Objects.GetSelectedObjects(includeLights=False, includeGrips=False)]

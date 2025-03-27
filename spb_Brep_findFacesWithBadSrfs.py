@@ -12,7 +12,7 @@ Send any questions, comments, or script development service needs to
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-250325: Created.
+250325-26: Created.
 """
 
 import Rhino
@@ -289,20 +289,27 @@ def processBrepObjects(rhBreps, bEcho=True, bDebug=False):
             continue
 
         dict_Res = rv
-        idxs_Found = []
+        idxs_Found_ThisBrep = []
 
         if bEcho:
-            print("Counts found:")
+            ss = []
+            ss.append("Counts found:")
         for key in keys:
             if dict_Res[key]:
-                idxs_Found.extend(dict_Res[key])
+                idxs_Found_ThisBrep.extend(dict_Res[key])
                 dict_counts[key] += len(dict_Res[key])
-                if bEcho: print("  {}: {}".format(key, len(dict_Res[key])))
-        set_Found = set(idxs_Found)
-        if len(set_Found) < len(idxs_Found):
+                if bEcho: ss.append("  {}: {}".format(key, len(dict_Res[key])))
+        set_Found = set(idxs_Found_ThisBrep)
+        if len(set_Found) < len(idxs_Found_ThisBrep):
             print("Duplicate faces found. How did that happen?")
 
-        iCt_FacesFound_All += len(idxs_Found)
+        if len(idxs_Found_ThisBrep) == 0:
+            continue # to next brep.
+
+        if bEcho:
+            print("\n".join(ss))
+
+        iCt_FacesFound_All += len(idxs_Found_ThisBrep)
 
         # What was the purpose of this?
         #if iCt_Bs_Selected + iCt_Fs_Selected == 0:
@@ -312,7 +319,7 @@ def processBrepObjects(rhBreps, bEcho=True, bDebug=False):
             sc.doc.Objects.Select(objectId=rdBrep_In.Id)
             iCt_Bs_Selected += 1
         else:
-            for idxF in idxs_Found:
+            for idxF in idxs_Found_ThisBrep:
                 compIdx = Rhino.Geometry.ComponentIndex(
                         Rhino.Geometry.ComponentIndexType.BrepFace,
                         index=idxF)

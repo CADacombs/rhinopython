@@ -23,7 +23,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 221014-15: Further development.
 240926: Bug fix and command option name changes.
 240929-1001: Further development.
-250208-10, 18: WIP: Further development.
+250208-10, 18, 0417: WIP: Further development.
 
 TODO:
     Add DeleteFromAll routine?
@@ -341,7 +341,7 @@ def _createTransformedGeometry(geom_In, xform):
 
     if xform.SimilarityType == rg.TransformSimilarityType.NotSimilarity:
         if isinstance(geom_In, rg.ArcCurve):
-            geom_Out = geom_In.ToNurbCurve()
+            geom_Out = geom_In.ToNurbsCurve()
         elif isinstance(geom_In, (rg.PolyCurve, rg.Brep)):
             geom_Out = geom_In.Duplicate()
             geom_Out.MakeDeformable()
@@ -473,7 +473,7 @@ def _get_geoms_transformed_to_instance(rgIref, sKey):
     if xform.SimilarityType == rg.TransformSimilarityType.NotSimilarity:
         for geom in geoms_of_def:
             if isinstance(geom, rg.ArcCurve):
-                geom_Out = geom.ToNurbCurve()
+                geom_Out = geom.ToNurbsCurve()
             elif isinstance(geom, (rg.PolyCurve, rg.Brep)):
                 geom_Out = geom.Duplicate()
                 geom.MakeDeformable()

@@ -10,11 +10,10 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 180620: Added rs.BlockInstanceCount to printed summary.
         Changed name from definitionNamesOfSelectedBlockInstances.py to listDefinitionNamesOfSelectedBlockInstances.py
 181024: Added check at start for whether there are any blocks in the document.
-250421: Now reports more useful output for nested counts.
+250421-22: Now reports more useful output for nested counts.
         Now, can also report on all of document's blocks instead of a selection.
 """
 
-import Rhino
 import Rhino.DocObjects as rd
 import Rhino.Input as ri
 import rhinoscriptsyntax as rs
@@ -130,6 +129,7 @@ def main():
     except:
         bRhinoVerIsAtLeast7_4 = False
 
+
     if bRhinoVerIsAtLeast7_4:
         topLevelReferenceCount = StrongBox[int]()
         nestedReferenceCount = StrongBox[int]()
@@ -152,25 +152,22 @@ def main():
             s += ")"
             print(s)
     else:
-        if iSelInstCts:
-            print("(Selected count) of (Name) ( (top level refs in active doc), (top level and nested refs in active doc), (refs from other inst defs) )")
-            for name, rdIdef, qty in sorted(zip(sBlockNames, rdIdefs_Out, iSelInstCts)):
-                print("{} of {} ({}, {}, {})".format(
-                    qty,
-                    name,
-                    rs.BlockInstanceCount(block_name=name, where_to_look=0),
-                    rs.BlockInstanceCount(block_name=name, where_to_look=1),
-                    rs.BlockInstanceCount(block_name=name, where_to_look=2),
-                    ))
-        else:
-            print("(Name) ( (top level refs in active doc), (top level and nested refs in active doc), (refs from other inst defs) )")
-            for name, rdIdef in sorted(zip(sBlockNames, rdIdefs_Out)):
-                print("{} ({}, {}, {})".format(
-                    name,
-                    rs.BlockInstanceCount(block_name=name, where_to_look=0),
-                    rs.BlockInstanceCount(block_name=name, where_to_look=1),
-                    rs.BlockInstanceCount(block_name=name, where_to_look=2),
-                    ))
+        for name, rdIdef, qty in sorted(zip(sBlockNames, rdIdefs_Out, iSelInstCts)):
+            print("  Meaning of values in parentheses, ( (top level refs in active doc), (top level and nested refs in active doc), (refs from other inst defs) )")
+            s = ""
+            if qty:
+                s += "{} selected of ".format(qty)
+            s += "{} ({}, {}, {})".format(
+                name,
+                rs.BlockInstanceCount(block_name=name, where_to_look=0),
+                rs.BlockInstanceCount(block_name=name, where_to_look=1),
+                rs.BlockInstanceCount(block_name=name, where_to_look=2),
+                )
+            rdIrefs = rdIdef.GetReferences(wheretoLook=2)
+            sDefNames = [_.InstanceDefinition.Name for _ in rdIrefs]
+            s += " in {} other definitions".format(len(rdIdef.GetContainers()))
+            s += ")"
+            print(s)
 
 
 if __name__ == '__main__': main()

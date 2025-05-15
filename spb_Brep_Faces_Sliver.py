@@ -4,6 +4,7 @@ This script finds faces whose edge-edge curve deviation is <= an input value.
 For faces with short edges, their breps often require more repair, e.g., merging edges in adjacent faces.
 """
 
+#! python 2  Must be on a line number less than 32.
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
@@ -22,6 +23,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 240402: Added an option to skip short edges in deviation checks.
 240526, 250324: Modified an option default value.
 250325: Added the option where the MaxSliverWidth value is also used for the MaxShortEdgeLength.
+250514: Disabled check of single-edge face since the GetDistanceBetweenCurves doesn't always report correctly.
+        Modified available command options per settings of other options.
 """
 
 import Rhino
@@ -217,9 +220,10 @@ def getInput():
         addOption('bSkipFacesWithShortEdges')
         if not Opts.values['bSkipFacesWithShortEdges']:
             addOption('bSkipSliverCheckOfShortEdges')
-        addOption('bUseSliverTolForEdgeLengthTol')
-        if not Opts.values['bUseSliverTolForEdgeLengthTol']:
-            addOption('fMaxShortEdgeLength')
+        if Opts.values['bSkipFacesWithShortEdges'] or Opts.values['bSkipSliverCheckOfShortEdges']:
+            addOption('bUseSliverTolForEdgeLengthTol')
+            if not Opts.values['bUseSliverTolForEdgeLengthTol']:
+                addOption('fMaxShortEdgeLength')
         addOption('bEntireFaceMustBeASliver')
         addOption('bExtract')
         addOption('bEcho')
@@ -297,6 +301,9 @@ def _indexPairsOfOverlappingCurves(rgCrvs, fMaxSliverWidth, bEntireFaceMustBeASl
     #fOverlap_Face_Min = None
     fOverlap_Face_MaxBelowTol = None
 
+    if not rgCrvs:
+        raise ValueError("Curve set has no curves!")
+
     # 180702: Added.
     for rgC in rgCrvs:
         if not rgC.IsValid:
@@ -304,20 +311,43 @@ def _indexPairsOfOverlappingCurves(rgCrvs, fMaxSliverWidth, bEntireFaceMustBeASl
             return
 
     if len(rgCrvs) == 1:
+        # TODO: Determine a better routine for single edge faces. GetDistancesBetweenCurves doesn't always work well.
+        return
+        
         rgC_In = rgCrvs[0]
-        rgCs_CheckLength = [
-            rgC_In.Trim(t0=rgC_In.Domain.T0, t1=rgC_In.Domain.Mid),
-            rgC_In.Trim(t0=rgC_In.Domain.Mid, t1=rgC_In.Domain.T1)
-        ]
-        bSingle_crv_was_split = True
-    elif len(rgCrvs) >= 2:
-        rgCs_CheckLength = rgCrvs
-        bSingle_crv_was_split = False
-    else:
-        raise ValueError("Curve set has no curves!")
-
+        
+        tMidLength = rgC_In.DivideByCount(
+            segmentCount=2,
+            includeEnds=False)[0]
+        
+        rgC_A = rgC_In.Trim(t0=rgC_In.Domain.T0, t1=tMidLength)
+        rgC_B = rgC_In.Trim(t0=tMidLength, t1=rgC_In.Domain.T1)
+        # tMidLength was rgC_In.Domain.Mid
+        rvs = rg.Curve.GetDistancesBetweenCurves(
+            rgC_A,
+            rgC_B,
+            tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+        if not rvs[0]:
+            return
+        
+        fOverlap_Max = rvs[1]
+        sc.doc.Objects.AddCurve(rgC_A)
+        sc.doc.Objects.AddCurve(rgC_B)
+        return
+        sc.doc.Objects.AddPoint(rgC_In.PointAt(tMidLength))
+        sc.doc.Objects.AddLine(rgC_A.PointAt(rvs[2]), rgC_B.PointAt(rvs[3])); sc.doc.Views.Redraw()
+        fOverlap_Min = rvs[4]
+        rgC_A.Dispose()
+        rgC_B.Dispose()
+        if fOverlap_Max > fMaxSliverWidth:
+            return
+        
+        return (0, 0), fOverlap_Max
 
     iCt_Cs = len(rgCrvs)
+
+    fOverlap_Maxs = []
+    fOverlap_Maxs_Sliver = []
 
     for iE_A in xrange(iCt_Cs):
         rgC_A = rgCrvs[iE_A]
@@ -327,23 +357,24 @@ def _indexPairsOfOverlappingCurves(rgCrvs, fMaxSliverWidth, bEntireFaceMustBeASl
                 rgC_A,
                 rgC_B,
                 tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
-            if rc[0]:
-                fOverlap_Max = rc[1]
-                fOverlap_Min = rc[4]
-                if fOverlap_Max < fMaxSliverWidth:
-                    if bSingle_crv_was_split:
-                        return (0, 0), fOverlap_Max
+            if not rc[0]:
+                return
 
-                    idx_rgCrvs_OverlapPairs.append((iE_A, iE_B))
-    #                    if fOverlap_Face_Min is None or fOverlap_Min < fOverlap_Face_Min:
-    #                        fOverlap_Face_Min = fOverlap_Min
-                    if fOverlap_Face_MaxBelowTol is None or fOverlap_Max > fOverlap_Face_MaxBelowTol:
-                        fOverlap_Face_MaxBelowTol = fOverlap_Max
-                elif bEntireFaceMustBeASliver:
-                    # Skip any face with an overlap larger than fMaxSliverWidth.
-                    return
+            fOverlap_Max = rc[1]
+            fOverlap_Maxs.append(fOverlap_Max)
+            fOverlap_Min = rc[4]
+            if fOverlap_Max <= fMaxSliverWidth:
+                idx_rgCrvs_OverlapPairs.append((iE_A, iE_B))
+#                    if fOverlap_Face_Min is None or fOverlap_Min < fOverlap_Face_Min:
+#                        fOverlap_Face_Min = fOverlap_Min
+                fOverlap_Maxs_Sliver.append(fOverlap_Max)
+                #if fOverlap_Face_MaxBelowTol is None or fOverlap_Max > fOverlap_Face_MaxBelowTol:
+                #    fOverlap_Face_MaxBelowTol = fOverlap_Max
+            elif bEntireFaceMustBeASliver:
+                # Skip any face with an overlap larger than fMaxSliverWidth.
+                return
 
-    return idx_rgCrvs_OverlapPairs, fOverlap_Face_MaxBelowTol
+    return idx_rgCrvs_OverlapPairs, max(fOverlap_Maxs_Sliver)
 
 
 def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxShortEdgeLength, bEntireFaceMustBeASliver, bEcho=True, bDebug=False):

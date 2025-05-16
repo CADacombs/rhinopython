@@ -11,7 +11,7 @@
 210426, 220118, 220315
 220317: Imported a function.  Import-related update.
 220420: Repaired for Rhino 7+ due to a RhinoCommon 7.17 script-breaking change.
-220914-15, 221122, 240402, 250123, 0215,22, 0325: Import-related updates.
+220914-250515: Import-related updates.
 
 TODO:
 Continuing replacing xBrepFace_trimToNakedEdges with other modules.
@@ -36,9 +36,9 @@ import Eto.Forms as forms
 import spb_Brep_correctEdgeTolerances
 import spb_Brep_edgeFromTrimDeviations
 import spb_Brep_Faces_withShortBorderLength
-import xBrep_findFaceByBorderBoundingBox
 import spb_Brep_Faces_Sliver
 import spb_Brep_findFaces_SmallArea
+import spb_Brep_findFaceByBoundingBox
 import spb_Brep_invalid
 import spb_Brep_Join
 import spb_Brep_nakedEdgeLoop
@@ -733,7 +733,7 @@ def processBrepObjects(rdBreps, **kwargs):
             if not rc: continue
             gB_Split = rc[0]
 
-            rc = xBrep_findFaceByBorderBoundingBox.processBrepObject(
+            rc = spb_Brep_findFaceByBoundingBox.processBrepObject(
                 gB_Split,
                 NEs,
                 fTolerance=sc.doc.ModelAbsoluteTolerance,

@@ -10,12 +10,16 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 221104: Added options for marking tolerances using dots.
 241105: Modified printed output to include range and count of edges above mdoel tolerance.
 241105: Modified printed output of when float vs. scientific notation is used.
+250301: Modified formatDistance.
+250602: Dots are now red.
 """
 
 import Rhino
 import Rhino.DocObjects as rd
 import Rhino.Input as ri
 import scriptcontext as sc
+
+from System.Drawing import Color
 
 
 class Opts:
@@ -237,6 +241,12 @@ def main():
 
     gDots = []
 
+    if bAddDot:
+        attr_Out = rd.ObjectAttributes()
+        attr_Out.LayerIndex = sc.doc.Layers.CurrentLayerIndex
+        attr_Out.ColorSource = rd.ObjectColorSource.ColorFromObject
+        attr_Out.ObjectColor = Color.FromArgb(255,0,0)
+
     fMaxEdgeTols = []
     fOutOfTols_All = []
 
@@ -263,7 +273,7 @@ def main():
             location = rgE.PointAt(rgE.Domain.Mid)
             rgDot = Rhino.Geometry.TextDot(text, location)
             rgDot.FontHeight = 11
-            gDot = sc.doc.Objects.AddTextDot(rgDot)
+            gDot = sc.doc.Objects.AddTextDot(rgDot, attributes=attr_Out)
             if gDot != gDot.Empty:
                 gDots.append(gDot)
 

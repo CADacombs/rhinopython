@@ -1,6 +1,7 @@
 """
 This script uses Brep.CutUpSurface and optionally BrepFace.RebuildEdges
-to attempt to retrim all faces of a brep to simplify edge curves and BrepTrim curves.
+to attempt to retrim all faces of a brep individually to simplify edge curves and
+BrepTrim curves.
 
 Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums, https://discourse.mcneel.com/
@@ -11,6 +12,10 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 """
 250327-28. 30: Created
+250603: Bug fixes.
+
+useEdgeCurves
+The 2D trimming curves are made by pulling back the 3D curves using the fitting tolerance. If useEdgeCurves is true, the input 3D curves will be used as the edge curves in the result. Otherwise, the edges will come from pushing up the 2D pullbacks.
 
 TODO:
     Try tighter tolerances on trim fails.
@@ -489,6 +494,8 @@ def _retrimFace(rgFace, fTol_Edge_and_trim, bRebuildEdges, bTryShrinkOnFail, bTr
         sEval = "sum([ncptct(rgT) for rgT in rgB_1F_Res_P1.Trims])"; print(sEval,'=',eval(sEval))
         sEval = "sum([ncptct(rgE) for rgE in rgB_1F_Res_P1.Edges])"; print(sEval,'=',eval(sEval))
 
+    if rgF_1F.PerFaceColor is not None:
+        rgB_1F_Res_P1.Faces[0].PerFaceColor = rgF_1F.PerFaceColor
 
     if bRebuildEdges:
         return rgB_1F_Res_P1, None
@@ -629,12 +636,13 @@ def processBrepObject(rdBrep, fTol_Edge_and_trim, fTol_Join, bRebuildEdges, bTry
         if len(breps_Joined) == 0:
             raise Exception("No result from JoinBreps.")
         if len(breps_Joined) > 1:
-            [sc.doc.Objects.AddBrep(b) for b in breps_Joined]
             print("Multiple breps output of JoinBreps.")
             gB_Outs = [
                 sc.doc.Objects.AddBrep(
-                    breps_Joined[0], attributes=rdB_Full_In.Attributes)
+                    brep_Joined, attributes=rdB_Full_In.Attributes)
                     for brep_Joined in breps_Joined]
+            if bReplace and not any([gB_Out == Guid.Empty for gB_Out in gB_Outs]):
+                sc.doc.Objects.Delete(obj=rdB_Full_In, quiet=False)
         else:
             if bReplace:
                 sc.doc.Objects.Replace(

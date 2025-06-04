@@ -9,6 +9,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210511: Now breps are processed whose faces are all the same color.
 230915: Modified an option default value.
 250514: Added command prompts during processing.
+250604: Modified some command prompts and print frequencies of some command prompts.
 """
 
 import Rhino
@@ -235,14 +236,38 @@ def collectFaceColors(rgBrep):
 
     sCP_Base = Rhino.RhinoApp.CommandPrompt
 
+    iDivision = 20
+    if rgBrep.Faces.Count >= iDivision:
+        iFs_atDivision = [int(round((1.0/iDivision)*i*rgBrep.Faces.Count,0)) for i in range(iDivision)]
+
     for iF, f in enumerate(rgBrep.Faces):
         if sc.escape_test(throw_exception=False):
             raise Exception("Search canceled by user.")
 
-        Rhino.RhinoApp.CommandPrompt = "{}  Face {} of {}".format(
-            sCP_Base,
-            iF + 1,
-            rgBrep.Faces.Count)
+        if rgBrep.Faces.Count == 1:
+            Rhino.RhinoApp.SetCommandPromptMessage(
+                "{}  Processing face...".format(sCP_Base))
+        elif rgBrep.Faces.Count < iDivision:
+            Rhino.RhinoApp.SetCommandPromptMessage(
+                "{}  Processing face {} of {} ({}% complete)...".format(
+                    sCP_Base,
+                    iF+1,
+                    rgBrep.Faces.Count,
+                    int(100*(iF+1)/rgBrep.Faces.Count),
+                    ))
+        elif iF in iFs_atDivision:
+            Rhino.RhinoApp.SetCommandPromptMessage(
+                "{}  Processing face {} of {} ({}% complete)...".format(
+                    sCP_Base,
+                    iF+1,
+                    rgBrep.Faces.Count,
+                    int(100*(iF+1)/rgBrep.Faces.Count),
+                    ))
+
+        #Rhino.RhinoApp.CommandPrompt = "{}  Face {} of {}".format(
+        #    sCP_Base,
+        #    iF + 1,
+        #    rgBrep.Faces.Count)
 
         if f.PerFaceColor not in colors_InBrep:
             colors_InBrep.append(f.PerFaceColor)
@@ -250,7 +275,7 @@ def collectFaceColors(rgBrep):
         else:
             idxFs_perColor[colors_InBrep.index(f.PerFaceColor)].append(f.FaceIndex)
 
-    Rhino.RhinoApp.CommandPrompt = sCP_Base
+    Rhino.RhinoApp.SetCommandPromptMessage(sCP_Base)
 
     return colors_InBrep, idxFs_perColor
 
@@ -278,7 +303,7 @@ def processBrepObjects(gBreps_In, colors_toExtract=None, bXferFaceColorToObj=Fal
                 colorFind.G,
                 )
 
-        Rhino.RhinoApp.CommandPrompt = sCP_Base
+        Rhino.RhinoApp.SetCommandPromptMessage(sCP_Base)
 
         rdB_In = sc.doc.Objects.FindId(gB_In)
         rgB_In = rdB_In.Geometry
@@ -304,16 +329,15 @@ def processBrepObjects(gBreps_In, colors_toExtract=None, bXferFaceColorToObj=Fal
 
         # More than 1 PerFaceColor in brep.
 
-        Rhino.RhinoApp.CommandPrompt = "{}  {} face colors found".format(
-            sCP_Base,
+        sCP_Base = "{} face colors found in brep.".format(
             len(colors_InBrep))
-
+        Rhino.RhinoApp.SetCommandPromptMessage(sCP_Base)
 
         gBs_Out_ThisB = []
 
         if colors_toExtract is None:
             # Extract all colors.
-            for color, idxFs in zip(colors_InBrep, idxFs_perColor):
+            for iColor, (color, idxFs) in enumerate(zip(colors_InBrep, idxFs_perColor)):
                 rc = xBrepObject.addFromSubsetOfFaces(
                     gB_In,
                     idxFs,
@@ -337,9 +361,30 @@ def processBrepObjects(gBreps_In, colors_toExtract=None, bXferFaceColorToObj=Fal
         else:
             # Extract only colors in colors_InBrep.
             idxs_Fs_NotTargetColor = []
-            for i, color in enumerate(colors_InBrep):
+            iColor_toExtract = None
+            for iColor, color in enumerate(colors_InBrep):
+                sc.escape_test()
+                Rhino.RhinoApp.Wait()
+
                 if color in colors_toExtract:
-                    idxFs = idxFs_perColor[i]
+
+                    if len(colors_toExtract) == 1:
+                        Rhino.RhinoApp.SetCommandPromptMessage(
+                            "Extracting {} faces...".format(color))
+                    else:
+                        if iColor_toExtract is None:
+                            iColor_toExtract = 0
+                        else:
+                            iColor_toExtract += 1
+
+                        Rhino.RhinoApp.SetCommandPromptMessage(
+                            "Extracting faces of color {} of {} ({}% complete)...".format(
+                                iColor_toExtract+1,
+                                len(colors_toExtract),
+                                int(100*(iColor_toExtract+1)/len(colors_toExtract)),
+                                ))
+
+                    idxFs = idxFs_perColor[iColor]
                     rc = xBrepObject.addFromSubsetOfFaces(
                         rhBrep=gB_In,
                         idxFaces=idxFs,
@@ -354,7 +399,7 @@ def processBrepObjects(gBreps_In, colors_toExtract=None, bXferFaceColorToObj=Fal
                                 if setObjectColor(gB_Out, color):
                                     removeAllFaceColors(gB_Out)
                 else:
-                    idxs_Fs_NotTargetColor.extend(idxFs_perColor[i])
+                    idxs_Fs_NotTargetColor.extend(idxFs_perColor[iColor])
 
             rc = xBrepObject.addFromSubsetOfFaces(
                 rhBrep=gB_In,

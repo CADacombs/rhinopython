@@ -1,12 +1,14 @@
 """
 """
 
-from __future__ import absolute_import, print_function, unicode_literals
+#! python 2  Must be on a line number less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 180919: Created.
 200714: Added copy option.
 220201: Streamlined the UI.  Now, multiple target matrices are allowed.
+250719: Modified some printed text. Added a redraw after unselecting objects.
 """
 
 import Rhino
@@ -142,7 +144,7 @@ def getInput_XformMatrices():
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select block instance for start transformation matrix")
+    go.SetCommandPrompt("Select block instance for START transformation matrix")
     go.SetCommandPromptDefault("Identity")
 
     go.GeometryFilter = rd.ObjectType.InstanceReference
@@ -196,7 +198,7 @@ def getInput_XformMatrices():
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select block instances for end transformation matrices")
+    go.SetCommandPrompt("Select block instances for END transformation matrices")
     if geomA: go.SetCommandPromptDefault("Identity")
 
     go.GeometryFilter = rd.ObjectType.InstanceReference
@@ -253,6 +255,7 @@ def main():
 
 
     sc.doc.Objects.UnselectAll()
+    sc.doc.Views.Redraw()
 
     rc = getInput_XformMatrices()
     if rc is None: return

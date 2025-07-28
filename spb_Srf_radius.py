@@ -16,6 +16,9 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 230403,07: Bug fix.
 240622: Added NegSign option.
 241231: Bug and efficiency fixes.
+250723: Added option to output the diameter for dots.
+250727: Added option to for the dot text to be the 2nd dual unit instead of the model unit (inch vs. mm only).
+        Added option to add unit label to dot text.
 
 TODO:
     Obtain face's shape only once.  Refer to 220613 revision.  Another script calls relevant function.
@@ -61,7 +64,7 @@ class Opts():
 
     key = 'bDualUnits'; keys.append(key)
     values[key] = True
-    names[key] = 'DualUnitsForInchOrMm'
+    names[key] = 'PrintDualUnits'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -70,25 +73,47 @@ class Opts():
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iDotHeight'; keys.append(key)
+    key = 'iDot_Height'; keys.append(key)
     values[key] = 11
+    names[key] = 'Height'
     riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=3)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'AddPrefixR'; keys.append(key)
-    values[key] = True
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'bNegSign'; keys.append(key)
+    key = 'bDot_Dia_notRad'; keys.append(key)
     values[key] = False
+    names[key] = 'Segment'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Radius', 'Diameter')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bDot_IncludePrefix'; keys.append(key)
+    values[key] = True
+    names[key] = 'IncludePrefix'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iDecPlaces'; keys.append(key)
+    key = 'bDot_NegSign'; keys.append(key)
+    values[key] = False
+    names[key] = 'NegSign'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bDot_2ndUnit'; keys.append(key)
+    values[key] = False
+    names[key] = 'Unit'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'ModelOnly', '2ndOnly')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'iDot_DecPlaces'; keys.append(key)
     values[key] = sc.doc.ModelDistanceDisplayPrecision - 2
+    names[key] = 'DecPlaces'
     riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=-1)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'bDot_UnitLabel'; keys.append(key)
+    values[key] = False
+    names[key] = 'UnitLabel'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
     values[key] = True
@@ -204,7 +229,7 @@ def getInput():
     
     idxs_Opts = {}
 
-    def addOption(key): idxs_Opts[key] = Opts.addOption(go, key)
+    def addOption(ric, key): idxs_Opts[key] = Opts.addOption(ric, key)
 
     while rgFace is None:
         while True:
@@ -212,17 +237,14 @@ def getInput():
 
             idxs_Opts.clear()
 
-            addOption('fRadTol')
-            addOption('bPickPt')
-            addOption('bDualUnits')
-            addOption('bAddDot')
+            addOption(go, 'fRadTol')
+            addOption(go, 'bPickPt')
+            addOption(go, 'bDualUnits')
+            addOption(go, 'bAddDot')
             if Opts.values['bAddDot']:
-                addOption('iDotHeight')
-                addOption('AddPrefixR')
-                addOption('bNegSign')
-                addOption('iDecPlaces')
-            addOption('bEcho')
-            addOption('bDebug')
+                idxs_Opts['DotSettings'] = go.AddOption('DotSettings')
+            addOption(go, 'bEcho')
+            addOption(go, 'bDebug')
 
             res = go.Get()
 
@@ -239,7 +261,39 @@ def getInput():
                 Opts.setValue(key)
                 continue
 
-            # An option was selected.
+            if Opts.values['bAddDot'] and go.Option().Index == idxs_Opts['DotSettings']:
+                #idxs_Opts.clear()
+
+                go_Dot = ri.Custom.GetOption()
+                go_Dot.SetCommandPrompt("Set dot options")
+
+                while True:
+                    go_Dot.ClearCommandOptions()
+                    idxs_Opts.clear()
+
+                    addOption(go_Dot, 'iDot_Height')
+                    addOption(go_Dot, 'bDot_Dia_notRad')
+                    addOption(go_Dot, 'bDot_IncludePrefix')
+                    addOption(go_Dot, 'bDot_NegSign')
+                    addOption(go_Dot, 'bDot_2ndUnit')
+                    addOption(go_Dot, 'iDot_DecPlaces')
+                    addOption(go_Dot, 'bDot_UnitLabel')
+
+                    res = go_Dot.Get()
+
+                    if res != ri.GetResult.Option:
+                        break
+
+                    for key in idxs_Opts:
+                        if go_Dot.Option().Index == idxs_Opts[key]:
+                            Opts.setValue(key, go_Dot.Option().CurrentListOptionIndex)
+                            break
+
+                go_Dot.Dispose()
+
+                continue
+
+
             for key in idxs_Opts:
                 if go.Option().Index == idxs_Opts[key]:
                     Opts.setValue(key, go.Option().CurrentListOptionIndex)
@@ -570,10 +624,13 @@ def main():
     bPickPt = Opts.values['bPickPt']
     bDualUnits = Opts.values['bDualUnits']
     bAddDot = Opts.values['bAddDot']
-    iDotHeight = Opts.values['iDotHeight']
-    AddPrefixR = Opts.values['AddPrefixR']
-    bNegSign = Opts.values['bNegSign']
-    iDecPlaces = Opts.values['iDecPlaces']
+    iDot_Height = Opts.values['iDot_Height']
+    bDot_Dia_notRad = Opts.values['bDot_Dia_notRad']
+    bDot_IncludePrefix = Opts.values['bDot_IncludePrefix']
+    bDot_NegSign = Opts.values['bDot_NegSign']
+    bDot_2ndUnit = Opts.values['bDot_2ndUnit']
+    iDot_DecPlaces = Opts.values['iDot_DecPlaces']
+    bDot_UnitLabel = Opts.values['bDot_UnitLabel']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
@@ -667,20 +724,53 @@ def main():
         
         if fRad_Srf:
             if bAddDot:
+                if bDot_Dia_notRad:
+                    sPrefix = chr(216) if bDot_IncludePrefix else ''
+                    fDotValue = 2.0 * fRad_Srf
+                else:
+                    sPrefix = 'R' if bDot_IncludePrefix else ''
+                    fDotValue = fRad_Srf
+                if not bDot_NegSign and fDotValue < 0.0:
+                    fDotValue = abs(fDotValue)
+                sSuffix = ''
+                if bDot_2ndUnit:
+                    if sc.doc.ModelUnitSystem == Rhino.UnitSystem.Inches:
+                        fDotValue *= Rhino.RhinoMath.UnitScale(
+                            Rhino.UnitSystem.Inches,
+                            Rhino.UnitSystem.Millimeters)
+                        if bDot_UnitLabel:
+                            sSuffix = 'mm'
+                    elif sc.doc.ModelUnitSystem == Rhino.UnitSystem.Millimeters:
+                        fDotValue *= Rhino.RhinoMath.UnitScale(
+                            Rhino.UnitSystem.Millimeters,
+                            Rhino.UnitSystem.Inches)
+                        if bDot_UnitLabel:
+                             sSuffix = '"'
+                elif bDot_UnitLabel:
+                    if sc.doc.ModelUnitSystem == Rhino.UnitSystem.Inches:
+                       sSuffix = '"'
+                    else:
+                        sSuffix = sc.doc.GetUnitSystemName(
+                            modelUnits=True,
+                            capitalize=False,
+                            singular=True,
+                            abbreviate=True)
+
                 rgDot = rg.TextDot(
-                    '{0}{1:.{2}f}'.format(
-                        ('','R')[AddPrefixR],
-                        fRad_Srf if bNegSign else abs(fRad_Srf),
-                        iDecPlaces),
+                    '{0}{1:.{2}f}{3}'.format(
+                        sPrefix,
+                        fDotValue,
+                        iDot_DecPlaces,
+                        sSuffix),
                     location=ptPicked)
-                rgDot.FontHeight = iDotHeight
+                rgDot.FontHeight = iDot_Height
                 sc.doc.Objects.AddTextDot(rgDot)
                 rgDot.Dispose()
 
             if fRad_Srf > 0.0:
-                s += "  concave (fillet)  (Hence, positive radius.)"
+                s += "  concave (e.g., fillet) (Positive value)"
             else:
-                s += "  convex (round)  (Hence, negative radius.)"
+                s += "  convex (e.g., round) (Negative value)"
 
             if (not bDualUnits or
                 (sc.doc.ModelUnitSystem != Rhino.UnitSystem.Inches

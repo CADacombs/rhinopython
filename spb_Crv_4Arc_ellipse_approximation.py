@@ -10,7 +10,7 @@ The method used is based on https://www.researchgate.net/publication/241719740_A
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-250728-29: Created.
+250728-30: Created.
 
 TODO:
 """
@@ -50,6 +50,12 @@ class Opts:
     values[key] = True
     names[key] = 'OutputCrv'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Arcs', 'Poly')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bReplace'; keys.append(key)
+    values[key] = False
+    names[key] = 'DocAction'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'Add', 'Replace')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bAddEllipticalDeg2NurbsIfInputIsNot'; keys.append(key)
@@ -166,6 +172,7 @@ def getInput(bDebug=False):
         addOption('fTol_IsEllipse')
         addOption('iNumPtsToCheck')
         addOption('bPolyCrvOutput_notArcs')
+        addOption('bReplace')
         addOption('bAddEllipticalDeg2NurbsIfInputIsNot')
         addOption('bEcho')
         addOption('bDebug')
@@ -299,7 +306,7 @@ def create4ArcApproximation(a, b, iNumPtsToCheck):
     arcCrvs_AT = []
     arcCrvs_BT = []
 
-    for i in range(1, iNumPtsToCheck):
+    for i in range(1, (iNumPtsToCheck+1)):
         sc.escape_test()
 
         tangle = (float(i)/float(iNumPtsToCheck+1))*domainLength + domainStart
@@ -431,12 +438,14 @@ def main():
     iNumPtsToCheck = Opts.values['iNumPtsToCheck']
     bPolyCrvOutput_notArcs = Opts.values['bPolyCrvOutput_notArcs']
     bAddEllipticalDeg2NurbsIfInputIsNot = Opts.values['bAddEllipticalDeg2NurbsIfInputIsNot']
+    bReplace = Opts.values['bReplace']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
 
-    gOuts = []
+    gAdded = []
+    gReplaced = []
 
     for objref in objrefs:
         rgC_In = objref.Curve()
@@ -492,21 +501,37 @@ def main():
         if bPolyCrvOutput_notArcs:
             polycrv = rg.Curve.JoinCurves(arcCrvs_Res)[0]
             polycrv.Transform(xform)
-            gOut = sc.doc.Objects.AddCurve(polycrv)
-            if gOut != gOut.Empty:
-                gOuts.append(gOut)
+            if bReplace and not bIsEdge:
+                if sc.doc.Objects.Replace(objref, curve=polycrv):
+                    gReplaced.append(objref.ObjectId)
+                else:
+                    print("Could not replace curve, {}.".format(objref.ObjectId))
+            else:
+                gOut = sc.doc.Objects.AddCurve(polycrv)
+                if gOut != gOut.Empty:
+                    gAdded.append(gOut)
+                else:
+                    print("Could not add curve approximation of {}.".format(objref.ObjectId))
         else:
+            bFailedToAddSomeArcs = False
             for c in arcCrvs_Res:
                 c.Transform(xform)
                 gOut = sc.doc.Objects.AddCurve(c)
                 if gOut != gOut.Empty:
-                    gOuts.append(gOut)
+                    gAdded.append(gOut)
+                else:
+                    bFailedToAddSomeArcs = True
+                    print("Could not add ArcCurve for approximation of {}.".format(objref.ObjectId))
+                if bReplace and not bIsEdge:
+                    if not bFailedToAddSomeArcs:
+                        if sc.doc.Objects.Delete(objref, quiet=False):
+                            gReplaced.append(objref.ObjectId)
 
         if bAddEllipticalDeg2NurbsIfInputIsNot:
             if not (bInputIsAccurateEllipse and bIsNurbsCrv and rgC_In_NotProxy.Degree == 2):
                 gOut = sc.doc.Objects.AddEllipse(ellipse)
                 if gOut != gOut.Empty:
-                    gOuts.append(gOut)
+                    gAdded.append(gOut)
 
 
 
@@ -520,7 +545,10 @@ def main():
             #    print("Curves' radii: {}".format(
             #        ", ".join([_formatRadius(radius) for radius in radii])))
 
-        print("Added {} curves.".format(len(gOuts)))
+        if gAdded:
+            print("Added {} curves.".format(len(gAdded)))
+        if gReplaced:
+            print("Replaced {} curves.".format(len(gReplaced)))
 
     sc.doc.Views.RedrawEnabled = True
 

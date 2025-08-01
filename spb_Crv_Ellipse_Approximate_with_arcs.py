@@ -1,16 +1,16 @@
 """
-The script creates a 4-arc approximation of an ellipse. This is useful when an
+The script creates a 4-arc or 8-arc approximation of an ellipse. This is useful when an
 ellipse or its NURBS equivalent are not wanted or allowed, as is the case of
 some CAM software.
 
-The method used is based on https://www.researchgate.net/publication/241719740_Approximating_an_ellipse_with_four_circular_arcs
+The 4-arc method is based on https://www.researchgate.net/publication/241719740_Approximating_an_ellipse_with_four_circular_arcs
 """
 
 #! python 2  Must be on a line less than 32.
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-250728-30: Created.
+250728-31: Created.
 
 TODO:
 """
@@ -41,10 +41,16 @@ class Opts:
         limit=Rhino.RhinoMath.ZeroTolerance)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.ModelUnitSystem)
 
-    key = 'iNumPtsToCheck'; keys.append(key)
-    values[key] = 31
-    riOpts[key] = ri.Custom.OptionInteger(values[key], lowerLimit=1, upperLimit=255)
+    key = 'b8Arcs_not4'; keys.append(key)
+    values[key] = True
+    names[key] = 'NumOfArcsInEntireEllipse'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], '4', '8')
     stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    #key = 'iNumPtsToCheck'; keys.append(key)
+    #values[key] = 31
+    #riOpts[key] = ri.Custom.OptionInteger(values[key], lowerLimit=1, upperLimit=255)
+    #stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bPolyCrvOutput_notArcs'; keys.append(key)
     values[key] = True
@@ -168,9 +174,9 @@ def getInput(bDebug=False):
         go.ClearCommandOptions()
         idxs_Opts.clear()
 
-        #addOption('fScaleFactor')
         addOption('fTol_IsEllipse')
-        addOption('iNumPtsToCheck')
+        addOption('b8Arcs_not4')
+        #addOption('iNumPtsToCheck')
         addOption('bPolyCrvOutput_notArcs')
         addOption('bReplace')
         addOption('bAddEllipticalDeg2NurbsIfInputIsNot')
@@ -219,24 +225,26 @@ def _formatDistance(fDistance, fPrecision=None):
     return "{:.{}f}".format(fDistance, fPrecision)
 
 
-def _formatRadius(radius):
-    if sc.doc.ModelUnitSystem == Rhino.UnitSystem.Millimeters:
-        return _formatDistance(radius)
+def _getMaxDev(curvesA, curveB):
 
-    return "{} {} [{} millimeters]".format(
-        _formatDistance(radius),
-        sc.doc.GetUnitSystemName(
-            modelUnits=True,
-            capitalize=False,
-            singular=False,
-            abbreviate=False),
-        _formatDistance(radius*Rhino.RhinoMath.UnitScale(
-            sc.doc.ModelUnitSystem, Rhino.UnitSystem.Millimeters),
-            fPrecision=4)
-        )
+    try: curvesA = list(curvesA)
+    except: curvesA = [curvesA]
+
+    if not isinstance(curveB, rg.Curve):
+        curveB = curveB.ToNurbsCurve()
+
+    devs = []
+
+    for curveA in curvesA:
+        rv = rg.Curve.GetDistancesBetweenCurves(curveA, curveB, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+        if not rv[0]:
+            raise Exception("GetDistancesBetweenCurves failed.")
+        devs.append(rv[1])
+
+    return max(devs)
 
 
-def create4ArcApproximation(a, b, iNumPtsToCheck):
+def create4ArcApproximation(a, b, iNumPtsToCheck=31):
 
     if a > b:
         bFlippedAB = False
@@ -300,19 +308,10 @@ def create4ArcApproximation(a, b, iNumPtsToCheck):
 
     domainLength = arc_con.AngleDomain.Length
     domainStart = arc_con.AngleDomain.T0
+    domainEnd = arc_con.AngleDomain.T1
 
-    Ts = []
-    devs = []
-    arcCrvs_AT = []
-    arcCrvs_BT = []
 
-    for i in range(1, (iNumPtsToCheck+1)):
-        sc.escape_test()
-
-        tangle = (float(i)/float(iNumPtsToCheck+1))*domainLength + domainStart
-        T = arc_con.PointAt(tangle)
-        #sc.doc.Objects.AddPoint(T)
-
+    def getArcsAtT(T):
         bSuccess, t = arcCrv_in.GetLocalTangentPoint(
             testPoint=T,
             seedParmameter=arcCrv_in.Domain.Mid)
@@ -364,36 +363,138 @@ def create4ArcApproximation(a, b, iNumPtsToCheck):
 
         arcCrv_BT = rg.ArcCurve(arc_BT)
 
-        rv = rg.Curve.GetDistancesBetweenCurves(arcCrv_AT, nc_RefEllipse, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
-        if not rv[0]:
-            raise Exception("GetDistancesBetweenCurves failed.")
-        devA = rv[1]
+        return arcCrv_AT, arcCrv_BT
 
-        rv = rg.Curve.GetDistancesBetweenCurves(arcCrv_BT, nc_RefEllipse, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
-        if not rv[0]:
-            raise Exception("GetDistancesBetweenCurves failed.")
-        devB = rv[1]
 
-        dev = max((devA, devB))
+    ##
 
-        Ts.append(T)
-        devs.append(dev)
-        arcCrvs_AT.append(arcCrv_AT)
-        arcCrvs_BT.append(arcCrv_BT)
+    # Equally-spaced method
+    Ts = []
+    devs = []
+    arcCrvs_AT = []
+    arcCrvs_BT = []
 
-        # Graph deviations.
-        #sc.doc.Objects.AddLine(
-        #    rg.Point3d(float(i), 0.0, 0.0),
-        #    rg.Point3d(float(i), dev, 0.0))
 
-    idxWinner = devs.index(min(devs))
+    def checkAllEquallySpacedPts():
 
-    #print("idxWinner: {}".format(idxWinner))
-    print("Max. dev. from ellipse: {}".format(_formatDistance(devs[idxWinner])))
+        for i in range(1, (iNumPtsToCheck+1)):
+            sc.escape_test()
 
-    T = Ts[idxWinner]
-    arcCrv_AT = arcCrvs_AT[idxWinner]
-    arcCrv_BT = arcCrvs_BT[idxWinner]
+            tangle = (float(i)/float(iNumPtsToCheck+1))*domainLength + domainStart
+            T = arc_con.PointAt(tangle)
+            #sc.doc.Objects.AddPoint(T)
+
+            arcCrv_AT, arcCrv_BT = getArcsAtT(T)
+
+            dev = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
+
+            Ts.append(T)
+            devs.append(dev)
+            arcCrvs_AT.append(arcCrv_AT)
+            arcCrvs_BT.append(arcCrv_BT)
+
+            # Graph deviations.
+            #sc.doc.Objects.AddLine(
+            #    rg.Point3d(float(i), 0.0, 0.0),
+            #    rg.Point3d(float(i), dev, 0.0))
+
+        idxWinner = devs.index(min(devs))
+
+        print("Index {} of {} pts".format(idxWinner, len(Ts)))
+        print("Max. dev. from ellipse: {}".format(_formatDistance(devs[idxWinner])))
+
+        T = Ts[idxWinner]
+        arcCrv_AT = arcCrvs_AT[idxWinner]
+        arcCrv_BT = arcCrvs_BT[idxWinner]
+
+        return arcCrv_AT, arcCrv_BT
+
+
+    #arcCrv_AT, arcCrv_BT = checkAllEquallySpacedPts()
+
+    ##
+
+
+    ##
+
+    # Binary search method
+
+    arcCrv_con = rg.ArcCurve(arc_con)
+    #sc.doc.Objects.AddCurve(arcCrv_con)
+
+    #sEval = "arc_con.AngleDomain"; print(sEval,'=',eval(sEval))
+    #sEval = "arcCrv_con.Domain"; print(sEval,'=',eval(sEval))
+
+    t_H = domainEnd
+    T_H = arc_con.PointAt(domainEnd)
+    arcCrv_AT, arcCrv_BT = getArcsAtT(T_H)
+    dev_H = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
+
+    t = arcCrv_con.DivideByLength(10.0*sc.doc.ModelAbsoluteTolerance, includeEnds=False)[0]
+    T_L = arcCrv_con.PointAt(t)
+    t_L = arc_con.ClosestParameter(T_L)
+    arcCrv_AT, arcCrv_BT = getArcsAtT(T_L)
+    dev_L = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
+
+    #sc.doc.Objects.AddPoint(T_L)
+
+    i = 0
+
+    while T_H.DistanceTo(T_L) > (0.1 * sc.doc.ModelAbsoluteTolerance):
+        sc.escape_test()
+
+        i += 1
+
+        #print('-'*20)
+        #sEval = "dev_H"; print(sEval,'=',eval(sEval))
+
+        t_MH = 0.75*t_H + 0.25*t_L
+        T_MH = arc_con.PointAt(t_MH)
+        arcCrv_AT, arcCrv_BT = getArcsAtT(T_MH)
+        dev_MH = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
+        #sEval = "dev_MH"; print(sEval,'=',eval(sEval))
+
+        t_MM = 0.5*t_H + 0.5*t_L
+        T_MM = arc_con.PointAt(t_MM)
+        arcCrv_AT, arcCrv_BT = getArcsAtT(T_MM)
+        dev_MM = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
+        #sEval = "dev_MM"; print(sEval,'=',eval(sEval))
+
+        t_ML = 0.25*t_H + 0.75*t_L
+        T_ML = arc_con.PointAt(t_ML)
+        arcCrv_AT, arcCrv_BT = getArcsAtT(T_ML)
+        dev_ML = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
+        #sEval = "dev_ML"; print(sEval,'=',eval(sEval))
+
+        #sEval = "dev_L"; print(sEval,'=',eval(sEval))
+
+        bChanged = False
+
+        if dev_MM < dev_MH < dev_H:
+            T_H = T_MH
+            t_H = t_MH
+            dev_H = dev_MH
+            bChanged = True
+
+        if dev_MM < dev_ML < dev_L:
+            T_L = T_ML
+            t_L = t_ML
+            dev_L = dev_ML
+            bChanged = True
+
+        if not bChanged:
+            raise Exception("No change.")
+
+    #print("Search took {} iterations.".format(i))
+
+    #print('-'*20)
+    t_MM = 0.5*t_H + 0.5*t_L
+    T_MM = arc_con.PointAt(t_MM)
+    arcCrv_AT, arcCrv_BT = getArcsAtT(T_MM)
+
+    #dev_MM = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
+    #sEval = "dev_MM"; print(sEval,'=',eval(sEval))
+
 
     if bFlippedAB:
         xform = rg.Transform.Mirror(
@@ -428,14 +529,193 @@ def create4ArcApproximation(a, b, iNumPtsToCheck):
         return arcCrv_AT, arcCrv_BT, arcCrv_AT_Dup, arcCrv_BT_Dup
 
 
+def create8ArcApproximation(a, b):
+
+    if abs(a - b) < sc.doc.ModelAbsoluteTolerance:
+        return
+
+    #if a > b:
+    #    bFlippedAB = False
+    #else:
+    #    a, b = b, a
+    #    bFlippedAB = True
+
+    nc_RefEllipse = rg.Ellipse(rg.Plane.WorldXY, radius1=a, radius2=b).ToNurbsCurve()
+
+    rA = (b**2)/a
+    rB = (a**2)/b
+
+    #sEval = "rA"; print(sEval,'=',eval(sEval))
+    #sEval = "rB"; print(sEval,'=',eval(sEval))
+
+    rF = 0.5*(rA + rB)
+
+    CA = rg.Point3d(a-rA, 0.0, 0.0)
+    circle_A = rg.Circle(center=CA, radius=rA)
+    #sc.doc.Objects.AddCircle(circle_A)
+
+    arc_A = rg.Arc(
+        circle=circle_A,
+        angleIntervalRadians=rg.Interval(
+            t0=0.0,
+            t1=math.pi/2.0))
+    #sc.doc.Objects.AddArc(arc_A)
+    arcCrv_A = rg.ArcCurve(arc_A)
+    #sc.doc.Objects.AddCurve(arcCrv_A)
+
+    CB = rg.Point3d(0.0, b-rB, 0.0)
+    circle_B = rg.Circle(center=CB, radius=rB)
+    #sc.doc.Objects.AddCircle(circle_B)
+
+    arc_B = rg.Arc(
+        circle=circle_B,
+        angleIntervalRadians=rg.Interval(
+            t0=0.0,
+            t1=math.pi/2))
+    #sc.doc.Objects.AddArc(arc_B)
+    arcCrv_B = rg.ArcCurve(arc_B)
+    #sc.doc.Objects.AddCurve(arcCrv_B)
+
+    arc_F = rg.Curve.CreateFillet(
+        curve0=arcCrv_A,
+        curve1=arcCrv_B,
+        radius=rF,
+        t0Base=arcCrv_A.Domain.Mid,
+        t1Base=arcCrv_B.Domain.Mid)
+
+    A = rg.Point3d(a, 0.0, 0.0)
+    B = rg.Point3d(0.0, b, 0.0)
+
+    def createFilletCurves(radius):
+        rv = rg.Curve.CreateFilletCurves(
+            curve0=arcCrv_A,
+            point0=A,
+            curve1=arcCrv_B,
+            point1=B,
+            radius=radius,
+            join=False,
+            trim=True,
+            arcExtension=True,
+            tolerance=0.1*sc.doc.ModelAbsoluteTolerance,
+            angleTolerance=0.1*sc.doc.ModelAngleToleranceRadians)
+        return rv
+
+    #sEval = "rv"; print(sEval,'=',eval(sEval))
+
+    #sc.doc.Objects.AddCurve(rv[2])
+
+    #sc.doc.Objects.AddArc(arc_F)
+
+    if rA > rB:
+        r_H = (b**2 + a*b) / (2*a)
+        r_L = (a**2 + a*b) / (2*b)
+    else:
+        r_H = (a**2 + a*b) / (2*b)
+        r_L = (b**2 + a*b) / (2*a)
+
+    dev_H = _getMaxDev(createFilletCurves(r_H), nc_RefEllipse)
+    dev_L = _getMaxDev(createFilletCurves(r_L), nc_RefEllipse)
+
+    i = 0
+
+    while (r_H - r_L) > 0.1 * sc.doc.ModelAbsoluteTolerance:
+        sc.escape_test()
+
+        i += 1
+
+        r_MH = 0.75*r_H + 0.25*r_L
+        dev_MH = _getMaxDev(createFilletCurves(r_MH), nc_RefEllipse)
+
+        r_MM = 0.5*r_H + 0.5*r_L
+        dev_MM = _getMaxDev(createFilletCurves(r_MM), nc_RefEllipse)
+
+        r_ML = 0.25*r_H + 0.75*r_L
+        dev_ML = _getMaxDev(createFilletCurves(r_ML), nc_RefEllipse)
+
+        bChanged = False
+
+        if dev_MM < dev_MH < dev_H:
+            r_H = r_MH
+            dev_H = dev_MH
+            bChanged = True
+
+        if dev_MM < dev_ML < dev_L:
+            r_L = r_ML
+            dev_L = dev_ML
+            bChanged = True
+
+        if not bChanged:
+            raise Exception("No change.")
+
+    r_MM = 0.5*r_H + 0.5*r_L
+
+    rv = createFilletCurves(r_MM)
+
+    if len(rv) != 3:
+        raise Exception("len(rv) : ".format(len(rv)))
+
+
+
+    #for c in rv:
+    #    sc.doc.Objects.AddCurve(c)
+
+    arcCrv_A, arcCrv_B, arcCrv_F = rv
+
+    arc_A = arcCrv_A.Arc
+    arc_B = arcCrv_B.Arc
+
+    arc_A.StartAngle = -arc_A.EndAngle
+    arcCrv_A = rg.ArcCurve(arc_A)
+    #sc.doc.Objects.AddCurve(arcCrv_A)
+
+    arc_B.EndAngle = math.pi - arc_B.StartAngle
+    arcCrv_B = rg.ArcCurve(arc_B)
+    #sc.doc.Objects.AddCurve(arcCrv_B)
+
+    arcCrv_A_Dup = rg.ArcCurve(arcCrv_A)
+    arcCrv_B_Dup = rg.ArcCurve(arcCrv_B)
+    arcCrv_F_Dup1 = rg.ArcCurve(arcCrv_F)
+
+    xform = rg.Transform.Mirror(
+        mirrorPlane=rg.Plane(
+            origin=rg.Point3d.Origin,
+            normal=rg.Vector3d(0.0, 1.0, 0.0)))
+
+    bSuccess = arcCrv_B_Dup.Transform(xform)
+    bSuccess = arcCrv_F_Dup1.Transform(xform)
+
+    arcCrv_F_Dup2 = rg.ArcCurve(arcCrv_F)
+    arcCrv_F_Dup3 = rg.ArcCurve(arcCrv_F_Dup1)
+
+    xform = rg.Transform.Mirror(
+        mirrorPlane=rg.Plane(
+            origin=rg.Point3d.Origin,
+            normal=rg.Vector3d(1.0, 0.0, 0.0)))
+
+    bSuccess = arcCrv_A_Dup.Transform(xform)
+    bSuccess = arcCrv_F_Dup2.Transform(xform)
+    bSuccess = arcCrv_F_Dup3.Transform(xform)
+
+    return (
+        arcCrv_A,
+        arcCrv_F,
+        arcCrv_B,
+        arcCrv_F_Dup2,
+        arcCrv_A_Dup,
+        arcCrv_F_Dup3,
+        arcCrv_B_Dup,
+        arcCrv_F_Dup1
+        )
+
+
 def main():
 
     objrefs = getInput()
     if objrefs is None: return
 
-    #fScaleFactor = Opts.values['fScaleFactor']
     fTol_IsEllipse = Opts.values['fTol_IsEllipse']
-    iNumPtsToCheck = Opts.values['iNumPtsToCheck']
+    b8Arcs_not4 = Opts.values['b8Arcs_not4']
+    #iNumPtsToCheck = Opts.values['iNumPtsToCheck']
     bPolyCrvOutput_notArcs = Opts.values['bPolyCrvOutput_notArcs']
     bAddEllipticalDeg2NurbsIfInputIsNot = Opts.values['bAddEllipticalDeg2NurbsIfInputIsNot']
     bReplace = Opts.values['bReplace']
@@ -444,6 +724,7 @@ def main():
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
 
+    fDevs = []
     gAdded = []
     gReplaced = []
 
@@ -489,14 +770,19 @@ def main():
         a = ellipse.Radius1
         b = ellipse.Radius2
 
-        arcCrvs_Res = create4ArcApproximation(a, b, iNumPtsToCheck)
-        #sEval = "arcCrvs_Res"; print(sEval,'=',eval(sEval))
+        if b8Arcs_not4:
+            arcCrvs_Res = create8ArcApproximation(a, b)
+        else:
+            arcCrvs_Res = create4ArcApproximation(a, b)
 
         if arcCrvs_Res is None:
             continue
 
         plane = ellipse.Plane
         xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, plane)
+
+        fDev = _getMaxDev((arcCrvs_Res[0], arcCrvs_Res[0]), ellipse)
+        fDevs.append(fDev)
 
         if bPolyCrvOutput_notArcs:
             polycrv = rg.Curve.JoinCurves(arcCrvs_Res)[0]
@@ -533,22 +819,16 @@ def main():
                 if gOut != gOut.Empty:
                     gAdded.append(gOut)
 
-
-
     if bEcho:
-        #if len(objrefs) > 1:
-            #if len(radii) == 0:
-            #    print("None of the curves are arc-shaped.")
-            #elif len(objrefs) > 10:
-            #    print("Arc-shaped curves found.")
-            #else:
-            #    print("Curves' radii: {}".format(
-            #        ", ".join([_formatRadius(radius) for radius in radii])))
-
+        ss = []
         if gAdded:
-            print("Added {} curves.".format(len(gAdded)))
+            ss.append("Added {} curves.".format(len(gAdded)))
         if gReplaced:
-            print("Replaced {} curves.".format(len(gReplaced)))
+            ss.append("Replaced {} curves.".format(len(gReplaced)))
+        if fDevs:
+            ss.append("{} maximum deviation.".format(_formatDistance(max(fDevs))))
+
+        print(*ss)
 
     sc.doc.Views.RedrawEnabled = True
 

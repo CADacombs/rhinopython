@@ -10,7 +10,7 @@ The 4-arc method is based on https://www.researchgate.net/publication/241719740_
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-250728-31: Created.
+250728-0801: Created.
 
 TODO:
 """
@@ -225,19 +225,47 @@ def _formatDistance(fDistance, fPrecision=None):
     return "{:.{}f}".format(fDistance, fPrecision)
 
 
+def _is_iterable(obj):
+    try:
+        iter(obj)
+        return True
+    except TypeError:
+        return False
+
+
+def _joinCrvs(curves_In):
+    rv = rg.Curve.JoinCurves(curves_In)
+    if len(rv) != 1:
+        raise Exception("JoinCurves produced {} curves.".format(len(rv)))
+    return rv[0]
+
+
 def _getMaxDev(curvesA, curveB):
 
-    try: curvesA = list(curvesA)
-    except: curvesA = [curvesA]
+    if _is_iterable(curvesA):
+        crv_WIP = _joinCrvs(curvesA)
+    else:
+        crv_WIP = curvesA.DuplicateCurve()
 
     if not isinstance(curveB, rg.Curve):
         curveB = curveB.ToNurbsCurve()
+
+    rv = rg.Curve.GetDistancesBetweenCurves(crv_WIP, curveB, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
+
+    crv_WIP.Dispose()
+
+    if not rv[0]:
+        raise Exception("GetDistancesBetweenCurves failed.")
+
+    return rv[1]
+
 
     devs = []
 
     for curveA in curvesA:
         rv = rg.Curve.GetDistancesBetweenCurves(curveA, curveB, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
         if not rv[0]:
+            for c in curvesA: sc.doc.Objects.AddCurve(c)
             raise Exception("GetDistancesBetweenCurves failed.")
         devs.append(rv[1])
 
@@ -385,8 +413,8 @@ def create4ArcApproximation(a, b, iNumPtsToCheck=31):
             #sc.doc.Objects.AddPoint(T)
 
             arcCrv_AT, arcCrv_BT = getArcsAtT(T)
-
             dev = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
+
 
             Ts.append(T)
             devs.append(dev)
@@ -492,7 +520,7 @@ def create4ArcApproximation(a, b, iNumPtsToCheck=31):
     T_MM = arc_con.PointAt(t_MM)
     arcCrv_AT, arcCrv_BT = getArcsAtT(T_MM)
 
-    #dev_MM = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
+    dev_MM = _getMaxDev((arcCrv_AT, arcCrv_BT), nc_RefEllipse)
     #sEval = "dev_MM"; print(sEval,'=',eval(sEval))
 
 
@@ -524,9 +552,9 @@ def create4ArcApproximation(a, b, iNumPtsToCheck=31):
     #sc.doc.Objects.AddCurve(arcCrv_BT_Dup)
 
     if bFlippedAB:
-        return arcCrv_BT, arcCrv_AT, arcCrv_BT_Dup, arcCrv_AT_Dup
+        return (arcCrv_BT, arcCrv_AT, arcCrv_BT_Dup, arcCrv_AT_Dup), dev_MM
     else:
-        return arcCrv_AT, arcCrv_BT, arcCrv_AT_Dup, arcCrv_BT_Dup
+        return (arcCrv_AT, arcCrv_BT, arcCrv_AT_Dup, arcCrv_BT_Dup), dev_MM
 
 
 def create8ArcApproximation(a, b):
@@ -534,11 +562,11 @@ def create8ArcApproximation(a, b):
     if abs(a - b) < sc.doc.ModelAbsoluteTolerance:
         return
 
-    #if a > b:
-    #    bFlippedAB = False
-    #else:
-    #    a, b = b, a
-    #    bFlippedAB = True
+    if a > b:
+        bFlippedAB = False
+    else:
+        a, b = b, a
+        bFlippedAB = True
 
     nc_RefEllipse = rg.Ellipse(rg.Plane.WorldXY, radius1=a, radius2=b).ToNurbsCurve()
 
@@ -574,47 +602,72 @@ def create8ArcApproximation(a, b):
             t1=math.pi/2))
     #sc.doc.Objects.AddArc(arc_B)
     arcCrv_B = rg.ArcCurve(arc_B)
+
+    if arcCrv_B.PointAtStart.X > a:
+        bSuccess, t = arcCrv_B.ClosestPoint(arc_A.Center)
+        if not bSuccess:
+            raise Exception("ClosestPoint failed.")
+        arcCrv_B = arcCrv_B.Trim(t, arcCrv_B.Domain.T1)
+
     #sc.doc.Objects.AddCurve(arcCrv_B)
 
-    arc_F = rg.Curve.CreateFillet(
-        curve0=arcCrv_A,
-        curve1=arcCrv_B,
-        radius=rF,
-        t0Base=arcCrv_A.Domain.Mid,
-        t1Base=arcCrv_B.Domain.Mid)
+    #arc_F = rg.Curve.CreateFillet(
+    #    curve0=arcCrv_A,
+    #    curve1=arcCrv_B,
+    #    radius=rF,
+    #    t0Base=arcCrv_A.Domain.Mid,
+    #    t1Base=arcCrv_B.Domain.Mid)
+    #sc.doc.Objects.AddArc(arc_F)
 
     A = rg.Point3d(a, 0.0, 0.0)
     B = rg.Point3d(0.0, b, 0.0)
 
+
     def createFilletCurves(radius):
-        rv = rg.Curve.CreateFilletCurves(
-            curve0=arcCrv_A,
-            point0=A,
-            curve1=arcCrv_B,
-            point1=B,
-            radius=radius,
-            join=False,
-            trim=True,
-            arcExtension=True,
-            tolerance=0.1*sc.doc.ModelAbsoluteTolerance,
-            angleTolerance=0.1*sc.doc.ModelAngleToleranceRadians)
-        return rv
+        for point0 in arcCrv_A.PointAtMid, arcCrv_A.PointAtStart, arcCrv_A.PointAtEnd:
+            for point1 in arcCrv_B.PointAtMid, arcCrv_B.PointAtEnd, arcCrv_B.PointAtStart:
+                rv = rg.Curve.CreateFilletCurves(
+                    curve0=arcCrv_A,
+                    point0=point0,
+                    curve1=arcCrv_B,
+                    point1=point1,
+                    radius=radius,
+                    join=False,
+                    trim=True,
+                    arcExtension=True,
+                    tolerance=0.1*sc.doc.ModelAbsoluteTolerance,
+                    angleTolerance=0.1*sc.doc.ModelAngleToleranceRadians)
+                if len(rv) == 0:
+                    raise Exception("No curves.")
+                for c in rv:
+                    if not c.IsValid:
+                        raise Exception("Curve from CreateFilletCurves is invalid.")
+                for c in rv:
+                    if c.AngleDegrees > 90.0:
+                        #print("Curve of {} degrees found in CreateFilletCurves with radius of {} and point0 at {} and point1 at {}.".format(
+                        #    c.AngleDegrees, radius, point0, point1))
+                        for c in rv:
+                            c.Dispose()
+                        break
+                else:
+                    # Success.
+                    return rv
+
+        raise Exception("CreateFilletCurves failed to provide all good curves < 90 degrees.")
+
 
     #sEval = "rv"; print(sEval,'=',eval(sEval))
 
     #sc.doc.Objects.AddCurve(rv[2])
 
-    #sc.doc.Objects.AddArc(arc_F)
+    r_H = (a**2 + a*b) / (2*b)
+    r_L = (b**2 + a*b) / (2*a)
 
-    if rA > rB:
-        r_H = (b**2 + a*b) / (2*a)
-        r_L = (a**2 + a*b) / (2*b)
-    else:
-        r_H = (a**2 + a*b) / (2*b)
-        r_L = (b**2 + a*b) / (2*a)
+    crvs_H = createFilletCurves(r_H)
+    dev_H = _getMaxDev(crvs_H, nc_RefEllipse)
 
-    dev_H = _getMaxDev(createFilletCurves(r_H), nc_RefEllipse)
-    dev_L = _getMaxDev(createFilletCurves(r_L), nc_RefEllipse)
+    crvs_L = createFilletCurves(r_L)
+    dev_L = _getMaxDev(crvs_L, nc_RefEllipse)
 
     i = 0
 
@@ -624,36 +677,86 @@ def create8ArcApproximation(a, b):
         i += 1
 
         r_MH = 0.75*r_H + 0.25*r_L
-        dev_MH = _getMaxDev(createFilletCurves(r_MH), nc_RefEllipse)
+        crvs_MH = createFilletCurves(r_MH)
+        dev_MH = _getMaxDev(crvs_MH, nc_RefEllipse)
 
         r_MM = 0.5*r_H + 0.5*r_L
-        dev_MM = _getMaxDev(createFilletCurves(r_MM), nc_RefEllipse)
+        crvs_MM = createFilletCurves(r_MM)
+        dev_MM = _getMaxDev(crvs_MM, nc_RefEllipse)
 
         r_ML = 0.25*r_H + 0.75*r_L
-        dev_ML = _getMaxDev(createFilletCurves(r_ML), nc_RefEllipse)
+        crvs_ML = createFilletCurves(r_ML)
+        dev_ML = _getMaxDev(crvs_ML, nc_RefEllipse)
 
         bChanged = False
 
         if dev_MM < dev_MH < dev_H:
             r_H = r_MH
             dev_H = dev_MH
+            for c in crvs_H: c.Dispose()
+            crvs_H = crvs_MH
+            bChanged = True
+        elif dev_MM < dev_H and dev_MM < dev_MH:
+            r_H = r_MH
+            dev_H = dev_MH
+            for c in crvs_H: c.Dispose()
+            crvs_H = crvs_MH
             bChanged = True
 
-        if dev_MM < dev_ML < dev_L:
+        if dev_MM < dev_L and dev_MM < dev_ML:
             r_L = r_ML
             dev_L = dev_ML
+            for c in crvs_L: c.Dispose()
+            crvs_L = crvs_ML
             bChanged = True
 
         if not bChanged:
-            raise Exception("No change.")
+            if dev_ML < dev_MH:
+                r_H = r_MH
+                dev_H = dev_MH
+                for c in crvs_H: c.Dispose()
+                crvs_H = crvs_MH
+                bChanged = True
+            elif dev_MH < dev_ML:
+                r_L = r_ML
+                dev_L = dev_ML
+                for c in crvs_L: c.Dispose()
+                crvs_L = crvs_ML
+                bChanged = True
+
+            if not bChanged:
+                sEval = "dev_H"; print(sEval,'=',eval(sEval))
+                sEval = "dev_MH"; print(sEval,'=',eval(sEval))
+                sEval = "dev_MM"; print(sEval,'=',eval(sEval))
+                sEval = "dev_ML"; print(sEval,'=',eval(sEval))
+                sEval = "dev_L"; print(sEval,'=',eval(sEval))
+                
+                #for c in crvs_H: sc.doc.Objects.AddCurve(c)
+                
+                print("Iterations: {}".format(i))
+                
+                print("Eccentricy of ellipse may be too large for this script.")
+                return
+
+        for c in crvs_MH: c.Dispose()
+        for c in crvs_MM: c.Dispose()
+        for c in crvs_ML: c.Dispose()
+
+
+    print("Search took {} iterations.".format(i))
 
     r_MM = 0.5*r_H + 0.5*r_L
+
+    #sc.doc.Objects.AddCurve(arcCrv_A)
+    #sc.doc.Objects.AddCurve(arcCrv_B)
+    #return
 
     rv = createFilletCurves(r_MM)
 
     if len(rv) != 3:
         raise Exception("len(rv) : ".format(len(rv)))
 
+    dev_MM = _getMaxDev(rv, nc_RefEllipse)
 
 
     #for c in rv:
@@ -661,8 +764,24 @@ def create8ArcApproximation(a, b):
 
     arcCrv_A, arcCrv_B, arcCrv_F = rv
 
+    if bFlippedAB:
+        xform = rg.Transform.Mirror(
+            mirrorPlane=rg.Plane(
+                origin=rg.Point3d.Origin,
+                normal=rg.Vector3d(-1.0, 1.0, 0.0)))
+
+        arcCrv_A.Transform(xform)
+        arcCrv_B.Transform(xform)
+        arcCrv_F.Transform(xform)
+
+
+
     arc_A = arcCrv_A.Arc
     arc_B = arcCrv_B.Arc
+
+    #for c in rv:
+    #    sc.doc.Objects.AddCurve(c)
+    #return
 
     arc_A.StartAngle = -arc_A.EndAngle
     arcCrv_A = rg.ArcCurve(arc_A)
@@ -696,7 +815,7 @@ def create8ArcApproximation(a, b):
     bSuccess = arcCrv_F_Dup2.Transform(xform)
     bSuccess = arcCrv_F_Dup3.Transform(xform)
 
-    return (
+    return ((
         arcCrv_A,
         arcCrv_F,
         arcCrv_B,
@@ -705,7 +824,9 @@ def create8ArcApproximation(a, b):
         arcCrv_F_Dup3,
         arcCrv_B_Dup,
         arcCrv_F_Dup1
-        )
+        ),
+            dev_MM
+            )
 
 
 def main():
@@ -771,18 +892,17 @@ def main():
         b = ellipse.Radius2
 
         if b8Arcs_not4:
-            arcCrvs_Res = create8ArcApproximation(a, b)
+            rv = create8ArcApproximation(a, b)
         else:
-            arcCrvs_Res = create4ArcApproximation(a, b)
+            rv = create4ArcApproximation(a, b)
 
-        if arcCrvs_Res is None:
+        if rv is None:
             continue
 
-        plane = ellipse.Plane
-        xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, plane)
-
-        fDev = _getMaxDev((arcCrvs_Res[0], arcCrvs_Res[0]), ellipse)
+        arcCrvs_Res, fDev = rv
         fDevs.append(fDev)
+
+        xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, ellipse.Plane)
 
         if bPolyCrvOutput_notArcs:
             polycrv = rg.Curve.JoinCurves(arcCrvs_Res)[0]

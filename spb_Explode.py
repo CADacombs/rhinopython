@@ -18,8 +18,10 @@ G2 discontinuous is where at least one of the following two items is true:
 This script explode polycurves to their actual segments.
 
 Blocks
-Same function as _Explode, except also report the resultant object types.
-(_Explode only reports the number of objects.)
+Same function as _Explode, except:
+    Also report the resultant object types. (_Explode only reports the number of objects.)
+    Display Color, Linetype, Print Color, Print Width, or Section Style of block objects that are
+    set to ByParent are set to the instances setting after this script execution.
 """
 
 #! python 2  Must be on a line number less than 32.
@@ -32,6 +34,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 231113: Now, polyline curve segments in polycurves are exploded immediately.
 250113: Curves are now exploded similar to that by _Explode, except
         NurbsCurves are exploded to G2 (per Rhino (see above)) instead of Gsmooth_continuous.
+250811: Updated notes above concerning block objects that are ByParent before this script execution.
 """
 
 import Rhino

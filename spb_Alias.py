@@ -20,6 +20,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         editMacro no longer asks for confirmation when only 1 macro is edited.
 250210,13: Fixed codecs-related problems due to behavior of Python's readline vs. Rhino's _-Options _Aliases _Export.
 250422: Some alias name/macro searches are now comma delimited AND.
+250814: Refactored and added a couple of options.
 """
 
 import Rhino
@@ -32,11 +33,21 @@ import re
 
 CAL = Rhino.ApplicationSettings.CommandAliasList
 
-sCmdPrefix = 'x'
-sDefaultPyFolderPath = "C:\\My\\Rhino\\PythonScript"
-sDefaultAliasExportFolder = "C:\\My\\Rhino\\Aliases"
+_sCmdPrefix = 'x'
+_sDefaultPyFolderPath = "C:\\My\\Rhino\\PythonScript"
+_sDefaultAliasExportFolder = "C:\\My\\Rhino\\Aliases"
 
-sOptions = (
+_ss_CommonMacroText = (
+    "noecho",
+    "loadscript",
+    "runpythonscript",
+    "runscript",
+    "scripteditor",
+    )
+
+_sStringForAll = "__AllValues__"
+
+_sOptions = (
     'Count',
     'AddPy',
     'AddLines',
@@ -46,6 +57,8 @@ sOptions = (
     'EditAlias',
     'EditMacro',
     'ListPerSubstring',
+    'ListRunScript',
+    'ListRunPythonScript',
     'ListPyNotFound',
     'ListDupMacros',
     'ReassignPy',
@@ -62,10 +75,10 @@ def getOption():
     
     go = ri.Custom.GetOption()
     go.SetCommandPrompt('Alias')
-    go.SetCommandPromptDefault(defaultValue=sOptions[idxOpt_Default])
+    go.SetCommandPromptDefault(defaultValue=_sOptions[idxOpt_Default])
     go.AcceptNothing(True)
     # for idxOpt of 1 - 5, not 0.
-    for sDirection in sOptions:
+    for sDirection in _sOptions:
         go.AddOption(sDirection)
     #    for s in listPropOpts: gs.AddOption(s)
     res = go.Get()
@@ -80,7 +93,7 @@ def getOption():
     
     Rhino.RhinoApp.SetCommandPrompt("Alias")
     
-    return sOptions[idxOpt]
+    return _sOptions[idxOpt]
 
 
 def fileBaseName(sFileFullPath):
@@ -101,10 +114,10 @@ def addAlias(sScriptFileBaseName, bOverwrite=False):
     sTitle = "Add Alias"
     
     if sScriptFileBaseName[:4] == 'spb_':
-        sAlias = sCmdPrefix + sScriptFileBaseName[4].capitalize() + sScriptFileBaseName[5:]
-    elif sScriptFileBaseName[0] != sCmdPrefix:
+        sAlias = _sCmdPrefix + sScriptFileBaseName[4].capitalize() + sScriptFileBaseName[5:]
+    elif sScriptFileBaseName[0] != _sCmdPrefix:
         # Add sCmdPrefix to beginning of command to distinguish them from Rhino commands, etc.
-        sAlias = sCmdPrefix + sScriptFileBaseName[0].capitalize() + sScriptFileBaseName[1:]
+        sAlias = _sCmdPrefix + sScriptFileBaseName[0].capitalize() + sScriptFileBaseName[1:]
     else:
         sAlias = sScriptFileBaseName[:]
     
@@ -143,7 +156,7 @@ def addAliases():
         sFileFullPaths = rs.OpenFileNames(
                 title="Add Alias",
                 filter="python scripts|*.py||",
-                folder=sDefaultPyFolderPath,
+                folder=_sDefaultPyFolderPath,
         )
         if len(sFileFullPaths) == 0: return
     except:
@@ -287,50 +300,48 @@ def _areAllStringsInText(text, strings):
 
 
 def _removeCommonMacroTextFromString(s_In):
-    ss_ToRemove = (
-        "noecho",
-        "loadscript",
-        "runpythonscript",
-        "runscript",
-        "scripteditor",
-        )
-
     s_Out = s_In
-    for s_ToRemove in ss_ToRemove:
+    for s_ToRemove in _ss_CommonMacroText:
         s_Out = _replace_string_case_insensitive(s_Out, s_ToRemove, "")
 
     return s_Out
 
 
-def getAliasMacroLines(sTitle, bAllOpt=False):
+def getSubstringToSearch(sTitle, bAllOpt=False):
     """
     """
 
     if bAllOpt:
-        sStringForAll = "__ListAll__"
     
-        sSearchSubString = rs.StringBox(
-                message="Enter substring to find"
-                "\n\nSearch is case insensitive."
-                "\nNoEcho, RunPythonScript, etc., are ignored."
-                "\nUse commas to delimit strings for an AND search.",
-                default_value=sStringForAll,
-                title=sTitle)
+        sSubstring = rs.StringBox(
+            message="Enter substring to find"
+            "\n\nSearch is case insensitive."
+            "\nUse commas to delimit strings for an AND search."
+            "\nNoEcho, RunPythonScript, etc., are ignored."
+            "\n{} will include all strings.".format(_sStringForAll)
+            ,
+            default_value=_sStringForAll,
+            title=sTitle)
     else:
-        sSearchSubString = rs.StringBox(
-                message="Enter substring to find",
-                default_value=None,
-                title=sTitle)
+        sSubstring = rs.StringBox(
+            message="Enter substring to find",
+            default_value=None,
+            title=sTitle)
 
-    if sSearchSubString is None: return
-    
-    
+    return sSubstring
+
+
+def getAliasMacroLines(sSubstring_toInclude=None, bIgnoreCommonMacroText=True):
+    """
+    """
+
+
     sLines = []
     sNames = list(CAL.GetNames())
     sNames.sort(key=str.lower)
 
 
-    if bAllOpt and (sSearchSubString == sStringForAll):
+    if sSubstring_toInclude == _sStringForAll:
         for sName in sNames:
             sMacro = CAL.GetMacro(sName)
             sLine = sName + ' ' + sMacro
@@ -341,17 +352,70 @@ def getAliasMacroLines(sTitle, bAllOpt=False):
         print("Found {} aliases.".format(len(sLines)))
         return sLines
 
-    ssSearchSubString = sSearchSubString.split(',')
+
+    ssSearchSubString = sSubstring_toInclude.split(',')
+
+
+    def addLine(sName, sMacro):
+        sLine = sName + ' ' + sMacro
+        sLines.append(sLine)
+
+
+    if bIgnoreCommonMacroText:
+        for sName in sNames:
+            sMacro = CAL.GetMacro(sName)
+            if _areAllStringsInText(sName, ssSearchSubString):
+                addLine(sName, sMacro)
+                continue
+
+            sMacro_Cleaned = _removeCommonMacroTextFromString(sMacro)
+
+            if _areAllStringsInText(sMacro_Cleaned, ssSearchSubString):
+                addLine(sName, sMacro)
+                continue
+
+    else:
+        for sName in sNames:
+            sMacro = CAL.GetMacro(sName)
+            if _areAllStringsInText(sName, ssSearchSubString):
+                addLine(sName, sMacro)
+                continue
+
+            if _areAllStringsInText(sMacro, ssSearchSubString):
+                addLine(sName, sMacro)
+                continue
+
+    if not sLines:
+        print("Substring not found.")
+        return
+    print("Found {} aliases with substring {}.".format(
+        len(sLines),
+        sSubstring_toInclude))
+
+    return sLines
+
+
+def getAliasMacroLines_AllWithSubstring(sSubstring="script"):
+    """
+    sSubstring: ',' in sSubstring will delimit the string.
+
+    Unlike another function in this script, macros to check do not have 'RunPythonScript', etc., removed.
+    """
+
+    sLines = []
+    sNames = list(CAL.GetNames())
+    sNames.sort(key=str.lower)
+
+
+    ssSearchSubString = sSubstring.split(',')
 
     # Only include macro lines with entered substring.
     for sName in sNames:
         sMacro = CAL.GetMacro(sName)
 
-        sMacro_Cleaned = _removeCommonMacroTextFromString(sMacro)
-
         if _areAllStringsInText(sName, ssSearchSubString):
             pass
-        elif _areAllStringsInText(sMacro_Cleaned, ssSearchSubString):
+        elif _areAllStringsInText(sMacro, ssSearchSubString):
             pass
         else:
             continue
@@ -364,7 +428,7 @@ def getAliasMacroLines(sTitle, bAllOpt=False):
         return
     print("Found {} aliases with substring {}.".format(
         len(sLines),
-        sSearchSubString))
+        sSubstring))
 
     return sLines
 
@@ -375,7 +439,12 @@ def editLines():
 
     sTitle = "Edit Aliase/Macro Lines"
 
-    sLines = getAliasMacroLines(sTitle, bAllOpt=False)
+    sSubstring_toInclude = getSubstringToSearch(sTitle, bAllOpt=False)
+    if sSubstring_toInclude is None: return
+
+    sLines = getAliasMacroLines(
+        sSubstring_toInclude=sSubstring_toInclude,
+        bIgnoreCommonMacroText=True)
     if not sLines: return
 
     bSuccess, sMultiLines_FromEdit = Rhino.UI.Dialogs.ShowEditBox(
@@ -672,16 +741,23 @@ def exportCustomList(sExport):
         f.write('\n'.join(sExport))
 
 
-def listAliasesMacrosWithSubstring():
+def listAliasesMacrosWithSubstring(sSubstring_toInclude=None, bIgnoreCommonMacroText=True):
     """
     """
 
-    sLines = getAliasMacroLines("List Aliases", bAllOpt=True)
+    if sSubstring_toInclude is None:
+        sSubstring_toInclude = getSubstringToSearch("List Aliases", bAllOpt=True)
+        if sSubstring_toInclude is None: return
+
+    sLines = getAliasMacroLines(
+        sSubstring_toInclude=sSubstring_toInclude,
+        bIgnoreCommonMacroText=bIgnoreCommonMacroText,
+        )
     if not sLines: return
 
     for sLine in sLines:
         print(sLine)
-    
+
     if len(sLines) < CAL.Count:
         print("{} alias/macro lines listed out of {} total.".format(len(sLines), CAL.Count))
     else:
@@ -698,11 +774,10 @@ def listAliasesMacrosWithSubstringForDelete():
     """
     
     sTitle = "List Aliases for Delete"
-    sStringForAll = "__ListAll__"
     
     sSearchSubString = rs.StringBox(
             message="Enter substring to find or Enter (or Cancel) to list all",
-            default_value=sStringForAll,
+            default_value=_sStringForAll,
             title=sTitle)
     
     if sSearchSubString is None: return
@@ -713,7 +788,7 @@ def listAliasesMacrosWithSubstringForDelete():
     sNames.sort(key=str.lower)
     
     
-    if sSearchSubString == sStringForAll:
+    if sSearchSubString == _sStringForAll:
         for sName in sNames:
             sMacro = CAL.GetMacro(sName)
             sLine = sName + ' ' + sMacro
@@ -883,7 +958,7 @@ def reAssignMacro():
         sFileFullPath = rs.OpenFileName(
                 title="Reassign Macro for Alias {}".format(sAliasName_Sel),
                 filter="python scripts|*.py||",
-                folder=sDefaultPyFolderPath,
+                folder=_sDefaultPyFolderPath,
         )
         if len(sFileFullPath) == 0: return
         
@@ -946,7 +1021,7 @@ def compare2AliasExports():
         sFilePaths_In = rs.OpenFileNames(
             title=sTitle,
             filter="python scripts|*.txt||",
-            folder=sDefaultAliasExportFolder,
+            folder=_sDefaultAliasExportFolder,
         )
     except:
         return
@@ -963,7 +1038,7 @@ def compare2AliasExports():
             sFilePaths_In = rs.OpenFileNames(
                     title=sTitle,
                     filter="python scripts|*.txt||",
-                    folder=sDefaultAliasExportFolder,
+                    folder=_sDefaultAliasExportFolder,
             )
             if len(sFilePaths_In) == 0: return
             sFilePath_B = sFilePaths_In[0]
@@ -1038,7 +1113,7 @@ def exportDefault():
         environ.get("USERNAME"),
         datetime.today().strftime('%y%m%d'))
 
-    sPath = '"' + sDefaultAliasExportFolder + '\\' + sFileName + '"'
+    sPath = '"' + _sDefaultAliasExportFolder + '\\' + sFileName + '"'
 
     script = "! _-Options _Aliases _Export {} _EnterEnd".format(sPath)
 
@@ -1052,7 +1127,7 @@ def exportBrowse():
 
 def openAliasFolder():
     import subprocess
-    subprocess.Popen('explorer "{}"'.format(sDefaultAliasExportFolder))
+    subprocess.Popen('explorer "{}"'.format(_sDefaultAliasExportFolder))
 
 
 def main():
@@ -1080,7 +1155,17 @@ def main():
     elif sOption == 'EditMacro':
         editMacro()
     elif sOption == 'ListPerSubstring':
-        listAliasesMacrosWithSubstring()
+        listAliasesMacrosWithSubstring(
+            sSubstring_toInclude=None,
+            bIgnoreCommonMacroText=True)
+    elif sOption == 'ListRunScript':
+        listAliasesMacrosWithSubstring(
+            sSubstring_toInclude='RunScript',
+            bIgnoreCommonMacroText=False)
+    elif sOption == 'ListRunPythonScript':
+        listAliasesMacrosWithSubstring(
+            sSubstring_toInclude='RunPythonScript',
+            bIgnoreCommonMacroText=False)
     elif sOption == 'ListPyNotFound':
         listPythonScriptsNotFound()
     elif sOption == 'ListDupMacros':

@@ -22,8 +22,9 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210316: Modified and option default value.
 210327: Added Opts.  Refactored.  Changed tolerances used by TryGet... methods.  Added more info to printed output.
 210328: Added normal vector to printed feedback of plane.
-210703: Added bOnlyCenterPtForSphere and bOnlyMainAxisForOtherRev.
+210703: Added some options.
 250326: Now prints value of vector of a cylinder's axis.
+250826-27: Bug fix. Added printed center point for sphere. Modified some options.
 """
 
 import Rhino
@@ -39,8 +40,12 @@ import xPrimitiveShape
 import math
 
 
-MYZERO = 1e-6 * Rhino.RhinoMath.UnitScale(
-    Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+_MY_ZERO = 1e-6 * Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+
+def _decimalPlacesForZero():
+    return int(abs(math.log10(abs(_MY_ZERO)))) + 1
+
+#_DECIMAL_PLACES_FOR_0 = int(abs(math.log10(abs(_MY_ZERO)))) + 1
 
 
 class Opts:
@@ -58,18 +63,13 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'bAddCrvs'; keys.append(key)
+    key = 'bAddWireframe'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'bOnlyCenterPtForSphere'; keys.append(key)
-    values[key] = True
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'bOnlyMainAxisForOtherRev'; keys.append(key)
-    values[key] = True
+    key = 'bIncludeArcCrvsForRoundShapes'; keys.append(key)
+    values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -175,10 +175,9 @@ def getInput():
             def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
             addOption('fShapeTol')
-            addOption('bAddCrvs')
-            if Opts.values['bAddCrvs']:
-                addOption('bOnlyCenterPtForSphere')
-                addOption('bOnlyMainAxisForOtherRev')
+            addOption('bAddWireframe')
+            if Opts.values['bAddWireframe']:
+                addOption('bIncludeArcCrvsForRoundShapes')
             addOption('bEcho')
             addOption('bDebug')
 
@@ -215,9 +214,8 @@ def getInput():
                     return (
                         rgFace,
                         Opts.values['fShapeTol'],
-                        Opts.values['bAddCrvs'],
-                        Opts.values['bOnlyCenterPtForSphere'],
-                        Opts.values['bOnlyMainAxisForOtherRev'],
+                        Opts.values['bAddWireframe'],
+                        Opts.values['bIncludeArcCrvsForRoundShapes'],
                         Opts.values['bEcho'],
                         Opts.values['bDebug'],
                         )
@@ -235,61 +233,60 @@ def getInput():
                     break
 
 
-def _formatDistance(fDistance, fPrecision=None):
-    if fDistance is None:
-        return "(None)"
-    if fDistance == Rhino.RhinoMath.UnsetValue:
-        return "(Infinite)"
-    if fPrecision is None:
-        fPrecision = sc.doc.ModelDistanceDisplayPrecision
-
-    if fDistance < 10.0**(-(fPrecision-1)):
-        # For example, if fDistance is 1e-5 and fPrecision == 5,
-        # the end of this script would display only one digit.
-        # Instead, this return displays 2 digits.
-        return "{:.2e}".format(fDistance)
-
-    return "{:.{}f}".format(fDistance, fPrecision)
-
-
-def printOutput(rgShape, fTol):
+def createReport(rgShape, fTol):
     """
     """
-
-    def decimalPlacesForZero():
-        return int(abs(math.log10(abs(MYZERO)))) + 1
-
-    def myround(x):
-        return round(x, decimalPlacesForZero())
 
     if isinstance(rgShape, rg.Plane):
-        print("Plane with normal vector {},{},{} found at a tolerance of {}.".format(
-            myround(rgShape.Normal.X),
-            myround(rgShape.Normal.Y),
-            myround(rgShape.Normal.Z),
-            fTol),
-              )
-    elif isinstance(rgShape, (rg.Cylinder, rg.Sphere)):
-        print("R{:.4f} cylinder with {},{},{} axis vector found at a tolerance of {}.".format(
-            rgShape.Radius,
-            myround(rgShape.Axis.X),
-            myround(rgShape.Axis.Y),
-            myround(rgShape.Axis.Z),
+        return ("Plane with {:.{sd}g},{:.{sd}g},{:.{sd}g} ({sd} sig. digits) normal vector found at a tolerance of {}.".format(
+            rgShape.Normal.X,
+            rgShape.Normal.Y,
+            rgShape.Normal.Z,
             fTol,
+            sd=15,
             ))
-    elif isinstance(rgShape, rg.Torus):
-        print("R{:.4f},r{:.4f} torus found at a tolerance of {}.".format(
+
+    if isinstance(rgShape, rg.Cylinder):
+        return ("R{:.{dp}f} cylinder with {:.{sd}g},{:.{sd}g},{:.{sd}g} ({sd} sig. digits) axis vector found at a tolerance of {}.".format(
+            rgShape.Radius,
+            rgShape.Axis.X,
+            rgShape.Axis.Y,
+            rgShape.Axis.Z,
+            fTol,
+            dp=_decimalPlacesForZero(),
+            sd=15,
+            ))
+
+    if isinstance(rgShape, rg.Sphere):
+        return ("R{:.{dp}f} sphere with {:.{dp}f},{:.{dp}f},{:.{dp}f} center point found at a tolerance of {}.".format(
+            rgShape.Radius,
+            rgShape.Center.X,
+            rgShape.Center.Y,
+            rgShape.Center.Z,
+            fTol,
+            dp=_decimalPlacesForZero(),
+            ))
+
+    if isinstance(rgShape, rg.Torus):
+        return ("R{0:.{2}f},r{1:.{2}f} torus found at a tolerance of {3}.".format(
             rgShape.MajorRadius,
             rgShape.MinorRadius,
+            sc.doc.ModelDistanceDisplayPrecision,
             fTol))
-    elif isinstance(rgShape, rg.Cone):
-        print("{:.2f} degree cone found at a tolerance of {}.".format(
+
+    if isinstance(rgShape, rg.Cone):
+        return ("{:.{sd}f} degree cone with {:.{sd}g},{:.{sd}g},{:.{sd}g} ({sd} sig. digits) axis vector found at a tolerance of {}.".format(
             rgShape.AngleInDegrees(),
-            fTol))
-    else:
-        print("What shape is this?: {}".format(
-            rgShape.GetType().Name.ToString(),
+            rgShape.Axis.X,
+            rgShape.Axis.Y,
+            rgShape.Axis.Z,
+            fTol,
+            sd=15,
             ))
+
+    return ("What shape is this?: {}".format(
+        rgShape.GetType().Name.ToString(),
+        ))
 
 
 def getFaceShape(rgFace0, fShapeTol=None, bDebug=False):
@@ -405,7 +402,7 @@ def getFaceShape(rgFace0, fShapeTol=None, bDebug=False):
         return
 
 
-def addWireframeOfShape(rgShape, rgFace0, bOnlyCenterPtForSphere=False, bOnlyMainAxisForOtherRev=False, bDebug=False):
+def addWireframeOfShape(rgShape, rgFace0, bIncludeArcCrvsForRoundShapes=False, bDebug=False):
     """
     """
     
@@ -432,7 +429,7 @@ def addWireframeOfShape(rgShape, rgFace0, bOnlyCenterPtForSphere=False, bOnlyMai
     #        if line_Axis.Length < 2.0 * sc.doc.ModelAbsoluteTolerance:
     #            line_Axis.Length = 1.0
     #            print("Line length was too short and was set to 1.0."
-        if not bOnlyMainAxisForOtherRev:
+        if bIncludeArcCrvsForRoundShapes:
             circle_Mid = cyl.CircleAt((cyl.Height1 + cyl.Height2) / 2.0)
             sc.doc.Objects.AddCircle(circle_Mid)
 
@@ -454,7 +451,7 @@ def addWireframeOfShape(rgShape, rgFace0, bOnlyCenterPtForSphere=False, bOnlyMai
             print("Line length was too short and was set to 1.0.")
         sc.doc.Objects.AddLine(line_Axis)
 
-        if not bOnlyMainAxisForOtherRev:
+        if bIncludeArcCrvsForRoundShapes:
             circle = rg.Circle(cone.Plane, cone.BasePoint, cone.Radius)
             sc.doc.Objects.AddCircle(circle)
             line_Profile = rg.Line(circle.PointAt(0.0), cone.ApexPoint)
@@ -464,7 +461,7 @@ def addWireframeOfShape(rgShape, rgFace0, bOnlyCenterPtForSphere=False, bOnlyMai
         sphere = rgShape
         sc.doc.Objects.AddPoint(sphere.Center)
 
-        if not bOnlyCenterPtForSphere:
+        if bIncludeArcCrvsForRoundShapes:
             # sphere's EquatorialPlane may be invalid.  Just create a plane for Circle.
             circle = rg.Circle(
                 plane=rg.Plane(sphere.Center, normal=rg.Vector3d.ZAxis),
@@ -476,7 +473,7 @@ def addWireframeOfShape(rgShape, rgFace0, bOnlyCenterPtForSphere=False, bOnlyMai
         
         #sc.doc.Objects.AddPoint(plane_Major.Origin)
         
-        if not bOnlyMainAxisForOtherRev:
+        if bIncludeArcCrvsForRoundShapes:
             circle_Major = rg.Circle(plane_Major, plane_Major.Origin, rgShape.MajorRadius)
             sc.doc.Objects.AddCircle(circle_Major)
             plane_Minor_Origin = (rg.Point3d(
@@ -487,7 +484,7 @@ def addWireframeOfShape(rgShape, rgFace0, bOnlyCenterPtForSphere=False, bOnlyMai
         
         #sc.doc.Objects.AddPoint(plane_Minor_Origin)
         
-        if not bOnlyMainAxisForOtherRev:
+        if bIncludeArcCrvsForRoundShapes:
             plane_Minor = rg.Plane(plane_Minor_Origin,
                     plane_Major.XAxis,
                     plane_Major.ZAxis)
@@ -515,9 +512,8 @@ def main():
     (
         rgFace0,
         fShapeTol,
-        bAddCrvs,
-        bOnlyCenterPtForSphere,
-        bOnlyMainAxisForOtherRev,
+        bAddWireframe,
+        bIncludeArcCrvsForRoundShapes,
         bEcho,
         bDebug,
         ) = rc
@@ -531,15 +527,14 @@ def main():
 
 
     if bEcho:
-        printOutput(rgShape, fTol_PrimitiveMatch)
+        print(createReport(rgShape, fTol_PrimitiveMatch))
 
 
-    if bAddCrvs:
+    if bAddWireframe:
         addWireframeOfShape(
             rgShape,
             rgFace0,
-            bOnlyCenterPtForSphere=bOnlyCenterPtForSphere,
-            bOnlyMainAxisForOtherRev=bOnlyMainAxisForOtherRev,
+            bIncludeArcCrvsForRoundShapes=bIncludeArcCrvsForRoundShapes,
             bDebug=bDebug)
 
 

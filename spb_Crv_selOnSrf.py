@@ -1,16 +1,20 @@
 """
+This script selects curves (wires or all curves (including edges)) and optionally adds curves of naked edges that lie
+on selected faced.
+"""
+
+#! python 2  Must be on a line less than 32.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
 200520-23: Created, starting with another script.
-200526: Bug fix.  Modified a function description.
-200619: Import-related update.
-200629: Now checks and rejects curves completely on surface/face border.
-200810: Replaced some local code with a function from an import.
-210113: Trialing using more tolerance for checking curves against full surface borders.  See TODO.
-        Debugging bug fix.
+...
 220317: Moved main function to a main library module.
+230106: Bug fix.
+230108: Fixed selection routine.
+250917: Added option to filter edges.
 
 TODO:
-    WIP: Allow edge selection.
-    Add capability of tracking CurveObjects in main routine so that CurveObjects can be selected instead of duplicated.
 """
 
 import Rhino
@@ -26,78 +30,53 @@ import xCurve
 
 
 class Opts():
-    
+
     keys = []
     values = {}
     names = {}
     riOpts = {}
-    riAddOpts = {}
+    listValues = {}
     stickyKeys = {}
-
-
-    def addOptionDouble(key, names, riOpts):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionDouble(
-            getObj, englishName=names[key], numberValue=riOpts[key])
-
-
-    def addOptionInteger(key, names, riOpts):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionInteger(
-            getObj, englishName=names[key], intValue=riOpts[key])
-
-
-    def addOptionList(key, names, listValues, values):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionList(
-            getObj,
-            englishOptionName=names[key],
-            listValues=listValues,
-            listCurrentIndex=values[key])
-
-
-    def addOptionToggle(key, names, riOpts):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionToggle(
-            getObj, englishName=names[key], toggleValue=riOpts[key])
 
 
     key = 'bUnderlyingSrf'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fTolerance'; keys.append(key)
     values[key] = 1.0 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
-    riAddOpts[key] = addOptionDouble(key, names, riOpts)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
     key = 'bPartiallyOnSrf'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fSamplingResolution'; keys.append(key)
     values[key] = 100.0 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
-    riAddOpts[key] = addOptionDouble(key, names, riOpts)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'bAdd'; keys.append(key)
+    key = 'bIncludeEdges'; keys.append(key)
+    values[key] = False
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bAddCrvsForEdges'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bDebug'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
 
@@ -116,63 +95,109 @@ class Opts():
 
 
     @classmethod
-    def setValues(cls):
-        for key in cls.keys:
-            if key in cls.riOpts:
-                cls.values[key] = cls.riOpts[key].CurrentValue
+    def addOption(cls, go, key):
+
+        idxOpt = None
+
+        if key in cls.riOpts:
+            if key[0] == 'b':
+                idxOpt = go.AddOptionToggle(
+                        cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'f':
+                idxOpt = go.AddOptionDouble(
+                    cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'i':
+                idxOpt = go.AddOptionInteger(
+                    englishName=cls.names[key], intValue=cls.riOpts[key])[0]
+        elif key in cls.listValues:
+            idxOpt = go.AddOptionList(
+                englishOptionName=cls.names[key],
+                listValues=cls.listValues[key],
+                listCurrentIndex=cls.values[key])
+        else:
+            print("{} is not a valid key in Opts.".format(key))
+
+        return idxOpt
 
 
     @classmethod
-    def saveSticky(cls):
-        for key in cls.stickyKeys:
-            if key in cls.riOpts:
-                sc.sticky[cls.stickyKeys[key]] = cls.riOpts[key].CurrentValue
-            else:
-                sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+    def setValue(cls, key, idxList=None):
+
+        if key == 'fTolerance':
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < 1e-6:
+                cls.riOpts[key].CurrentValue = 1e-6
+
+            cls.values[key] = cls.riOpts[key].CurrentValue
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+            return
+
+        if key in cls.riOpts:
+            cls.values[key] = cls.riOpts[key].CurrentValue
+        elif key in cls.listValues:
+            cls.values[key] = idxList
+        else:
+            return
+
+        sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
 def getInput_Faces():
-    """Get Brepface with optional input."""
-    
+    """
+    Get Brepfaces with optional input.
+    """
+
     go = ri.Custom.GetObject()
 
     go.SetCommandPrompt("Select faces")
     
     go.GeometryFilter = rd.ObjectType.Surface
     
-    go.AcceptNumber(enable=True, acceptZero=True)
+    go.AcceptNumber(True, acceptZero=True)
     
-    idxs_Opts = {}
+    idxs_Opt = {}
+
+    def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
     while True:
-        key = 'bUnderlyingSrf'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'fTolerance'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bPartiallyOnSrf'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'fSamplingResolution'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bAdd'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bEcho'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bDebug'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        
+        go.ClearCommandOptions()
+
+        idxs_Opt.clear()
+
+        addOption('bUnderlyingSrf')
+        addOption('fTolerance')
+        addOption('bPartiallyOnSrf')
+        addOption('fSamplingResolution')
+        addOption('bIncludeEdges')
+        if Opts.values['bIncludeEdges']:
+            addOption('bAddCrvsForEdges')
+        addOption('bEcho')
+        addOption('bDebug')
+
+
         res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
-        
+
+        if res == ri.GetResult.Cancel:
+            go.Dispose()
+            return
+
         if res == ri.GetResult.Object:
             objrefs = go.Objects()
             go.Dispose()
-            return tuple([objrefs] + [Opts.values[key] for key in Opts.keys])
-        elif res == ri.GetResult.Cancel:
-            return
-        
-        # An option was selected or a number was entered.
-        
+            return objrefs
+
         if res == ri.GetResult.Number:
-            Opts.riOpts['fTolerance'].CurrentValue = go.Number()
-        
-        if Opts.riOpts['fTolerance'].CurrentValue < 0.0:
-            Opts.riOpts['fTolerance'].CurrentValue = Opts.riOpts['fTolerance'].InitialValue
-        
-        Opts.setValues()
-        Opts.saveSticky()
-        go.ClearCommandOptions()
+            key = 'fTolerance'
+            Opts.riOpts[key].CurrentValue = go.Number()
+            Opts.setValue(key)
+            continue
+
+        # An option was selected.
+        for key in idxs_Opt:
+            if go.Option().Index == idxs_Opt[key]:
+                Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                break
 
 
 def getInput_Curves(objrefs_Face):
@@ -202,284 +227,285 @@ def getInput_Curves(objrefs_Face):
 
     idxs_EdgesOfFaceToSplit = []
     for objref_Face in objrefs_Face:
-        rdBrep_withFaceToSplit, rgBrep_withFaceToSplit = getBrep(objref_Face)
-        gBrep_withFaceToSplit = rdBrep_withFaceToSplit.Id
+        rdBrep_withFaceToCheck, rgBrep_withFaceToCheck = getBrep(objref_Face)
+        gBrep_withFaceToCheck = rdBrep_withFaceToCheck.Id
         idxs_EdgesOfFaceToSplit.extend(objref_Face.Face().AdjacentEdges())
 
 
     go = ri.Custom.GetObject()
 
-    go.SetCommandPrompt("Select curves or edges")
-    go.SetCommandPromptDefault("Enter for all normal wires and brep naked edges")
-
     go.GeometryFilter = rd.ObjectType.Curve
-    
-    def notEdgeOfFaceToSplit(rdObj, geom, compIdx):
+
+    def notEdgeOfFaceToCheck(rdObj, geom, compIdx):
         #print rdObj, geom, compIdx
-        if isinstance(rdObj, rd.BrepObject) and rdObj.Id == gBrep_withFaceToSplit:
+        if isinstance(rdObj, rd.BrepObject) and rdObj.Id == gBrep_withFaceToCheck:
             if geom.EdgeIndex in idxs_EdgesOfFaceToSplit:
-                print "An edge of a face to split was picked and will not be used."
+                print("An edge of a face to split was picked and will not be used.")
                 return False
         return True
-    go.SetCustomGeometryFilter(notEdgeOfFaceToSplit)
-    
-    
+    go.SetCustomGeometryFilter(notEdgeOfFaceToCheck)
+
+
     go.AcceptNothing(True)
     
-    go.AcceptNumber(enable=True, acceptZero=True)
+    go.AcceptNumber(True, acceptZero=True)
 
     go.AlreadySelectedObjectSelect = True
     go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
     go.EnableClearObjectsOnEntry(False)
     go.EnableUnselectObjectsOnExit(False)
     
-    idxs_Opts = {}
+    idxs_Opt = {}
+
+    def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
+
+    #print(go.GeometryAttributeFilter)
 
     while True:
-        key = 'bUnderlyingSrf'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'fTolerance'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bPartiallyOnSrf'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'fSamplingResolution'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bAdd'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bEcho'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bDebug'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        
-        res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
-        
-        if res == ri.GetResult.Cancel:
-            return
-        elif res == ri.GetResult.Nothing:
-            rdCrvs = []
-            rgEdges = []
-            settings = rd.ObjectEnumeratorSettings()
-            settings.NormalObjects = True
-            settings.LockedObjects = False
-            for rdObj in sc.doc.Objects.GetObjectList(settings):
-                if rdObj.ObjectType == rd.ObjectType.Curve:
-                    rdCrvs.append(rdObj)
-                elif rdObj.ObjectType == rd.ObjectType.Brep:
-                    rgBrep = rdObj.BrepGeometry
-                    # Structure of following conditional is to optimize speed.
-                    if rdObj.Id != gBrep_withFaceToSplit:
-                        for edge in rgBrep.Edges:
-                            if edge.Valence == rg.EdgeAdjacency.Naked:
-                                rgEdges.append(edge)
-                    else:
-                        for edge in rgBrep.Edges:
-                            if edge.EdgeIndex not in idxs_EdgesOfFaceToSplit:
-                                if edge.Valence == rg.EdgeAdjacency.Naked:
-                                    rgEdges.append(edge)
-                            else:
-                                if Opts.values['bDebug']:
-                                    print "Skipped edge {}.".format(edge.EdgeIndex)
-            return tuple([rdCrvs + rgEdges] + [Opts.values[key] for key in Opts.keys])
-        elif res == ri.GetResult.Object:
-            objrefs = go.Objects()
-            go.Dispose()
-            return tuple([objrefs] + [Opts.values[key] for key in Opts.keys])
-        
-        # An option was selected or a number was entered.
-        
-        if res == ri.GetResult.Number:
-            Opts.riOpts['fTolerance'].CurrentValue = go.Number()
-        
-        if Opts.riOpts['fTolerance'].CurrentValue < 0.0:
-            Opts.riOpts['fTolerance'].CurrentValue = Opts.riOpts['fTolerance'].InitialValue
-        
-        Opts.setValues()
-        Opts.saveSticky()
+        bIncludeEdges = Opts.values['bIncludeEdges']
+        if bIncludeEdges:
+            go.SetCommandPrompt("Select wires or edges")
+            go.SetCommandPromptDefault("Enter for all normal wires and brep naked edges")
+            go.GeometryAttributeFilter = ri.Custom.GeometryAttributeFilter.AcceptAllAttributes
+        else:
+            go.SetCommandPrompt("Select wires")
+            go.SetCommandPromptDefault("Enter for all normal wires")
+            go.GeometryAttributeFilter = ri.Custom.GeometryAttributeFilter.WireCurve
+
         go.ClearCommandOptions()
 
+        idxs_Opt.clear()
 
-def processRhinoObjects(rhObjects_BrepFace, rhObjects_CurveOrEdge, **kwargs):
-    """
-    """
+        addOption('bUnderlyingSrf')
+        addOption('fTolerance')
+        addOption('bPartiallyOnSrf')
+        addOption('fSamplingResolution')
+        if Opts.values['bIncludeEdges']:
+            addOption('bAddCrvsForEdges')
+        addOption('bEcho')
+        addOption('bDebug')
 
+        res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
 
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    bUnderlyingSrf = getOpt('bUnderlyingSrf')
-    fTolerance = getOpt('fTolerance')
-    bPartiallyOnSrf = getOpt('bPartiallyOnSrf')
-    fSamplingResolution = getOpt('fSamplingResolution')
-    bAdd = getOpt('bAdd')
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
-
-
-    def getRhinoObject(rhObj):
-        """
-        'Deleted objects cannot be found by id.'
-        (https://developer.rhino3d.com/api/RhinoCommon/html/M_Rhino_DocObjects_Tables_ObjectTable_FindId.htm)
-        """
-        rdObj = None
-        if isinstance(rhObj, rd.RhinoObject):
-            rdObj = rhObj
-        elif isinstance(rhObj, rd.ObjRef):
-            rdObj = rhObj.Object()
-        elif isinstance(rhObj, Guid):
-            rdObj = sc.doc.Objects.FindId(rhObj) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(rhObj)
-        return rdObj
-
-
-    def getBrepObject(rhObj):
-        rdObj = getRhinoObject(rhObj)
-        if rdObj and (rdObj.ObjectType == rd.ObjectType.Brep):
-            return rdObj
-
-
-    def getSortedBrepIdsAndFaces(objrefs):
-        """
-        Parameters:
-            list(objrefs)
-        Returns:
-            list(Brep GUIDs)
-            list(lists(integers of Face indices) per brep)
-        """
-        
-        gBreps_In = []
-        idxs_Faces_perBrep = []
-    
-        for o in objrefs:
-            gBrep0 = o.ObjectId
-            rdBrep_In = o.Object()
-            rgBrep_In = o.Brep()
-        
-            if not rgBrep_In.IsValid:
-                print "Brep {} is invalid.  Fix first.".format(gBrep0)
-                rgBrep_In.Dispose()
-                continue
-        
-            idx_CompIdx = o.GeometryComponentIndex.Index
-            if idx_CompIdx == -1:
-                if gBrep0 in gBreps_In:
-                    idxs_Faces_perBrep[gBreps_In.index(gBrep0)] = range(rgBrep_In.Faces.Count)
-                else:
-                    gBreps_In.append(gBrep0)
-                    idxs_Faces_perBrep.append(range(rgBrep_In.Faces.Count))
-            else:
-                rgFace_Brep0 = o.Face()
-                if gBrep0 in gBreps_In:
-                    if rgFace_Brep0 in idxs_Faces_perBrep[gBreps_In.index(gBrep0)]:
-                        continue
-                    else:
-                        idxs_Faces_perBrep[gBreps_In.index(gBrep0)].append(rgFace_Brep0.FaceIndex)
-                else:
-                    gBreps_In.append(gBrep0)
-                    idxs_Faces_perBrep.append([rgFace_Brep0.FaceIndex])
-
-        return gBreps_In, idxs_Faces_perBrep
-
-
-    def getCurve(rhObj):
-        
-        if isinstnace(rhObj, rd.BrepObject):
-            pass
-        
-        if isinstance(rhObj, rd.CurveObject):
-            return rhObj, rhObj.CurveGeometry
-
-        if isinstance(rhObj, rd.ObjRef):
-            rdObj = rhObj.Object()
-            rgObj = rhObj.Geometry()
-        elif isinstance(rhObj, Guid):
-            try: rdObj = sc.doc.Objects.FindId(rhObj)
-            except: rdObj = sc.doc.Objects.Find(rhObj)
-            rgObj = rdObj.Geometry
-        else:
+        if res == ri.GetResult.Cancel:
+            go.Dispose()
             return
 
-        if isinstance(rgObj, rg.Curve):
-            return rdObj, rgObj
+        if res == ri.GetResult.Nothing:
+            go.Dispose()
+            return []
+
+        if res == ri.GetResult.Object:
+            objrefs = go.Objects()
+            go.Dispose()
+            return objrefs
+
+        if res == ri.GetResult.Number:
+            key = 'fTolerance'
+            Opts.riOpts[key].CurrentValue = go.Number()
+            Opts.setValue(key)
+            continue
+
+        # An option was selected.
+        for key in idxs_Opt:
+            if go.Option().Index == idxs_Opt[key]:
+                Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                break
 
 
-    gBreps_In, idxs_rgFace_perBrep = getSortedBrepIdsAndFaces(rhObjects_BrepFace)
-    if not gBreps_In: return
+def _sortFacesByBrep(objrefs):
+    """
+    Parameters:
+        list(objrefs)
+    Returns:
+        list(Brep GUIDs)
+        list(lists(integers of Face indices) per brep)
+    """
+
+    gBs = []
+    rdBs = []
+    idxs_Fs_perB = []
+
+    for o in objrefs:
+        gB = o.ObjectId
+        rdB = o.Object()
+        rgB = o.Brep()
+        
+        if not rgB.IsValid:
+            print("Brep {} is invalid.  Fix first.".format(gB))
+            rgB.Dispose()
+            continue
+        
+        idx_CompIdx = o.GeometryComponentIndex.Index
+        if idx_CompIdx == -1:
+            if gB in gBs:
+                idxs_Fs_perB[gBs.index(gB)] = range(rgB.Faces.Count)
+                continue
+
+            gBs.append(gB)
+            rdBs.append(rdB)
+            idxs_Fs_perB.append(range(rgB.Faces.Count))
+        else:
+            rgF = o.Face()
+            if gB in gBs:
+                if rgF.FaceIndex in idxs_Fs_perB[gBs.index(gB)]:
+                    continue
+                idxs_Fs_perB[gBs.index(gB)].append(rgF.FaceIndex)
+                continue
+
+            gBs.append(gB)
+            rdBs.append(rdB)
+            idxs_Fs_perB.append([rgF.FaceIndex])
+
+    return rdBs, idxs_Fs_perB
 
 
-    rdCrvs_In = []
-    rgCrvs_In = []
-    for o in rhObjects_CurveOrEdge:
-        rdCrv_In, rgCrv_In = getCurve(o)
-        if rdCrv_In:
-            rdCrvs_In.append(rdCrv_In)
-            rgCrvs_In.append(rgCrv_In)
+def _getDataForAllNormalCrvs(bIncludeEdges=False):
+    oes = rd.ObjectEnumeratorSettings()
+    oes.LockedObjects = False
 
+    rdOs_Out = []
+    rgCs_Out = []
 
-    gCs_Found = []
-
-    for iB, gBrep0 in enumerate(gBreps_In):
-        rdBrep_In = getBrepObject(gBrep0)
-        rgBrep_In = rdBrep_In.Geometry
-
-        idxFaces_TrimSuccess = []
-        rgBs_1F_Res = []
-
-        for iF, idxFace in enumerate(idxs_rgFace_perBrep[iB]):
-            if bUnderlyingSrf:
-                rgSrf_Ref = rgBrep_In.Faces[idxFace].UnderlyingSurface()
+    if bIncludeEdges:
+        oes.ObjectTypeFilter = rd.ObjectType.Brep | rd.ObjectType.Curve
+        for rdO in sc.doc.Objects.GetObjectList(oes):
+            if isinstance(rdO, rd.BrepObject):
+                rgB = rdO.BrepGeometry
+                for rgE in rgB.Edges:
+                    if rgE.Valence == rg.EdgeAdjacency.Naked:
+                        rdOs_Out.append(rdO)
+                        rgCs_Out.append(rgE)
             else:
-                rgSrf_Ref = rgBrep_In.Faces[idxFace]
+                rdOs_Out.append(rdO)
+                rgCs_Out.append(rdO.CurveGeometry)
+    else:
+        oes.ObjectTypeFilter = rd.ObjectType.Curve
 
-            for rdC, rgC, in zip(rdCrvs_In, rgCrvs_In):
+        for rdO in sc.doc.Objects.GetObjectList(oes):
+            rdOs_Out.append(rdO)
+            rgCs_Out.append(rdO.CurveGeometry)
 
-                if rdC.Id in gCs_Found:
-                    continue
-
-                rc = xCurve.filterCurvesOnSurface(
-                    rgC,
-                    rgSrf_Ref,
-                    fSamplingResolution=fSamplingResolution,
-                    fTolerance=fTolerance,
-                    bDebug=bDebug)
-    
-                if not rc: continue
-                
-                (
-                    cs_AllOnSrf,
-                    cs_PartiallyOnSrf,
-                    ) = rc
-    
-                if cs_AllOnSrf:
-                    gCs_Found.append(rdC.Id)
-                    continue
-    
-                if bPartiallyOnSrf and cs_PartiallyOnSrf:
-                    gCs_Found.append(rdC.Id)
-                    continue
-    
-    return gCs_Found
+    return rdOs_Out, rgCs_Out
 
 
 def main():
 
-    rc = getInput_Faces()
-    if rc is None: return
+    objrefs_Face = getInput_Faces()
+    if objrefs_Face is None: return
 
-    objrefs_Face = rc[0]
+    sc.doc.Objects.UnselectAll()
 
-    rc = getInput_Curves(objrefs_Face)
-    if rc is None: return
+    objrefs_CurvesOrEdges = getInput_Curves(objrefs_Face)
+    if objrefs_CurvesOrEdges is None: return
 
-    rhObjects_CurveOrEdge = rc[0]
+    sc.doc.Objects.UnselectAll()
 
-    #sc.doc.Objects.UnselectAll()
+    bUnderlyingSrf = Opts.values['bUnderlyingSrf']
+    fTolerance = Opts.values['fTolerance']
+    bPartiallyOnSrf = Opts.values['bPartiallyOnSrf']
+    fSamplingResolution = Opts.values['fSamplingResolution']
+    bIncludeEdges = Opts.values['bIncludeEdges']
+    bAddCrvsForEdges = Opts.values['bAddCrvsForEdges']
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
+
 
     Rhino.RhinoApp.SetCommandPrompt("Working ...")
 
-    gCs_Ret = processRhinoObjects(
-        rhObjects_BrepFace=objrefs_Face,
-        rhObjects_CurveOrEdge=rhObjects_CurveOrEdge,
-        )
 
-    if gCs_Ret:
-        sc.doc.Objects.UnselectAll()
-        for gC in gCs_Ret:
-            sc.doc.Objects.Select(objectId=gC)
-        sc.doc.Views.Redraw()
-        print("{} curves found.".format(len(gCs_Ret)))
+    #rdBs, idxs_Fs_perB = _sortFacesByBrep(objrefs_Face)
+    #if not rdBs: return
+
+    rgSs = []
+    for objref_F in objrefs_Face:
+        rgF = objref_F.Face()
+        rgS = rgF.UnderlyingSurface() if bUnderlyingSrf else rgF
+        rgSs.append(rgS)
+
+
+    if len(objrefs_CurvesOrEdges) == 0:
+        rdCsOrBs, rgCs = _getDataForAllNormalCrvs(bIncludeEdges=bIncludeEdges)
+        if len(rdCsOrBs) == 0:
+            print("No objects with curves.")
+            return
     else:
+        rdCsOrBs = []
+        rgCs = []
+        for objref in objrefs_CurvesOrEdges:
+            rdC, rgC = objref.Object(), objref.Curve()
+            if rdC:
+                rdCsOrBs.append(rdC)
+                rgCs.append(rgC)
+
+
+    iCBs_Found = []
+
+    for iS, rgS in enumerate(rgSs):
+
+        for iCB, (rdC_or_EB, rgC) in enumerate(zip(rdCsOrBs, rgCs)):
+
+            if rdC_or_EB.Id in iCBs_Found:
+                continue
+
+            rc = xCurve.filterCurvesOnSurface(
+                rgC,
+                rgS,
+                fSamplingResolution=fSamplingResolution,
+                fTolerance=fTolerance,
+                bDebug=bDebug)
+
+            if not rc or (len(rc[0]) + len(rc[1]) == 0): continue
+
+            cs_AllOnSrf, cs_PartiallyOnSrf = rc
+
+            if cs_AllOnSrf:
+                iCBs_Found.append(iCB)
+                continue
+
+            if bPartiallyOnSrf and cs_PartiallyOnSrf:
+                iCBs_Found.append(iCB)
+                continue
+
+
+    if len(iCBs_Found) == 0:
         print("No curves found.")
+        return
+
+
+    sOuts = []
+
+    sOuts.append("{} curves found.".format(len(iCBs_Found)))
+
+
+    gCs_Out = []
+
+    for iCBs in iCBs_Found:
+        rdC_or_B = rdCsOrBs[iCBs]
+        if isinstance(rdC_or_B, rd.CurveObject):
+            rdC_or_B.Select(rdC_or_B)
+        elif bAddCrvsForEdges:
+            gC_Out = sc.doc.Objects.AddCurve(rgCs[iCBs])
+            if gC_Out != gC_Out.Empty:
+                gCs_Out.append(gC_Out)
+                sc.doc.Objects.Select(objectId=gC_Out)
+        else:
+            rgE = rgCs[iCBs]
+            compIdx = rg.ComponentIndex(
+                type=rg.ComponentIndexType.BrepEdge,
+                index=rgE.EdgeIndex)
+            rdC_or_B.SelectSubObject(
+                componentIndex=compIdx,
+                select=True,
+                syncHighlight=True,
+                persistentSelect=True)
+
+    if gCs_Out:
+        sOuts.append("{} curves added.".format(len(gCs_Out)))
+
+    print("  ".join(sOuts))
+
+    sc.doc.Views.Redraw()
 
 
 if __name__ == '__main__': main()

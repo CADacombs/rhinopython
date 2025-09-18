@@ -9,6 +9,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 """
 241007-08: Created, starting with another script.
 250219: Replaced most functions with those of an import.
+250910: Import-related bug fixes.
 """
 
 import Rhino
@@ -256,9 +257,9 @@ def main():
             if bAddAxesBlock:
                 rs.InsertBlock2(sAxesBlockName, xform)
             else:
-                gGeoms_Out = spb_RefAxes.addLineCrvs(fLineLength)
+                gGeoms_Out = spb_RefAxes.addLineCurves(fLineLength)
                 if bPlanes:
-                    gGeoms_Out.extend(spb_RefAxes.addPlaneSrfs(fLineLength))
+                    gGeoms_Out.extend(spb_RefAxes.addSurfaceObjects_Planes(fLineLength))
                 if bOriginPt:
                     gGeoms_Out.append(spb_RefAxes.addPointObject_Origin())
                 if bAxesPts:

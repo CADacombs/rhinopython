@@ -21,6 +21,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 250210,13: Fixed codecs-related problems due to behavior of Python's readline vs. Rhino's _-Options _Aliases _Export.
 250422: Some alias name/macro searches are now comma delimited AND.
 250814: Refactored and added a couple of options.
+250919: Bug fix.
 """
 
 import Rhino
@@ -1014,12 +1015,10 @@ def compare2AliasExports():
     """
     """
     
-    sTitle = "Select 2 alias exports to compare"
-    
     # Placed in try due to 'External component has thrown an exception.' from OpenFileNames.
     try:
         sFilePaths_In = rs.OpenFileNames(
-            title=sTitle,
+            title="Select 2 alias files to compare",
             filter="python scripts|*.txt||",
             folder=_sDefaultAliasExportFolder,
         )
@@ -1036,12 +1035,12 @@ def compare2AliasExports():
         # Placed in try due to 'External component has thrown an exception.' from OpenFileNames.
         try:
             sFilePaths_In = rs.OpenFileNames(
-                    title=sTitle,
+                    title="Select the 2nd alias file to compare",
                     filter="python scripts|*.txt||",
                     folder=_sDefaultAliasExportFolder,
             )
             if len(sFilePaths_In) == 0: return
-            sFilePath_B = sFilePaths_In[0]
+            dict_sFilePaths['B'] = sFilePaths_In[0]
         except:
             return
 

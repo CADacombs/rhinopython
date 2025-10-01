@@ -1,7 +1,7 @@
 """
 This script uses Brep.CutUpSurface and optionally BrepFace.RebuildEdges
-to attempt to retrim all faces of a brep individually to simplify edge curves and
-BrepTrim curves.
+(before 1st CutUpSurface) to attempt to retrim all faces of a brep individually
+to simplify edge curves and BrepTrim curves.
 
 Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums, https://discourse.mcneel.com/
@@ -11,11 +11,19 @@ Send any questions, comments, or script development service needs to
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
-250327-28. 30: Created
+250327-28,30: Created.
 250603: Bug fixes.
+251001: Bug fixes. Refactored. Added a command option. Added more printed output, debug and not debug.
 
 useEdgeCurves
-The 2D trimming curves are made by pulling back the 3D curves using the fitting tolerance. If useEdgeCurves is true, the input 3D curves will be used as the edge curves in the result. Otherwise, the edges will come from pushing up the 2D pullbacks.
+From https://developer.rhino3d.com/api/rhinocommon/rhino.geometry.brep/cutupsurface :
+The 2D trimming curves are made by pulling back the 3D curves using the fitting tolerance.
+If useEdgeCurves is true, the input 3D curves will be used as the edge curves in the result.
+Otherwise, the edges will come from pushing up the 2D pullbacks.
+
+Restated:
+useEdgeCurves is True: Use input curves as the edge curves
+useEdgeCurves is False: Generate new edge curves from the newly created BrepTrim curves.
 
 TODO:
     Try tighter tolerances on trim fails.
@@ -41,13 +49,13 @@ class Opts:
 
 
     key = 'fTol_Edge_and_trim'; keys.append(key)
-    values[key] = sc.doc.ModelAbsoluteTolerance
+    values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
     names[key] = 'EdgeAndTrimTol'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.ModelUnitSystem)
 
     key = 'fTol_Join'; keys.append(key)
-    values[key] = 2.0 * sc.doc.ModelAbsoluteTolerance
+    values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
     names[key] = 'JoinTol'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.ModelUnitSystem)
@@ -55,6 +63,12 @@ class Opts:
     key = 'bRebuildEdges'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bStartingCrvs_Edge_not_UV'; keys.append(key)
+    values[key] = True
+    names[key] = 'StartingCrvs'
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'UV', 'Edge')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bTryShrinkOnFail'; keys.append(key)
@@ -170,6 +184,7 @@ def getInput(bDebug=False):
 
     #go.AcceptNumber(True, acceptZero=False)
     go.EnableClearObjectsOnEntry(False) # If not set to False, faces will be unselected when result == ri.GetResult.Object 
+    go.AcceptNumber(True, acceptZero=True)
 
     idxs_Opts = {}
 
@@ -182,6 +197,8 @@ def getInput(bDebug=False):
         addOption('fTol_Edge_and_trim')
         addOption('fTol_Join')
         addOption('bRebuildEdges')
+        if Opts.values['bRebuildEdges']:
+            addOption('bStartingCrvs_Edge_not_UV')
         addOption('bTryShrinkOnFail')
         addOption('bTryExtendOnFail')
         addOption('bTryOtherTolsOnFail')
@@ -236,10 +253,13 @@ def cutUpSurface(surface, curves, useEdgeCurves, tolerance, fAreaRef, bDebug=Fal
     """
     Parameters:
     Returns:
-        rg.Brep, None on success
-        None, str(Fail label) on fail
+        (rg.Brep, None) on success
+        (None, str(Fail label)) on fail
     """
-    
+
+    if bDebug:
+        print("cutUpSurface:")
+
     breps_Res = rg.Brep.CutUpSurface(
         surface=surface,
         curves=curves,
@@ -275,26 +295,6 @@ def cutUpSurface(surface, curves, useEdgeCurves, tolerance, fAreaRef, bDebug=Fal
         return None, 'AreaFail'
 
     return rgB_1F_Out, None
-
-
-def _shrinkFace(rgFace):
-    """
-    Parameter: rg.BrepFace
-    Returns: rg.Surface or None
-    """
-
-    bFaceShrunk = rgB_1F_WIP.Faces[0].ShrinkFace(
-        disableSide=rg.BrepFace.ShrinkDisableSide.ShrinkAllSides)
-
-    if not bFaceShrunk:
-        rgB_1F_WIP.Dispose()
-        return
-
-    rgS_Out = rgB_1F_WIP.Faces[0].DuplicateSurface()
-
-    rgB_1F_WIP.Dispose()
-
-    return rgS_Out
 
 
 def _extendSrf(srf_In, extensionLength):
@@ -349,161 +349,153 @@ def ncptct(crv):
     return ct
 
 
-def _retrimFace(rgFace, fTol_Edge_and_trim, bRebuildEdges, bTryShrinkOnFail, bTryExtendOnFail, bTryOtherTolsOnFail, bDebug=False):
+def _createCurvesFromEdges(brep, minLength=None, bDebug=False):
+    if minLength is None: minLength = 0.1 * sc.doc.ModelAbsoluteTolerance
+    curves_forCUS = []
+    for iE in brep.Faces[0].AdjacentEdges():
+        edge = brep.Edges[iE]
+        length = rg.Curve.GetLength(edge) # Zero on failure.
+        if length == 0:
+            continue
+        if length < minLength:
+            if bDebug: print("Skipped {}-long curve.".format(length))
+            continue
+        curve = edge.DuplicateCurve()
+        curves_forCUS.append(curve)
+    return curves_forCUS
+
+
+def _retrimFace(rgFace_In, fTol_Edge_and_trim, bRebuildEdges, bStartingCrvs_Edge_not_UV, bTryShrinkOnFail, bTryExtendOnFail, bTryOtherTolsOnFail, bDebug=False):
     """
     Returns tuple of 2:
         rg.Brep (Just a duplicate of face when the retrim fails.)
-        str for fail None or no fail
+        None on success, str on fail
     """
 
-    rgB_1F = rgFace.DuplicateFace(duplicateMeshes=False)
-    rgF_1F = rgB_1F.Faces[0]
-    rgS_1F = rgF_1F.UnderlyingSurface()
+    rgBs_1F = [rgFace_In.DuplicateFace(duplicateMeshes=False)]
+    # rgBs_1F  [0] is DuplicateFace of rgFace_In.  The rest are mods/WIPs.
 
     if bDebug:
-        sEval = "sum([ncptct(rgT) for rgT in rgB_1F.Trims])"; print(sEval,'=',eval(sEval))
-        sEval = "sum([ncptct(rgE) for rgE in rgB_1F.Edges])"; print(sEval,'=',eval(sEval))
+        print("_retrimFace:")
+        sEval = "sum([ncptct(rgE) for rgE in rgBs_1F[0].Edges])"; print(sEval,'=',eval(sEval))
+        sEval = "sum([ncptct(rgT) for rgT in rgBs_1F[0].Trims])"; print(sEval,'=',eval(sEval))
 
-    if bRebuildEdges:
-        bRebuilt = rgF_1F.RebuildEdges(
+    if bRebuildEdges and not bStartingCrvs_Edge_not_UV:
+        rgBs_1F.append(rgBs_1F[0].DuplicateBrep())
+        bRebuilt = rgBs_1F[-1].Faces[0].RebuildEdges(
             tolerance=fTol_Edge_and_trim,
             rebuildSharedEdges=True,
             rebuildVertices=True)
 
-    if bDebug:
-        sEval = "bRebuilt"; print(sEval,'=',eval(sEval))
-        sEval = "sum([ncptct(rgT) for rgT in rgB_1F.Trims])"; print(sEval,'=',eval(sEval))
-        sEval = "sum([ncptct(rgE) for rgE in rgB_1F.Edges])"; print(sEval,'=',eval(sEval))
+        if bDebug:
+            sEval = "bRebuilt"; print(sEval,'=',eval(sEval))
+            sEval = "sum([ncptct(rgE) for rgE in rgBs_1F[-1].Edges])"; print(sEval,'=',eval(sEval))
+            sEval = "sum([ncptct(rgT) for rgT in rgBs_1F[-1].Trims])"; print(sEval,'=',eval(sEval))
 
-    ## Phase 1.
+    if bDebug: print("\n## Phase 1 (P1)")
 
-    area_In = rgB_1F.GetArea()
+    area_In = rgBs_1F[-1].GetArea()
     if not area_In:
-        return rgB_1F, 'AreaFail'
+        for brep in rgBs_1F[:-1]: brep.Dispose()
+        return rgBs_1F[-1], 'AreaFail'
 
-    rgCs_In = [rgB_1F.Edges[iE].DuplicateCurve() for iE in rgF_1F.AdjacentEdges()]
-    #[sc.doc.Objects.AddCurve(c) for c in rgCs_In]
+    curves_forCUS = _createCurvesFromEdges(rgBs_1F[-1])
+    #[sc.doc.Objects.AddCurve(c) for c in curves_forCUS]
 
     rgB_1F_Res_P1, sFailType = cutUpSurface(
-        surface=rgS_1F,
-        curves=rgCs_In,
-        useEdgeCurves=False,
+        surface=rgBs_1F[0].Faces[0].UnderlyingSurface(),
+        curves=curves_forCUS,
+        useEdgeCurves=not(bRebuildEdges and bStartingCrvs_Edge_not_UV),
         tolerance=fTol_Edge_and_trim,
         fAreaRef=area_In,
         bDebug=bDebug,
         )
 
-    if rgB_1F_Res_P1 is None:
+    # useEdgeCurves conditional explained:
+    #    bRebuildEdges bStartingCrvs_Edge_not_UV : result
+    #    T T (Start with edges) : F (Use edges pushed up from new BrepTrims.)
+    #    T F (Start with trims) : T (Use provided curves as edges. curves are resultant edges of BrepFace.RebuildEdges of input BrepFace (not CutUpSurface output).)
+    #    F T (Start with edges) : T (Use provided curves as edges. curves are edges of input BrepFace.)
+    #    F F (Start with trims) : T (Use provided curves as edges. curves are edges of input BrepFace.)
+
+
+    if not rgB_1F_Res_P1:
         if not (bTryShrinkOnFail or bTryExtendOnFail):
-            return rgB_1F, sFailType
+            for brep in rgBs_1F[:-1]: brep.Dispose()
+            return rgBs_1F[-1], sFailType
 
-        rgB_1F_WIP = rgB_1F.Duplicate()
-        rgF_WIP = rgB_1F_WIP.Faces[0]
-        rgS_WIP = rgF_WIP.UnderlyingSurface()
 
-        if bTryShrinkOnFail and bTryExtendOnFail:
-            if not rgF_WIP.ShrinkFace(
-                disableSide=rg.BrepFace.ShrinkDisableSide.ShrinkAllSides
-            ):
-                rgS_Extended = _extendSrf(rgS_WIP, 10.0*fTol_Edge_and_trim)
-                if rgS_Extended is None:
-                    rgB_1F_WIP.Dispose()
-                    return rgB_1F, sFailType
-                else:
+        def try_cutUpSurface_on_modified_srf():
+
+            rgB_1F_WIP = rgBs_1F[-1].Duplicate()
+
+            if bTryShrinkOnFail:
+                if rgB_1F_WIP.Faces[0].ShrinkFace(
+                    disableSide=rg.BrepFace.ShrinkDisableSide.ShrinkAllSides
+                ):
                     rgB_1F_Res_P1, _ = cutUpSurface(
-                        surface=rgS_Extended,
-                        curves=rgCs_In,
-                        useEdgeCurves=False,
+                        surface=rgB_1F_WIP.Faces[0].UnderlyingSurface(),
+                        curves=curves_forCUS,
+                        useEdgeCurves=True,
                         tolerance=fTol_Edge_and_trim,
                         fAreaRef=area_In,
                         bDebug=bDebug,
                         )
-                    if rgB_1F_Res_P1 is None:
+                    if rgB_1F_Res_P1:
                         rgB_1F_WIP.Dispose()
-                        return rgB_1F, sFailType
-            else:
-                rgB_1F_Res_P1, _ = cutUpSurface(
-                    surface=rgS_WIP,
-                    curves=rgCs_In,
-                    useEdgeCurves=False,
-                    tolerance=fTol_Edge_and_trim,
-                    fAreaRef=area_In,
-                    bDebug=bDebug,
-                    )
-                if rgB_1F_Res_P1 is None:
-                    rgS_Extended = _extendSrf(rgS_WIP, 10.0*fTol_Edge_and_trim)
-                    if rgS_Extended is None:
-                        rgB_1F_WIP.Dispose()
-                        return rgB_1F, sFailType
-                    #sc.doc.Objects.AddSurface(rgS_WIP); sc.doc.Views.Redraw(); 1/0
-                    rgB_1F_Res_P1, _ = cutUpSurface(
-                        surface=rgS_Extended,
-                        curves=rgCs_In,
-                        useEdgeCurves=False,
-                        tolerance=fTol_Edge_and_trim,
-                        fAreaRef=area_In,
-                        bDebug=bDebug,
-                        )
-                    if rgB_1F_Res_P1 is None:
-                        rgB_1F_WIP.Dispose()
-                        return rgB_1F, sFailType
+                        return rgB_1F_Res_P1
 
-        elif bTryShrinkOnFail:
-            if not rgB_1F_WIP.Faces[0].ShrinkFace(
-                disableSide=rg.BrepFace.ShrinkDisableSide.ShrinkAllSides
-            ):
-                rgB_1F_WIP.Dipose()
-                return rgB_1F, sFailType
+            if not bTryExtendOnFail:
+                rgB_1F_WIP.Dispose()
+                return
+
+            rgS_Extended = _extendSrf(
+                rgB_1F_WIP.Faces[0].UnderlyingSurface(),
+                10.0*fTol_Edge_and_trim)
+
+            rgB_1F_WIP.Dispose()
+
+            if rgS_Extended is None:
+                return 
 
             rgB_1F_Res_P1, _ = cutUpSurface(
-                surface=rgS_WIP,
-                curves=rgCs_In,
-                useEdgeCurves=False,
+                surface=rgS_Extended,
+                curves=curves_forCUS,
+                useEdgeCurves=True,
                 tolerance=fTol_Edge_and_trim,
                 fAreaRef=area_In,
                 bDebug=bDebug,
                 )
-            if rgB_1F_Res_P1 is None:
-                rgB_1F_WIP.Dipose()
-                return rgB_1F, sFailType
+            if rgB_1F_Res_P1:
+                return rgB_1F_Res_P1
 
-        else:
-            # bTryExtendOnFail
-            rgS_Extended = _extendSrf(rgS_WIP, 10.0*fTol_Edge_and_trim)
-            if rgS_Extended is None:
-                rgB_1F_WIP.Dispose()
-                return rgB_1F, sFailType
-            else:
-                rgB_1F_Res_P1, _ = cutUpSurface(
-                    surface=rgS_Extended,
-                    curves=rgCs_In,
-                    useEdgeCurves=False,
-                    tolerance=fTol_Edge_and_trim,
-                    fAreaRef=area_In,
-                    bDebug=bDebug,
-                    )
-                if rgB_1F_Res_P1 is None:
-                    rgB_1F_WIP.Dispose()
-                    return rgB_1F, sFailType
-
-        rgB_1F_WIP.Dispose()
-
-
+        rgB_1F_Res_P1 = try_cutUpSurface_on_modified_srf()
+        if not rgB_1F_Res_P1:
+            for brep in rgBs_1F[:-1]: brep.Dispose()
+            return rgBs_1F[-1], sFailType
 
     if bDebug:
-        sEval = "sum([ncptct(rgT) for rgT in rgB_1F_Res_P1.Trims])"; print(sEval,'=',eval(sEval))
         sEval = "sum([ncptct(rgE) for rgE in rgB_1F_Res_P1.Edges])"; print(sEval,'=',eval(sEval))
+        sEval = "sum([ncptct(rgT) for rgT in rgB_1F_Res_P1.Trims])"; print(sEval,'=',eval(sEval))
 
-    if rgF_1F.PerFaceColor is not None:
-        rgB_1F_Res_P1.Faces[0].PerFaceColor = rgF_1F.PerFaceColor
+    if rgBs_1F[0].Faces[0].PerFaceColor is not None:
+        rgB_1F_Res_P1.Faces[0].PerFaceColor = rgBs_1F[0].Faces[0].PerFaceColor
 
-    if bRebuildEdges:
+
+    # Postpone Phase 2 until further investigation seems warranted.
+
+    for brep in rgBs_1F: brep.Dispose()
+    return rgB_1F_Res_P1, None
+
+
+
+    if not bRebuilt:
+        for brep in rgBs_1F: brep.Dispose()
         return rgB_1F_Res_P1, None
 
 
-    ## Phase 2 (P2)
+    if bDebug: print("\n## Phase 2: cutUpSurface the result of Phase 1 to attempt to further simplify BrepTrim curves.")
 
-    # Success, so repeat on result to simplify BrepTrim curves.
     rgF_Res_P1 = rgB_1F_Res_P1.Faces[0]
     rgS_Res_P1 = rgF_Res_P1.UnderlyingSurface()
     rgCs_Res_P1 = [rgB_1F_Res_P1.Edges[iE].DuplicateCurve() for iE in rgF_Res_P1.AdjacentEdges()]
@@ -511,7 +503,7 @@ def _retrimFace(rgFace, fTol_Edge_and_trim, bRebuildEdges, bTryShrinkOnFail, bTr
     rgB_1F_Res_P2, sFailType = cutUpSurface(
         surface=rgS_Res_P1,
         curves=rgCs_Res_P1,
-        useEdgeCurves=False,
+        useEdgeCurves=True,
         tolerance=fTol_Edge_and_trim,
         fAreaRef=area_In,
         bDebug=bDebug,
@@ -522,17 +514,19 @@ def _retrimFace(rgFace, fTol_Edge_and_trim, bRebuildEdges, bTryShrinkOnFail, bTr
         raise Exception("Phase 2 failure. Phase 1 result was added.")
         #return rgB_1Face, 'CutUpSrfFail'
 
-    if rgF_1F.PerFaceColor is not None:
-        rgB_1F_Res_P2.Faces[0].PerFaceColor = rgF_1F.PerFaceColor
+    rgB_1F_Res_P1.Dispose()
+
+    if rgBs_1F[0].Faces[0].PerFaceColor is not None:
+        rgB_1F_Res_P2.Faces[0].PerFaceColor = rgBs_1F[0].Faces[0].PerFaceColor
 
     if bDebug:
-        sEval = "sum([ncptct(rgT) for rgT in rgB_1F_Res_P2.Trims])"; print(sEval,'=',eval(sEval))
         sEval = "sum([ncptct(rgE) for rgE in rgB_1F_Res_P2.Edges])"; print(sEval,'=',eval(sEval))
+        sEval = "sum([ncptct(rgT) for rgT in rgB_1F_Res_P2.Trims])"; print(sEval,'=',eval(sEval))
 
     return rgB_1F_Res_P2, None
 
 
-def processBrepObject(rdBrep, fTol_Edge_and_trim, fTol_Join, bRebuildEdges, bTryShrinkOnFail, bTryExtendOnFail, bTryOtherTolsOnFail, bReplace, bEcho=True, bDebug=False):
+def processBrepObject(rdBrep, fTol_Edge_and_trim, fTol_Join, bRebuildEdges, bStartingCrvs_Edge_not_UV, bTryShrinkOnFail, bTryExtendOnFail, bTryOtherTolsOnFail, bReplace, bEcho=True, bDebug=False):
     """
     """
 
@@ -563,6 +557,7 @@ def processBrepObject(rdBrep, fTol_Edge_and_trim, fTol_Join, bRebuildEdges, bTry
 
 
     nCPs_Es_Pre = nCPs_Es_Post = nCPs_Ts_Pre = nCPs_Ts_Post = 0
+    nEs_Pre = nEs_Post = nTs_Pre = nTs_Post = 0
 
     iDivision = 20
     iFs_atDivision = [int(round((1.0/iDivision)*i*rgB_Full_In.Faces.Count,0)) for i in range(iDivision)]
@@ -596,6 +591,7 @@ def processBrepObject(rdBrep, fTol_Edge_and_trim, fTol_Join, bRebuildEdges, bTry
             rgF_In,
             fTol_Edge_and_trim=fTol_Edge_and_trim,
             bRebuildEdges=bRebuildEdges,
+            bStartingCrvs_Edge_not_UV=bStartingCrvs_Edge_not_UV,
             bTryShrinkOnFail=bTryShrinkOnFail,
             bTryExtendOnFail=bTryExtendOnFail,
             bTryOtherTolsOnFail=bTryOtherTolsOnFail,
@@ -616,6 +612,12 @@ def processBrepObject(rdBrep, fTol_Edge_and_trim, fTol_Join, bRebuildEdges, bTry
         nCPs_Es_Post += sum([ncptct(rgE) for rgE in rgB_1F_Res.Edges])
         nCPs_Ts_Pre += sum([ncptct(rgB_Full_In.Trims[rgT.TrimIndex]) for rgL in rgF_In.Loops for rgT in rgL.Trims])
         nCPs_Ts_Post += sum([ncptct(rgT) for rgT in rgB_1F_Res.Trims])
+
+        nEs_Pre += rgF_In.AdjacentEdges().Count
+        nEs_Post += rgB_1F_Res.Edges.Count
+        nTs_Pre += sum([loop.Trims.Count for loop in rgF_In.Loops])
+        nTs_Post += rgB_1F_Res.Trims.Count
+
 
     if len(rgBs_1F_Res) == 0:
         pass
@@ -677,15 +679,27 @@ def processBrepObject(rdBrep, fTol_Edge_and_trim, fTol_Join, bRebuildEdges, bTry
     #    print("Logs of invalid breps:")
     #    print(*sLogs)
 
-    print("Edge CP count (for individual faces (exploded polysrf)): {} -> {}, {:+}.".format(
-        nCPs_Es_Pre,
-        nCPs_Es_Post,
-        nCPs_Es_Post-nCPs_Es_Pre))
+    if nEs_Post != nEs_Pre:
+        print("Edge count (for individual faces (exploded polysrf)): {} -> {}, Delta {:+}.".format(
+            nEs_Pre,
+            nEs_Post,
+            nEs_Post-nEs_Pre))
+    else:
+        print("Edge CP count (for individual faces (exploded polysrf)): {} -> {}, Delta {:+}.".format(
+            nCPs_Es_Pre,
+            nCPs_Es_Post,
+            nCPs_Es_Post-nCPs_Es_Pre))
 
-    print("Trim CP count: {} -> {}, {:+}.".format(
-        nCPs_Ts_Pre,
-        nCPs_Ts_Post,
-        nCPs_Ts_Post-nCPs_Ts_Pre))
+    if nTs_Post != nTs_Pre:
+        print("Trim count: {} -> {}, Delta {:+}.".format(
+            nTs_Pre,
+            nTs_Post,
+            nTs_Post-nTs_Pre))
+    else:
+        print("Trim CP count: {} -> {}, Delta {:+}.".format(
+            nCPs_Ts_Pre,
+            nCPs_Ts_Post,
+            nCPs_Ts_Post-nCPs_Ts_Pre))
 
 
 def main():
@@ -702,6 +716,7 @@ def main():
     fTol_Edge_and_trim = Opts.values['fTol_Edge_and_trim']
     fTol_Join = Opts.values['fTol_Join']
     bRebuildEdges = Opts.values['bRebuildEdges']
+    bStartingCrvs_Edge_not_UV = Opts.values['bStartingCrvs_Edge_not_UV']
     bTryShrinkOnFail = Opts.values['bTryShrinkOnFail']
     bTryExtendOnFail = Opts.values['bTryExtendOnFail']
     bTryOtherTolsOnFail = Opts.values['bTryOtherTolsOnFail']
@@ -716,6 +731,7 @@ def main():
             fTol_Edge_and_trim=fTol_Edge_and_trim,
             fTol_Join=fTol_Join,
             bRebuildEdges=bRebuildEdges,
+            bStartingCrvs_Edge_not_UV=bStartingCrvs_Edge_not_UV,
             bTryShrinkOnFail=bTryShrinkOnFail,
             bTryExtendOnFail=bTryExtendOnFail,
             bTryOtherTolsOnFail=bTryOtherTolsOnFail,

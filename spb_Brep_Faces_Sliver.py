@@ -25,6 +25,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 250325: Added the option where the MaxSliverWidth value is also used for the MaxShortEdgeLength.
 250514: Disabled check of single-edge face since the GetDistanceBetweenCurves doesn't always report correctly.
         Modified available command options per settings of other options.
+250916,24: Modified an option default value.
 """
 
 import Rhino
@@ -50,7 +51,7 @@ class Opts():
 
 
     key = 'fMaxSliverWidth'; keys.append(key)
-    values[key] = 1.8 * sc.doc.ModelAbsoluteTolerance
+    values[key] = 2.0 * sc.doc.ModelAbsoluteTolerance # 1.8 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 

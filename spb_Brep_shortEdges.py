@@ -1,12 +1,17 @@
 """
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums, https://discourse.mcneel.com/
 """
 
+#! python 2  Must be on a line number less than 32.
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 221114: Created.
 221118: Bug fix: Added a View.Redraw.
 221119: Added option to dot edges.
+221204: Bug fix: Now dots are added to current layer.
+251001: Modified an option default value.
 """
 
 import Rhino.DocObjects as rd
@@ -28,7 +33,7 @@ class Opts:
 
 
     key = 'fMaxLength'; keys.append(key)
-    values[key] = 1e-4
+    values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance #1e-4
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
@@ -254,6 +259,7 @@ def main():
         attrib_Dot = rd.ObjectAttributes()
         attrib_Dot.ColorSource = rd.ObjectColorSource.ColorFromObject
         attrib_Dot.ObjectColor = Color.Red
+        attrib_Dot.LayerIndex = sc.doc.Layers.CurrentLayerIndex
 
 
     epsilon_Shortest = 0.5 * 10.0**-sc.doc.ModelDistanceDisplayPrecision

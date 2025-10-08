@@ -25,7 +25,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 250325: Added the option where the MaxSliverWidth value is also used for the MaxShortEdgeLength.
 250514: Disabled check of single-edge face since the GetDistanceBetweenCurves doesn't always report correctly.
         Modified available command options per settings of other options.
-250916,24: Modified an option default value.
+250916,24: Modified some option default values.
+251008: Added an option to define the minimum length of an edge to include for faces to skip. Modified some option default values.
 """
 
 import Rhino
@@ -56,24 +57,30 @@ class Opts():
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
     key = 'bSkipFacesWithShortEdges'; keys.append(key)
-    values[key] = True
+    values[key] = False
     names[key] = 'FacesWithShortEdges'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Include', 'Skip')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bSkipSliverCheckOfShortEdges'; keys.append(key)
     values[key] = True
-    names[key] = 'DevCheckOfShortEdges'
+    names[key] = 'CheckDevsOfShortEdges'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Include', 'Skip')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'bUseSliverTolForEdgeLengthTol'; keys.append(key)
-    values[key] = True
+    key = 'bUseSliverTolForMaxShortEdgeLengthTol'; keys.append(key)
+    values[key] = False
+    names[key] = 'UseSliverTolForMaxShortLength'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fMaxShortEdgeLength'; keys.append(key)
-    values[key] = 1.0 * sc.doc.ModelAbsoluteTolerance
+    key = 'fMaxEdgeLengthConsideredShort'; keys.append(key)
+    values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'fMinShortEdgeLengthToSkipFace'; keys.append(key)
+    values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
@@ -152,7 +159,17 @@ class Opts():
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
             return
 
-        if key == 'fMaxShortEdgeLength':
+        if key == 'fMaxEdgeLengthConsideredShort':
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
+                cls.riOpts[key].CurrentValue = Rhino.RhinoMath.ZeroTolerance
+
+            cls.values[key] = cls.riOpts[key].CurrentValue
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+            return
+
+        if key == 'fMinShortEdgeLengthToSkipFace':
             if cls.riOpts[key].CurrentValue < 0.0:
                 cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
             elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
@@ -222,9 +239,10 @@ def getInput():
         if not Opts.values['bSkipFacesWithShortEdges']:
             addOption('bSkipSliverCheckOfShortEdges')
         if Opts.values['bSkipFacesWithShortEdges'] or Opts.values['bSkipSliverCheckOfShortEdges']:
-            addOption('bUseSliverTolForEdgeLengthTol')
-            if not Opts.values['bUseSliverTolForEdgeLengthTol']:
-                addOption('fMaxShortEdgeLength')
+            addOption('bUseSliverTolForMaxShortEdgeLengthTol')
+            if not Opts.values['bUseSliverTolForMaxShortEdgeLengthTol']:
+                addOption('fMaxEdgeLengthConsideredShort')
+            addOption('fMinShortEdgeLengthToSkipFace')
         addOption('bEntireFaceMustBeASliver')
         addOption('bExtract')
         addOption('bEcho')
@@ -378,7 +396,7 @@ def _indexPairsOfOverlappingCurves(rgCrvs, fMaxSliverWidth, bEntireFaceMustBeASl
     return idx_rgCrvs_OverlapPairs, max(fOverlap_Maxs_Sliver)
 
 
-def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxShortEdgeLength, bEntireFaceMustBeASliver, bEcho=True, bDebug=False):
+def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxEdgeLengthConsideredShort, fMinShortEdgeLengthToSkipFace, bEntireFaceMustBeASliver, bEcho=True, bDebug=False):
     """
     Search all faces of brep for slivers.
 
@@ -387,7 +405,8 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
         fMaxSliverWidth
         bSkipFacesWithShortEdges
         bSkipSliverCheckOfShortEdges
-        fMaxShortEdgeLength
+        fMaxEdgeLengthConsideredShort
+        fMinShortEdgeLengthToSkipFace
         bEntireFaceMustBeASliver
         bEcho
         bDebug
@@ -396,17 +415,6 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
         sorted(idxs_rgFaces_Pass), nOverlapPairCt, fOverlap_Brep_MaxBelowTol
         Or None on error.
     """
-
-
-    #def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    #fMaxSliverWidth = getOpt('fMaxSliverWidth')
-    #bSkipFacesWithShortEdges = getOpt('bSkipFacesWithShortEdges')
-    #bSkipSliverCheckOfShortEdges = getOpt('bSkipSliverCheckOfShortEdges')
-    #fMaxShortEdgeLength = getOpt('fMaxShortEdgeLength')
-    #bEntireFaceMustBeASliver = getOpt('bEntireFaceMustBeASliver')
-    #bEcho = getOpt('bEcho')
-    #bDebug = getOpt('bDebug')
 
 
     rgB = rgBrep
@@ -449,7 +457,7 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
     sCmdPrompt0 = Rhino.RhinoApp.CommandPrompt
 
 
-    def getCrvsToCheck(rgF, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxShortEdgeLength):
+    def getCrvsToCheck(rgF, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxEdgeLengthConsideredShort, fMinShortEdgeLengthToSkipFace):
 
         if not bSkipFacesWithShortEdges and not bSkipSliverCheckOfShortEdges:
             return [rgF.Brep.Edges[i] for i in rgF.AdjacentEdges()]
@@ -467,7 +475,10 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
 
             fLength = rgE.GetLength()
 
-            if fLength < fMaxShortEdgeLength:
+            if fMinShortEdgeLengthToSkipFace and (fLength < fMinShortEdgeLengthToSkipFace):
+                if bSkipSliverCheckOfShortEdges:
+                    continue
+            elif fMaxEdgeLengthConsideredShort and (fLength < fMaxEdgeLengthConsideredShort):
                 if bSkipFacesWithShortEdges:
                     for _ in rgEs_Out: _.Dispose()
                     return
@@ -506,7 +517,7 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
         # Allowing single edge faces because they will be split and checked.
 
 
-        rgCrvs = getCrvsToCheck(rgF, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxShortEdgeLength)
+        rgCrvs = getCrvsToCheck(rgF, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxEdgeLengthConsideredShort, fMinShortEdgeLengthToSkipFace)
 
         if not rgCrvs:
             continue
@@ -545,7 +556,8 @@ def processBrepObjects(rhBreps0, **kwargs):
         fMaxSliverWidth,
         bSkipFacesWithShortEdges,
         bSkipSliverCheckOfShortEdges,
-        fMaxShortEdgeLength,
+        fMaxEdgeLengthConsideredShort,
+        fMinShortEdgeLengthToSkipFace,
         bEntireFaceMustBeASliver,
         bExtract,
         bEcho,
@@ -557,15 +569,16 @@ def processBrepObjects(rhBreps0, **kwargs):
     fMaxSliverWidth = getOpt('fMaxSliverWidth')
     bSkipFacesWithShortEdges = getOpt('bSkipFacesWithShortEdges')
     bSkipSliverCheckOfShortEdges = getOpt('bSkipSliverCheckOfShortEdges')
-    bUseSliverTolForEdgeLengthTol = getOpt('bUseSliverTolForEdgeLengthTol')
-    fMaxShortEdgeLength = getOpt('fMaxShortEdgeLength')
+    bUseSliverTolForMaxShortEdgeLengthTol = getOpt('bUseSliverTolForMaxShortEdgeLengthTol')
+    fMaxEdgeLengthConsideredShort = getOpt('fMaxEdgeLengthConsideredShort')
+    fMinShortEdgeLengthToSkipFace = getOpt('fMinShortEdgeLengthToSkipFace')
     bEntireFaceMustBeASliver = getOpt('bEntireFaceMustBeASliver')
     bExtract = getOpt('bExtract')
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
-    if bUseSliverTolForEdgeLengthTol:
-        fMaxShortEdgeLength = fMaxSliverWidth
+    if bUseSliverTolForMaxShortEdgeLengthTol:
+        fMaxEdgeLengthConsideredShort = fMaxSliverWidth
 
     fOverlap_Min_All = fOverlap_Max_All = None
     fOverlaps_BelowTol_AllBreps = []
@@ -624,7 +637,8 @@ def processBrepObjects(rhBreps0, **kwargs):
             fMaxSliverWidth=fMaxSliverWidth,
             bSkipFacesWithShortEdges=bSkipFacesWithShortEdges,
             bSkipSliverCheckOfShortEdges=bSkipSliverCheckOfShortEdges,
-            fMaxShortEdgeLength=fMaxShortEdgeLength,
+            fMaxEdgeLengthConsideredShort=fMaxEdgeLengthConsideredShort,
+            fMinShortEdgeLengthToSkipFace=fMinShortEdgeLengthToSkipFace,
             bEntireFaceMustBeASliver=bEntireFaceMustBeASliver,
             bEcho=bEcho,
             bDebug=bDebug,
@@ -706,8 +720,9 @@ def main():
     fMaxSliverWidth = Opts.values['fMaxSliverWidth']
     bSkipFacesWithShortEdges = Opts.values['bSkipFacesWithShortEdges']
     bSkipSliverCheckOfShortEdges = Opts.values['bSkipSliverCheckOfShortEdges']
-    bUseSliverTolForEdgeLengthTol = Opts.values['bUseSliverTolForEdgeLengthTol']
-    fMaxShortEdgeLength = Opts.values['fMaxShortEdgeLength'] if Opts.values['bSkipFacesWithShortEdges'] else 0.0
+    bUseSliverTolForMaxShortEdgeLengthTol = Opts.values['bUseSliverTolForMaxShortEdgeLengthTol']
+    fMaxEdgeLengthConsideredShort = Opts.values['fMaxEdgeLengthConsideredShort'] if Opts.values['bSkipFacesWithShortEdges'] else 0.0
+    fMinShortEdgeLengthToSkipFace = Opts.values['fMinShortEdgeLengthToSkipFace']
     bEntireFaceMustBeASliver = Opts.values['bEntireFaceMustBeASliver']
     bExtract = Opts.values['bExtract']
     bEcho = Opts.values['bEcho']
@@ -722,7 +737,8 @@ def main():
         fMaxSliverWidth=fMaxSliverWidth,
         bSkipFacesWithShortEdges=bSkipFacesWithShortEdges,
         bSkipSliverCheckOfShortEdges=bSkipSliverCheckOfShortEdges,
-        fMaxShortEdgeLength=fMaxSliverWidth if bUseSliverTolForEdgeLengthTol else fMaxShortEdgeLength,
+        fMaxEdgeLengthConsideredShort=fMaxSliverWidth if bUseSliverTolForMaxShortEdgeLengthTol else fMaxEdgeLengthConsideredShort,
+        fMinShortEdgeLengthToSkipFace=fMinShortEdgeLengthToSkipFace,
         bEntireFaceMustBeASliver=bEntireFaceMustBeASliver,
         bExtract=bExtract,
         bEcho=bEcho,

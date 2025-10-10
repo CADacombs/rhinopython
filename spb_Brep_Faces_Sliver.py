@@ -26,7 +26,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 250514: Disabled check of single-edge face since the GetDistanceBetweenCurves doesn't always report correctly.
         Modified available command options per settings of other options.
 250916,24: Modified some option default values.
-251008: Added an option to define the minimum length of an edge to include for faces to skip. Modified some option default values.
+251008-09: Added an option to define the minimum length of an edge to include for faces to skip. Modified some option default values.
 """
 
 import Rhino
@@ -75,11 +75,11 @@ class Opts():
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fMaxEdgeLengthConsideredShort'; keys.append(key)
-    values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
+    values[key] = 10.0 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'fMinShortEdgeLengthToSkipFace'; keys.append(key)
+    key = 'fIgnoreEdgesBelowThisLength'; keys.append(key)
     values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
@@ -169,7 +169,7 @@ class Opts():
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
             return
 
-        if key == 'fMinShortEdgeLengthToSkipFace':
+        if key == 'fIgnoreEdgesBelowThisLength':
             if cls.riOpts[key].CurrentValue < 0.0:
                 cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
             elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
@@ -242,7 +242,7 @@ def getInput():
             addOption('bUseSliverTolForMaxShortEdgeLengthTol')
             if not Opts.values['bUseSliverTolForMaxShortEdgeLengthTol']:
                 addOption('fMaxEdgeLengthConsideredShort')
-            addOption('fMinShortEdgeLengthToSkipFace')
+            addOption('fIgnoreEdgesBelowThisLength')
         addOption('bEntireFaceMustBeASliver')
         addOption('bExtract')
         addOption('bEcho')
@@ -396,7 +396,7 @@ def _indexPairsOfOverlappingCurves(rgCrvs, fMaxSliverWidth, bEntireFaceMustBeASl
     return idx_rgCrvs_OverlapPairs, max(fOverlap_Maxs_Sliver)
 
 
-def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxEdgeLengthConsideredShort, fMinShortEdgeLengthToSkipFace, bEntireFaceMustBeASliver, bEcho=True, bDebug=False):
+def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxEdgeLengthConsideredShort, fIgnoreEdgesBelowThisLength, bEntireFaceMustBeASliver, bEcho=True, bDebug=False):
     """
     Search all faces of brep for slivers.
 
@@ -406,7 +406,7 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
         bSkipFacesWithShortEdges
         bSkipSliverCheckOfShortEdges
         fMaxEdgeLengthConsideredShort
-        fMinShortEdgeLengthToSkipFace
+        fIgnoreEdgesBelowThisLength
         bEntireFaceMustBeASliver
         bEcho
         bDebug
@@ -457,15 +457,15 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
     sCmdPrompt0 = Rhino.RhinoApp.CommandPrompt
 
 
-    def getCrvsToCheck(rgF, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxEdgeLengthConsideredShort, fMinShortEdgeLengthToSkipFace):
+    def getCrvsToCheck(rgF, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxEdgeLengthConsideredShort, fIgnoreEdgesBelowThisLength):
 
-        if not bSkipFacesWithShortEdges and not bSkipSliverCheckOfShortEdges:
-            return [rgF.Brep.Edges[i] for i in rgF.AdjacentEdges()]
+        #if not bSkipFacesWithShortEdges and not bSkipSliverCheckOfShortEdges:
+        #    return [rgF.Brep.Edges[i] for i in rgF.AdjacentEdges()]
 
         rgEs_Out = []
 
-        for idx_rgEdge in rgF.AdjacentEdges():
-            rgE = rgF.Brep.Edges[idx_rgEdge]
+        for iE in rgF.AdjacentEdges():
+            rgE = rgF.Brep.Edges[iE]
 
             # Skip seams.
             if rgE.Valence == rg.EdgeAdjacency.Interior:
@@ -475,12 +475,10 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
 
             fLength = rgE.GetLength()
 
-            if fMinShortEdgeLengthToSkipFace and (fLength < fMinShortEdgeLengthToSkipFace):
-                if bSkipSliverCheckOfShortEdges:
-                    continue
-            elif fMaxEdgeLengthConsideredShort and (fLength < fMaxEdgeLengthConsideredShort):
+            if fIgnoreEdgesBelowThisLength and (fLength < fIgnoreEdgesBelowThisLength):
+                continue
+            elif fMaxEdgeLengthConsideredShort and (fLength <= fMaxEdgeLengthConsideredShort):
                 if bSkipFacesWithShortEdges:
-                    for _ in rgEs_Out: _.Dispose()
                     return
                 if bSkipSliverCheckOfShortEdges:
                     continue
@@ -491,13 +489,6 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
 
 
     for idxF in xrange(rgB.Faces.Count):
-        
-        # 180702: Commented out.
-    #        rgBrep_1F = rgFace.DuplicateFace(False)
-    #        # Use DuplicateNakedEdgeCurves instead of AdjacentEdges to skip seams.
-    #        rgCrvs = rgBrep_1F.DuplicateNakedEdgeCurves(True, True)
-    #        rgBrep_1F.Dispose()
-
         if iCt_Fs == 1:
             pass
         elif iCt_Fs < 100:
@@ -517,7 +508,7 @@ def getFaces(rgBrep, fMaxSliverWidth, bSkipFacesWithShortEdges, bSkipSliverCheck
         # Allowing single edge faces because they will be split and checked.
 
 
-        rgCrvs = getCrvsToCheck(rgF, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxEdgeLengthConsideredShort, fMinShortEdgeLengthToSkipFace)
+        rgCrvs = getCrvsToCheck(rgF, bSkipFacesWithShortEdges, bSkipSliverCheckOfShortEdges, fMaxEdgeLengthConsideredShort, fIgnoreEdgesBelowThisLength)
 
         if not rgCrvs:
             continue
@@ -557,7 +548,7 @@ def processBrepObjects(rhBreps0, **kwargs):
         bSkipFacesWithShortEdges,
         bSkipSliverCheckOfShortEdges,
         fMaxEdgeLengthConsideredShort,
-        fMinShortEdgeLengthToSkipFace,
+        fIgnoreEdgesBelowThisLength,
         bEntireFaceMustBeASliver,
         bExtract,
         bEcho,
@@ -571,7 +562,7 @@ def processBrepObjects(rhBreps0, **kwargs):
     bSkipSliverCheckOfShortEdges = getOpt('bSkipSliverCheckOfShortEdges')
     bUseSliverTolForMaxShortEdgeLengthTol = getOpt('bUseSliverTolForMaxShortEdgeLengthTol')
     fMaxEdgeLengthConsideredShort = getOpt('fMaxEdgeLengthConsideredShort')
-    fMinShortEdgeLengthToSkipFace = getOpt('fMinShortEdgeLengthToSkipFace')
+    fIgnoreEdgesBelowThisLength = getOpt('fIgnoreEdgesBelowThisLength')
     bEntireFaceMustBeASliver = getOpt('bEntireFaceMustBeASliver')
     bExtract = getOpt('bExtract')
     bEcho = getOpt('bEcho')
@@ -638,7 +629,7 @@ def processBrepObjects(rhBreps0, **kwargs):
             bSkipFacesWithShortEdges=bSkipFacesWithShortEdges,
             bSkipSliverCheckOfShortEdges=bSkipSliverCheckOfShortEdges,
             fMaxEdgeLengthConsideredShort=fMaxEdgeLengthConsideredShort,
-            fMinShortEdgeLengthToSkipFace=fMinShortEdgeLengthToSkipFace,
+            fIgnoreEdgesBelowThisLength=fIgnoreEdgesBelowThisLength,
             bEntireFaceMustBeASliver=bEntireFaceMustBeASliver,
             bEcho=bEcho,
             bDebug=bDebug,
@@ -722,7 +713,7 @@ def main():
     bSkipSliverCheckOfShortEdges = Opts.values['bSkipSliverCheckOfShortEdges']
     bUseSliverTolForMaxShortEdgeLengthTol = Opts.values['bUseSliverTolForMaxShortEdgeLengthTol']
     fMaxEdgeLengthConsideredShort = Opts.values['fMaxEdgeLengthConsideredShort'] if Opts.values['bSkipFacesWithShortEdges'] else 0.0
-    fMinShortEdgeLengthToSkipFace = Opts.values['fMinShortEdgeLengthToSkipFace']
+    fIgnoreEdgesBelowThisLength = Opts.values['fIgnoreEdgesBelowThisLength']
     bEntireFaceMustBeASliver = Opts.values['bEntireFaceMustBeASliver']
     bExtract = Opts.values['bExtract']
     bEcho = Opts.values['bEcho']
@@ -738,7 +729,7 @@ def main():
         bSkipFacesWithShortEdges=bSkipFacesWithShortEdges,
         bSkipSliverCheckOfShortEdges=bSkipSliverCheckOfShortEdges,
         fMaxEdgeLengthConsideredShort=fMaxSliverWidth if bUseSliverTolForMaxShortEdgeLengthTol else fMaxEdgeLengthConsideredShort,
-        fMinShortEdgeLengthToSkipFace=fMinShortEdgeLengthToSkipFace,
+        fIgnoreEdgesBelowThisLength=fIgnoreEdgesBelowThisLength,
         bEntireFaceMustBeASliver=bEntireFaceMustBeASliver,
         bExtract=bExtract,
         bEcho=bEcho,

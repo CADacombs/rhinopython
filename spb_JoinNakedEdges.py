@@ -14,6 +14,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 230928: Bug fixes.  Added a command option.  Refactored.
 231001: Refactored.  Added text (indices of bad brep components) to dots.
 250215: '+' now is included in reporting of changes in edge counts.
+250916: Modified an option default value.
+251009: WIP: Added an option to join edges iteratively through tolerance values.
 """
 
 import Rhino
@@ -37,9 +39,20 @@ class Opts:
     listValues = {}
     stickyKeys = {}
 
-    key = 'fTolerance'; keys.append(key)
-    values[key] = 10.0 * sc.doc.ModelAbsoluteTolerance
+    key = 'fMaxTol'; keys.append(key)
+    values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
     riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'bIterateToMaxTol'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'fStartTol'; keys.append(key)
+    values[key] = 1e-6 * Rhino.RhinoMath.UnitScale(
+        Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+    riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
     key = 'bMarkBadGeom'; keys.append(key)
@@ -98,11 +111,24 @@ class Opts:
     @classmethod
     def setValue(cls, key, idxList=None):
 
-        if key == 'fTolerance':
+        if key == 'fMaxTol':
             if cls.riOpts[key].CurrentValue < 0:
                 Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
-            cls.values[key] = cls.riOpts[key].CurrentValue
-        elif key in cls.riOpts:
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
+            if cls.values['fStartTol'] > cls.values['fMaxTol']:
+                sc.sticky[cls.stickyKeys['fStartTol']] = cls.values['fStartTol'] = cls.riOpts['fStartTol'].CurrentValue = cls.riOpts['fMaxTol'].CurrentValue
+            return
+
+        if key == 'fStartTol':
+            if cls.riOpts[key].CurrentValue < 1e-6 * Rhino.RhinoMath.UnitScale(
+                Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem):
+                Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
+            if cls.values['fMaxTol'] < cls.values['fStartTol']:
+                sc.sticky[cls.stickyKeys['fMaxTol']] = cls.values['fMaxTol'] = cls.riOpts['fMaxTol'].CurrentValue = cls.riOpts['fStartTol'].CurrentValue
+            return
+
+        if key in cls.riOpts:
             cls.values[key] = cls.riOpts[key].CurrentValue
         elif key in cls.listValues:
             cls.values[key] = idxList
@@ -113,14 +139,21 @@ class Opts:
             sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-def getAllNormalBreps():
+def get_all_normal_polysrf_breps():
     oes = rd.ObjectEnumeratorSettings()
-    oes.NormalObjects = True
     oes.LockedObjects = False # Default is True.
-    oes.IncludeLights = False
-    oes.IncludeGrips = False
     oes.ObjectTypeFilter = rd.ObjectType.Brep
-    return list(sc.doc.Objects.GetObjectList(oes))
+    rdBs_Out = []
+    for rdB in sc.doc.Objects.GetObjectList(oes):
+        #if not rdB.BrepGeometry.IsValid:
+        #    continue
+        if rdB.BrepGeometry.IsSolid:
+            continue
+        if rdB.BrepGeometry.Faces.Count == 1:
+            continue
+        rdBs_Out.append(rdB)
+
+    return rdBs_Out
 
 
 def getInput():
@@ -157,7 +190,10 @@ def getInput():
 
         def addOption(key): idxs_Opt[key] = Opts.addOption(go, key)
 
-        addOption('fTolerance')
+        addOption('fMaxTol')
+        addOption('bIterateToMaxTol')
+        if Opts.values['bIterateToMaxTol']:
+            addOption('fStartTol')
         addOption('bMarkBadGeom')
         addOption('bEcho')
         addOption('bDebug')
@@ -182,11 +218,15 @@ def getInput():
 
         if res == ri.GetResult.Nothing:
             go.Dispose()
-            return getAllNormalBreps()
+            rdBs_Out = get_all_normal_polysrf_breps()
+            if not rdBs_Out:
+                print("No open polysrf breps are selectable.")
+                return
+            return rdBs_Out
 
 
         if res == ri.GetResult.Number:
-            key = 'fTolerance'
+            key = 'fMaxTol'
             Opts.riOpts[key].CurrentValue = go.Number()
             Opts.setValue(key)
             continue
@@ -226,12 +266,12 @@ def getMaxDeviationToJoin(rgBrep0, fMaxDevToFlag):
     
     if fMaxDev:
         print("Largest deviation <= {:f}: {:f}".format(fMaxDevToFlag, fMaxDev))
-        fTolerance = fMaxDev
+        fMaxTol = fMaxDev
     else:
         print("No deviations <= {:f} exist.".format(fMaxDevToFlag))
-        fTolerance = 2. * fMaxDevToFlag
+        fMaxTol = 2. * fMaxDevToFlag
     
-    return rs.GetReal("Enter maximum deviation to join", fTolerance, 0.)
+    return rs.GetReal("Enter maximum deviation to join", fMaxTol, 0.)
 
 
 def _dotEdge(rgBrep, idxEdge):
@@ -293,17 +333,52 @@ def _dotFace(rgBrep, idxFace):
     print("AddTextDot failed for F[{}].".format(idxFace))
 
 
-def processBrepObject(gBrep, fTolerance=None, bMarkBadGeom=True, bEcho=None, bDebug=None):
+def _report_invalid_Brep_after_JoinNakedEdges(brep, bEcho=True, bMarkBadGeom=True):
+    if bEcho:
+        if bMarkBadGeom:
+            print("Brep became invalid at marked area(s). ")
+        else:
+            print("New brep geometry is invalid.")
+        sLog = rgBrepX.IsValidWithLog()[1]
+        print(sLog)
+    if bMarkBadGeom:
+        ## Alternative
+        #m = re.search(r"\[([A-Za-z0-9_]+)\]", sLog)
+        #print(m.group(1))
+        if 'ON_Brep.m_F[' in sLog:
+            idxF = int(
+                    sLog.split('ON_Brep.m_F[', 1)[1].\
+                    split('] is invalid.')[0])
+            _dotFace(rgBrepX, idxF)
+        if 'ON_Brep.m_E[' in sLog:
+            idxE = int(
+                    sLog.split('ON_Brep.m_E[', 1)[1].\
+                    split('] is invalid.')[0])
+            _dotEdge(rgBrepX, idxE)
+
+
+def processBrepObject(gBrep, fMaxTol=None, fStartTol=None, bMarkBadGeom=True, bEcho=None, bDebug=None):
     """
     """
 
-    if fTolerance is None: fTolerance = Opts.values['fTolerance']
+    if fMaxTol is None: fMaxTol = Opts.values['fMaxTol']
+    if fStartTol is None: fStartTol = Opts.values['fStartTol']
     if bMarkBadGeom is None: bMarkBadGeom = Opts.values['bMarkBadGeom']
     if bEcho is None: bEcho = Opts.values['bEcho']
     if bDebug is None: bDebug = Opts.values['bDebug']
 
     rgBrepX = rs.coercebrep(gBrep)
- 
+
+    if rgBrepX.IsSolid:
+        if bEcho:
+            print("Brep is already closed.")
+        return
+
+    if not rgBrepX.IsValid:
+        if bEcho:
+            print("Starting Brep is invalid and will not be processed.")
+        return
+
     # Report face count and edge valence counts.
     numF_B0 = rgBrepX.Faces.Count
     numEValence_B0 = countsOfEdgeValences(rgBrepX)
@@ -316,54 +391,24 @@ def processBrepObject(gBrep, fTolerance=None, bMarkBadGeom=True, bEcho=None, bDe
               numEValence_B0[2],
               numEValence_B0[3],
               ))
-    #    print "Faces: {}".format(numF_B0)
-    #    print "None edges: {}".format(numEValence_B0[0])
-    #    print "Naked edges: {}".format(numEValence_B0[1])
-    #    print "Interior edges: {}".format(numEValence_B0[2])
-    #    print "Non-manifold edges: {}".format(numEValence_B0[3])
-    
-    #    # Get upper limit of naked edge deviation to flag.
-    #    fTol = sc.doc.ModelAbsoluteTolerance
-    #    fMaxDevToFlag = rs.GetReal(
-    #            "Enter upper limit of naked edge deviation to flag", 10.*fTol, 0.)
-    #    if fMaxDevToFlag is None:
-    #        oRef.Dispose()
-    #        return
-    #    
-    #    # Get maximum deviation of naked edges to join.
-    #    fTolerance = getMaxDeviationToJoin(rgBrepX, fMaxDevToFlag)
-    #    if fTolerance is None:
-    #        rgBrepX.Dispose()
-    #        oRef.Dispose()
-    #        return
-    
+
     Rhino.RhinoApp.SetCommandPrompt(prompt="Joining naked edges ...")
     
-    # Join naked edges and replace polysurface with brep.
-    if rgBrepX.JoinNakedEdges(fTolerance) > 0:
-        if not rgBrepX.IsValid:
-            if bEcho:
-                if bMarkBadGeom:
-                    print("New brep geometry is invalid.  Fixed marked area(s).")
-                else:
-                    print("New brep geometry is invalid.")
-            sLog = rgBrepX.IsValidWithLog()[1]
-            print(sLog)
-            if bMarkBadGeom:
-                ## Alternative
-                #m = re.search(r"\[([A-Za-z0-9_]+)\]", sLog)
-                #print(m.group(1))
-                if 'ON_Brep.m_F[' in sLog:
-                    idxF = int(
-                            sLog.split('ON_Brep.m_F[', 1)[1].\
-                            split('] is invalid.')[0])
-                    _dotFace(rgBrepX, idxF)
-                if 'ON_Brep.m_E[' in sLog:
-                    idxE = int(
-                            sLog.split('ON_Brep.m_E[', 1)[1].\
-                            split('] is invalid.')[0])
-                    _dotEdge(rgBrepX, idxE)
+    fTol_Current = fStartTol
+    iJoinCt_Total = 0
+
+    while fTol_Current <= fMaxTol:
+        iJoinCt = rgBrepX.JoinNakedEdges(fTol_Current)
+
+        if bEcho and iJoinCt:
+            print("{} edges were joined within a deviation of {:f}.".format(fTol_Current))
+
+        if not rgBrepX.IsValid and (bEcho or bMarkBadGeom):
+            _report_invalid_Brep_after_JoinNakedEdges(rgBrepX, bEcho, bMarkBadGeom)
             return
+
+        iJoinCt_Total += iJoinCt
+
 
         if not sc.doc.Objects.Replace(gBrep, rgBrepX):
             print("Brep was not replaced.")
@@ -403,17 +448,17 @@ def processBrepObject(gBrep, fTolerance=None, bMarkBadGeom=True, bEcho=None, bDe
         return rgBrepX
 
 
-    print("No edges were joined within a deviation of {:f}.".format(fTolerance))
-    return False
-
-    return rgBrepX
+    #print("No edges were joined within a deviation of {:f}.".format(fMaxTol))
+    return iJoinCt_Total
 
 
 def main():
     rhObjs_In = getInput()
     if rhObjs_In is None: return
     
-    fTolerance = Opts.values['fTolerance']
+    fMaxTol = Opts.values['fMaxTol']
+    bIterateToMaxTol = Opts.values['bIterateToMaxTol']
+    fStartTol = Opts.values['fStartTol']
     bMarkBadGeom = Opts.values['bMarkBadGeom']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
@@ -431,13 +476,14 @@ def main():
 
         rc = processBrepObject(
             gBrep,
-            fTolerance=fTolerance,
+            fMaxTol=fMaxTol,
+            fStartTol=fStartTol if bIterateToMaxTol else fMaxTol,
             bMarkBadGeom=bMarkBadGeom,
             bEcho=bEcho,
             bDebug=bDebug)
 
         if rc is None:
-            print("Error in new brep geometry.")
+            continue
         elif not rc:
             print("No error in brep geometry, but no edges were joined.")
         else:

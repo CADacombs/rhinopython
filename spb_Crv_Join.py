@@ -24,6 +24,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         Refactored.
 250204: Bug fix.
 250326: Reimplemented the _Join routine for Rhino < 8.12.
+251012: Due to the reference to the model units, a global variable was replaced with another variable that is calculated at run time.
 
 TODO:
     Reenable support for BrepEdges.
@@ -45,10 +46,6 @@ import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from System import Guid
-
-
-MYZERO = 1e-6 * Rhino.RhinoMath.UnitScale(
-    Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
 
 
 class Opts():
@@ -518,7 +515,11 @@ def join_Cmd(rdCrvs_In, fJoinTol=None, bEcho=False, bDebug=False):
         print(s + "Error!  Crvs should be selected.  Command stopped.")
         return
 
-    if not Rhino.RhinoMath.EpsilonEquals(fJoinTol, 1.8*sc.doc.ModelAbsoluteTolerance, epsilon=MYZERO):
+    if not Rhino.RhinoMath.EpsilonEquals(
+        fJoinTol,
+        1.8*sc.doc.ModelAbsoluteTolerance,
+        epsilon=1e-6 * Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+    ):
         fModelTol_Saved = sc.doc.ModelAbsoluteTolerance
         fModelTol_ForJoin = sc.doc.ModelAbsoluteTolerance = fJoinTol / 1.8
         if bDebug:

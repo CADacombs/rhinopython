@@ -10,6 +10,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 """
 250329-30: Created.
+251012: Due to the reference to the model units, a global variable was replaced with another variable that is calculated at run time.
 """
 
 import Rhino
@@ -19,10 +20,6 @@ import Rhino.Input as ri
 import scriptcontext as sc
 
 import math
-
-
-MYZERO = 1e-6 * Rhino.RhinoMath.UnitScale(
-    Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
 
 
 class Opts:
@@ -261,7 +258,7 @@ def createReport():
     """
 
     def decimalPlacesForZero():
-        return int(abs(math.log10(abs(MYZERO)))) + 1
+        return int(abs(math.log10(abs(1e-6 * Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem))))) + 1
 
     def myround(x):
         return round(x, decimalPlacesForZero())

@@ -16,6 +16,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 250215: '+' now is included in reporting of changes in edge counts.
 250916: Modified an option default value.
 251009-10: Added an option to join edges iteratively through tolerance values.
+251012: Modified an option default value.
 """
 
 import Rhino
@@ -51,8 +52,7 @@ class Opts:
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fStartTol'; keys.append(key)
-    values[key] = 1e-5 * Rhino.RhinoMath.UnitScale(
-        Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
+    values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance # 1e-5 * Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
@@ -121,9 +121,12 @@ class Opts:
             return
 
         if key == 'fStartTol':
-            if cls.riOpts[key].CurrentValue < 1e-6 * Rhino.RhinoMath.UnitScale(
-                Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem):
+            if cls.riOpts[key].CurrentValue < 0:
                 Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < 1e-6 * Rhino.RhinoMath.UnitScale(
+                Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem):
+                Opts.riOpts[key].CurrentValue = 1e-6 * Rhino.RhinoMath.UnitScale(
+                    Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
             sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
             if cls.values['fMaxTol'] < cls.values['fStartTol']:
                 sc.sticky[cls.stickyKeys['fMaxTol']] = cls.values['fMaxTol'] = cls.riOpts['fMaxTol'].CurrentValue = cls.riOpts['fStartTol'].CurrentValue

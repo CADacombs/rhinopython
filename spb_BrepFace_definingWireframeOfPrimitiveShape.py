@@ -25,6 +25,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210703: Added some options.
 250326: Now prints value of vector of a cylinder's axis.
 250826-27: Bug fix. Added printed center point for sphere. Modified some options.
+251012: Due to the reference to the model units, a global variable was replaced with another variable that is calculated at run time.
 """
 
 import Rhino
@@ -40,12 +41,10 @@ import xPrimitiveShape
 import math
 
 
-_MY_ZERO = 1e-6 * Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
-
 def _decimalPlacesForZero():
-    return int(abs(math.log10(abs(_MY_ZERO)))) + 1
+    return int(abs(math.log10(abs(1e-6 * Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem))))) + 1
 
-#_DECIMAL_PLACES_FOR_0 = int(abs(math.log10(abs(_MY_ZERO)))) + 1
+#_DECIMAL_PLACES_FOR_0 = int(abs(math.log10(abs(1e-6 * Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem))))) + 1
 
 
 class Opts:

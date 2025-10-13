@@ -14,6 +14,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210916: Removed an unneeded print(statement.
 221214: Bug fix for object filter.
 251001: Now, epsilon used is machine epsilon. Multiple edges may still result.
+251012: Removed an unused global variable.
 
 TODO: Don't allow block instances to be selected.
 """
@@ -26,8 +27,6 @@ import scriptcontext as sc
 
 from System import Guid
 from System.Drawing import Color
-
-_MY_ZERO = 1e-6 * Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Millimeters, sc.doc.ModelUnitSystem)
 
 
 def getBreps():

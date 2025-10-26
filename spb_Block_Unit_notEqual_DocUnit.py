@@ -6,6 +6,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 """
 250923: Created.
+251025: Bug fix.
 """
 
 import Rhino
@@ -40,7 +41,7 @@ def main():
     else:
         print("Block definitions whose unit systems are not {}, the document's unit system:".format(
             sc.doc.ModelUnitSystem))
-        for idIdef in rdIdefs_Found:
+        for rdIdef in rdIdefs_Found:
             print("{}: {}".format(rdIdef.Name, rdIdef.UnitSystem))
 
     sChoice = rs.GetString(

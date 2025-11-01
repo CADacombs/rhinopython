@@ -16,6 +16,9 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 230718: Split from another script.
 251027: Refactored many places and removed reliance on rhinoscriptsyntax.
         Added options for modifying block definitions and instances for STEP export.
+251101: Now, correctly scales nested instances when their definition units doesn't match
+        that of parent definition.
+        Now, prints number of scale unit changes for each starting unit.
 """
 
 import Rhino
@@ -221,26 +224,48 @@ def scaleContentsOfBlockDefinition(rdDef, fScale, bEcho=True, bDebug=False):
                 rdDef.Name))
         return
 
-    scale = rg.Transform.Scale(
-        anchor=rg.Point3d.Origin,
-        scaleFactor=fScale)
+    if fScale == 1.0:
+        scale = None
+    else:
+        scale = rg.Transform.Scale(
+            anchor=rg.Point3d.Origin,
+            scaleFactor=fScale)
 
     geoms = []
     attrs = []
 
-    for rdObj in rdObjs_InBlock:
-        geom = rdObj.Geometry
-        attr = rdObj.Attributes
-        if isinstance(rdObj, rd.InstanceObject):
-            pt = rg.Point3d.Origin
-            pt.Transform(rdObj.InstanceXform)
-            translation = rg.Transform.Translation(fScale*pt - pt)
-            geom.Transform(translation)
-        else:
-            geom.Transform(scale)
+    for rdObj_InBlock in rdObjs_InBlock:
+        geom = rdObj_InBlock.Geometry
+        attr = rdObj_InBlock.Attributes
 
-        geoms.append(rdObj.Geometry)
-        attrs.append(rdObj.Attributes)
+        if isinstance(rdObj_InBlock, rd.InstanceObject):
+            #pt = rg.Point3d.Origin
+            #pt.Transform(rdObj_InBlock.InstanceXform)
+            pt = rdObj_InBlock.InsertionPoint
+
+            rdDef_ofNestedInst = rdObj_InBlock.InstanceDefinition
+            if rdDef_ofNestedInst.UnitSystem != rdDef.UnitSystem:
+                if bDebug:
+                    print("NOT EQUAL! {}, {}".format(
+                        rdDef_ofNestedInst.UnitSystem, rdDef.UnitSystem))
+                scale_Inst = rg.Transform.Scale(
+                    anchor=pt,
+                    scaleFactor=Rhino.RhinoMath.UnitScale(
+                        rdDef.UnitSystem,
+                        rdDef_ofNestedInst.UnitSystem,
+                        )
+                    )
+                geom.Transform(scale_Inst)
+
+            if scale is not None:
+                translation = rg.Transform.Translation(fScale*pt - pt)
+                geom.Transform(translation)
+        else:
+            if scale is not None:
+                geom.Transform(scale)
+
+        geoms.append(rdObj_InBlock.Geometry)
+        attrs.append(rdObj_InBlock.Attributes)
 
     return sc.doc.InstanceDefinitions.ModifyGeometry(rdDef.Index, geoms, attrs)
 
@@ -262,7 +287,7 @@ def scaleRootLevelInstances(rdDef, fScale, bEcho=True, bDebug=False):
 
     rdInsts = rdDef.GetReferences(wheretoLook=0)
     if not rdInsts:
-        print("No instances at root level for rdDef.Name.")
+        if bDebug: print("No instances at root level for {}.".format(rdDef.Name))
         return
 
     #sEval = "fScale"; print(sEval, '=', eval(sEval))
@@ -319,7 +344,7 @@ def main():
         print("Document has no static block definitions.")
         return
 
-    if sc.doc.Modified:
+    if False: #sc.doc.Modified:
         showMessageResult = Rhino.UI.Dialogs.ShowMessage(
             message="This document has been modified since the last save." \
                 "\n\nIn the case that this script produces erroneous results," \
@@ -350,7 +375,23 @@ def main():
     if not bDebug: sc.doc.Views.RedrawEnabled = True
 
     if bScaleNonDocUnitBlocks:
-        rdDefs_toProcess = [rdDef for rdDef in rdDefs_Static if rdDef.UnitSystem != sc.doc.ModelUnitSystem]
+        rdDefs_toProcess = []
+        for rdDef in rdDefs_Static:
+            if rdDef.UnitSystem != sc.doc.ModelUnitSystem:
+                rdDefs_toProcess.append(rdDef)
+                continue
+            rdObjs_InBlock = rdDef.GetObjects()
+            if not rdObjs_InBlock:
+                continue
+            for rdObj_InBlock in rdObjs_InBlock:
+                if not isinstance(rdObj_InBlock, rd.InstanceObject):
+                    continue
+                rdDef_ofNestedInst = rdObj_InBlock.InstanceDefinition
+                if rdDef_ofNestedInst.UnitSystem != rdDef.UnitSystem:
+                    rdDefs_toProcess.append(rdDef)
+                    break
+
+        #rdDefs_toProcess = [rdDef for rdDef in rdDefs_Static if rdDef.UnitSystem != sc.doc.ModelUnitSystem]
         if not rdDefs_toProcess:
             print("No block definitions exist whose units are not {}, the document units.".format(
                 sc.doc.ModelUnitSystem))
@@ -371,18 +412,22 @@ def main():
 
     rdDefs_Scaled = []
     rdInsts_Scaled = []
+    units_Previous = []
 
     if bScaleNonDocUnitBlocks:
         if bDebug: print("Doc unit: {}".format(sc.doc.ModelUnitSystem))
 
+        rdDefs_Processed_Stage1 = []
+
         for rdDef in rdDefs_toProcess:
             if bDebug: print("{} unit: {}".format(rdDef.Name, rdDef.UnitSystem))
             if rdDef.UnitSystem == sc.doc.ModelUnitSystem:
-                if bDebug: print("Units match, so this block definition will not be modified.")
-                continue
-            fScale_ThisBlock = Rhino.RhinoMath.UnitScale(
-                rdDef.UnitSystem,
-                sc.doc.ModelUnitSystem)
+                if bDebug: print("Units match, so this block definition should contain instances of definitions with units that do not match this definition.")
+                fScale_ThisBlock = 1.0
+            else:
+                fScale_ThisBlock = Rhino.RhinoMath.UnitScale(
+                    rdDef.UnitSystem,
+                    sc.doc.ModelUnitSystem)
             if bDebug: print("Will scale block objects by {}.".format(fScale_ThisBlock))
 
             rv = scaleContentsOfBlockDefinition(
@@ -396,6 +441,16 @@ def main():
                 print("Failed to scale contents of {}.".format(rdDef.Name))
                 continue
 
+            rdDefs_Processed_Stage1.append(rdDef)
+
+        rdDefs_toProcess_Stage2 = rdDefs_Processed_Stage1
+
+        # Stage 2. UnitSystem was not modified in Stage 1 to allow correct scaling
+        # of nested instances with units not matching that of the parent definition.
+        # For example, cm definition instance inside a mm definition.
+
+        for rdDef in rdDefs_toProcess_Stage2:
+            units_Previous.append(rdDef.UnitSystem)
             rdDef.UnitSystem = sc.doc.ModelUnitSystem
 
             if bInverselyScaleModDefsInsts:
@@ -433,7 +488,13 @@ def main():
 
 
     print("Scaled objects in {} definitions.".format(len(rdDefs_Scaled)))
-    print("Scaled {} instances.".format(len(rdInsts_Scaled)))
+    print("Scaled {} root-level instances.".format(len(rdInsts_Scaled)))
+    if units_Previous:
+        ss = []
+        for unit in set(units_Previous):
+            ss.append("{} of {}".format(
+                units_Previous.count(unit), unit))
+        print("Set block definitions to {}:".format(sc.doc.ModelUnitSystem), ", ".join(ss))
 
 
 if __name__ == '__main__': main()

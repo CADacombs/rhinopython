@@ -1,3 +1,5 @@
+#! python 2
+
 """
 This script is to be used as an alternative to _Explode and _ExplodeBlocks.
 
@@ -24,7 +26,6 @@ Same function as _Explode, except:
     set to ByParent are set to the instances setting after this script execution.
 """
 
-#! python 2  Must be on a line number less than 32.
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
@@ -35,6 +36,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 250113: Curves are now exploded similar to that by _Explode, except
         NurbsCurves are exploded to G2 (per Rhino (see above)) instead of Gsmooth_continuous.
 250811: Updated notes above concerning block objects that are ByParent before this script execution.
+260325: Fixed Python 2 shebang line.
 """
 
 import Rhino

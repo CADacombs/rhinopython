@@ -1,15 +1,18 @@
+#! python 2
+
 """
-Inspired by CadQuery, this script manages build history in block defintions.
+This script manages build history in block defintions by saving both
+construction geometry and building code in UserDictionaries.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums:
 https://discourse.mcneel.com/
 """
 
-#! python 2  Must be on a line less than 32.
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 250214-: WIP: Created.
+(260325): Fixed python 2 shebang.
 
 TODO:
     Assign random color to each layer that is created.
@@ -646,6 +649,12 @@ def main():
         createLayersForBlocks()
         return
 
+    if sOption == 'ListKVPsWithGeom':
+        spb_Block_UserDict_Geom.listKVPsWithGeom()
+        return
+
+    if sOption == 'RemoveKeys':
+        spb_Block_UserDict_Geom.removeKeys()
 
     return
 

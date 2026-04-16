@@ -1,3 +1,6 @@
+#! python 2
+from __future__ import absolute_import, division, print_function, unicode_literals
+
 """
 Complement to _MatchSrf.
 This script, when provided only inputs of natural (underlying surface) edges,
@@ -21,9 +24,6 @@ Limitations:
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
-
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 """
 200626: Started and 1st working version.
 201207: Added G2 matching.  Various UI improvements.
@@ -51,6 +51,9 @@ from __future__ import absolute_import, division, print_function, unicode_litera
         G1 from G0 are no longer adjusted for surface input that is linear in matching direction (against the picked edge).
 231115: Bug fix.  Surfaces starting as G1 were always tested positive for also being G2.
         Lifted restriction of using rational curves and surfaces as the reference.
+260415: Bug fix in G1 matching routine: When matching to a reference with parallel
+        CP spans, the span distances will now sometimes be adjusted, such as when
+        the G2 matching is later implemented. A boolean parameter was added for this.
 """
 
 import Rhino
@@ -64,6 +67,16 @@ W = rg.IsoStatus.West
 S = rg.IsoStatus.South
 E = rg.IsoStatus.East
 N = rg.IsoStatus.North
+
+
+from System.Drawing import Color
+attr_Red = sc.doc.CreateDefaultAttributes()
+attr_Red.ObjectColor = Color.Red
+attr_Red.ColorSource = rd.ObjectColorSource.ColorFromObject
+attr_Green = sc.doc.CreateDefaultAttributes()
+attr_Green.ObjectColor = Color.Lime
+attr_Green.ColorSource = rd.ObjectColorSource.ColorFromObject
+
 
 
 class Opts:
@@ -1233,6 +1246,35 @@ def project_C_Colinear_with_AB(ptA, ptB, ptC):
     return rg.Line(ptA, ptB).ClosestPoint(ptC, limitToFiniteSegment=False)
 
 
+def pivot_M_about_C_onto_CR(R, C, M):
+    """
+    Directly calculates the new point M by scaling the vector CR.
+
+    Parameters:
+        R: G1 (Index 1 from edge) point of reference.
+        C: Common point of reference and main surface.
+        M: G1 (Index 1 from edge) point of main surface.
+    """
+
+    vCR = R - C
+
+    if vCR.IsTiny():
+        return
+
+    vCM = M - C
+
+    if vCM.IsTiny():
+        return
+
+    fCM = vCM.Length
+    vCR_Scaled = vCR
+    vCR_Scaled.Unitize()
+    vCR_Scaled = vCR * fCM
+    M_out = C - vCR_Scaled
+
+    return M_out
+
+
 def get_all_parallel_G01_vector(ns, side):
     pts = [cp.Location for cp in ns.Points]
     idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
@@ -1301,9 +1343,10 @@ def setContinuity_G0(**kwargs):
     return ns_M_Out
 
 
-def setContinuity_G1(**kwargs):
+def setContinuity_G1(bSkipScaling=False, **kwargs):
     """
     Parameters:
+        bSkipScaling: Only use when final result is for G1 matching. Higher continuity matching still requires matching ratios.
         ns_M_BeforeAnyMatching: NurbsSurface
         ns_M_In: NurbsSurface
         side_M: IsoStatus
@@ -1377,36 +1420,47 @@ def setContinuity_G1(**kwargs):
         iM0 = idxPts['M',0][i]
         iM1 = idxPts['M',1][i]
         iR1 = idxPts['R',1][i]
-        pt_To = project_C_Colinear_with_AB(ptsM_Out[iM0], ptsR[iR1], ptsM_Out[iM1])
+        #pt_To = project_C_Colinear_with_AB(ptsM_Out[iM0], ptsR[iR1], ptsM_Out[iM1])
+        #sc.doc.Objects.AddPoint(pt_To, attr_Red)
+        rv = pivot_M_about_C_onto_CR(ptsR[iR1], ptsM_Out[iM0], ptsM_Out[iM1])
+        if rv is None:
+            print("Error in reference or starting geometry.")
+            return
+        pt_To = rv
+        #sc.doc.Objects.AddPoint(pt_To, attr_Green)
         iUT_A, iVT_A = getUvIdxFromNsPoint1dIdx(ns_M_Out, iM1)
         ns_M_Out.Points.SetPoint(
             iUT_A, iVT_A, pt_To,
             weight=ns_M_BeforeAnyMatching.Points.GetWeight(iUT_A, iVT_A))
 
 
-    if get_all_parallel_G01_vector(ns_M_Out, side_M):
-        # Since all G01 vectors are coparallel, no need to adjust distances
-        # of each G1 CP from its G0 CP.
-        return ns_M_Out
+    if bSkipScaling:
+        if get_all_parallel_G01_vector(ns_M_Out, side_M):
+            # Since all G01 vectors are coparallel, no need to adjust distances
+            # of each G1 CP from its G0 CP.
+            return ns_M_Out
 
 
     # Update.
     ptsM_Out = [cp.Location for cp in ns_M_Out.Points]
 
 
-    # Test whether all row 0 to row 1 control point vectors are parallel.
-    vTan0_M = ptsM_Out[idxPts['M',1][0]] - ptsM_Out[idxPts['M',0][0]]
-
-    for i in range(1, iRowLn):
-        #sc.doc.Objects.AddPoint(ptsM_Out[idxPts['R',0][i]])
-        #sc.doc.Objects.AddPoint(ptsM_Out[idxPts['R',1][i]])
-        vTanX_M = ptsM_Out[idxPts['M',1][i]] - ptsM_Out[idxPts['M',0][i]]
-        angle = rg.Vector3d.VectorAngle(vTan0_M, vTanX_M)
-        if not Rhino.RhinoMath.EpsilonEquals(angle, 0.0, epsilon=1e-6):
-            break
-    else:
-        # All No need to adjust distances of G1 CPs from their G0 CP.
-        return ns_M_Out
+    #
+    # Is the following code redundant with the previously used get_all_parallel_G01_vector?
+    if False: # Alternative to commenting out code.
+        if bSkipScaling:
+            # Test whether all row 0 to row 1 control point vectors are parallel.
+            vTan0_M = ptsM_Out[idxPts['M',1][0]] - ptsM_Out[idxPts['M',0][0]]
+            for i in range(1, iRowLn):
+                #sc.doc.Objects.AddPoint(ptsM_Out[idxPts['R',0][i]])
+                #sc.doc.Objects.AddPoint(ptsM_Out[idxPts['R',1][i]])
+                vTanX_M = ptsM_Out[idxPts['M',1][i]] - ptsM_Out[idxPts['M',0][i]]
+                angle = rg.Vector3d.VectorAngle(vTan0_M, vTanX_M)
+                if not Rhino.RhinoMath.EpsilonEquals(angle, 0.0, epsilon=1e-6):
+                    break
+            else:
+                # All No need to adjust distances of G1 CPs from their G0 CP.
+                return ns_M_Out
 
 
     # To obtain G1 continuity along edge, set the tangential row at a scale
@@ -1416,16 +1470,26 @@ def setContinuity_G1(**kwargs):
     # to match to the same of reference surface.
     fDistRatios = []
 
-    if bModifyRowEnd_T0 != bModifyRowEnd_T1:
-        sample = (0,) if not bModifyRowEnd_T0 else (iRowLn-1,)
-    else:
+    if bModifyRowEnd_T0 == bModifyRowEnd_T1:
         sample = 0, iRowLn-1
+    elif bModifyRowEnd_T0:
+        sample = (iRowLn-1,)
+    else: # bModifyRowEnd_T1
+        sample = (0,)
+
+    #if bModifyRowEnd_T0 != bModifyRowEnd_T1:
+    #    sample = (0,) if not bModifyRowEnd_T0 else (iRowLn-1,)
+    #else:
+    #    sample = 0, iRowLn-1
 
     for i in sample:
         iM0 = idxPts['M',0][i]
         iM1 = idxPts['M',1][i]
         iR1 = idxPts['R',1][i]
         fDist_M = ptsM_BeforeAnyMatching[iM1].DistanceTo(ptsM_BeforeAnyMatching[iM0])
+        fDist_M_TEST = ptsM_Out[iM1].DistanceTo(ptsM_Out[iM0])
+        if abs(fDist_M-fDist_M_TEST) > 1e-6:
+            print("Report: Continue using point locations from original surface.")
         fDist_R = ptsR[iR1].DistanceTo(ptsM_Out[iM0])
         fRatio = fDist_M / fDist_R
         fDistRatios.append(fRatio)

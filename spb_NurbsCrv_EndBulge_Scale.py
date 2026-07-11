@@ -9,9 +9,10 @@ For G2 setting of MaintainPicked or MaintainOpp, the respective G2 [2] control p
 
 """
 210303, 0307: Created.
-260420-25, 0907: WIP Adding preview and number slider to dynamically change preview
-        before accepting value.
-        Refactoring.
+260420-25, 0709-10: Added an optional dialog. Added a preview for the dialog.
+        Refactored.
+
+Tangential sliding: Translating the 3rd control point, p2, parallel to the tangent vector (p1 - p0).
 """
 
 import Rhino
@@ -43,6 +44,16 @@ class Opts:
     riOpts[key] = ri.Custom.OptionToggle(values[key], offValues[key], onValues[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
+    key = 'iGraphScale'; keys.append(key)
+    values[key] = 100
+    riOpts[key] = ri.Custom.OptionInteger(values[key])
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'iGraphDensity'; keys.append(key)
+    values[key] = 1
+    riOpts[key] = ri.Custom.OptionInteger(values[key])
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
     key = 'bBothEnds'; keys.append(key)
     values[key] = True
     names[key] = 'AdjustEnds'
@@ -57,19 +68,19 @@ class Opts:
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fScaleIncrement'; keys.append(key) # Only for dialog.
-    values[key] = 0.01
+    values[key] = 0.05
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iCont_Picked'; keys.append(key)
-    listValues[key] = 'None', 'G0', 'G1', 'G2' # All items must be strings.
-    values[key] = 3
+    listValues[key] = 'None', 'G0', 'G1', 'G2', 'G3' # All items must be strings.
+    values[key] = 4 # 4 represents G3
     names[key] = 'MaintainPicked'
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iCont_Opp'; keys.append(key)
-    listValues[key] = 'None', 'G0', 'G1', 'G2' # All items must be strings.
-    values[key] = 3
+    listValues[key] = 'None', 'G0', 'G1', 'G2', 'G3' # All items must be strings.
+    values[key] = 4 # 4 represents G3
     names[key] = 'MaintainOpp'
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -262,40 +273,132 @@ def getInput_CLI():
                 break
 
 
-class DrawCurvesConduit_OLD(Rhino.Display.DisplayConduit):
+def createCurve(nc_In, fScale, iEndToScale=2, iG_T0=2, iG_T1=2, bDebug=False):
+    """
+    Parameters:
+        nc_In: rg.NurbsCurve
+        fScale: float of scale factor
+        iEndToScale: int(0 for T0, 1 for T1, or 2 for both ends of nc_In)
+        iG_T0: int(-1 for No continuity, 0 for G0, 1 for G1, or 2 for G2)
+        iG_T1: int(-1 for No continuity, 0 for G0, 1 for G1, or 2 for G2)
+        bDebug: bool
+    Returns on success: rg.NurbsCurve
+    Returns on fail: None
+    """
 
-    def __init__(self):
-        #self.color = sc.doc.Layers.CurrentLayer.Color
-        self.color = Rhino.ApplicationSettings.AppearanceSettings.FeedbackColor
-        self.crv = None
-        self.pts = None
+    if iG_T0 is None and iG_T1 is None: return
 
-    #def CalculateBoundingBox(self, calculateBoundingBoxEventArgs):
-    #    if len(self.crv) > 0:
-    #        self.bbox = self.brep.GetBoundingBox(accurate=False)
-    #        calculateBoundingBoxEventArgs.IncludeBoundingBox(self.bbox)
+    if nc_In.IsPeriodic: return
+    if not isinstance(nc_In, rg.NurbsCurve): return
+    #if nc_In.Degree + 1 < nc_In.Points.Count: return # because not Bezier.
 
-    def PreDrawObjects(self, drawEventArgs):
+    if nc_In.Points.Count < (iG_T0 + 1) + (iG_T1 + 1):
+        print("Curve needs {} more points to maintain continuities.".format(
+            (iG_T0 + 1) + (iG_T1 + 1) - nc_In.Points.Count))
+        return
 
-        displayMode = Rhino.RhinoDoc.ActiveDoc.Views.ActiveView.ActiveViewport.DisplayMode
-        crv_thk = displayMode.DisplayAttributes.CurveThickness + 1
+    pts_Prime = []
 
-        drawEventArgs.Display.DrawCurve(
-            curve=self.crv,
-            color=self.color,
-            thickness=crv_thk)
 
-        drawEventArgs.Display.DrawPoints(
-            points=self.pts,
-            style=Rhino.Display.PointStyle.Simple,
-            radius=4,
-            color=self.color)
+    # ----------------------------------------------------
+    # SCALE T0 END
+    # ----------------------------------------------------
+    if iEndToScale in (0,2):
+        if iG_T0 in (0,1,2,3):
+            p0 = nc_In.Points[0].Location
+            pts_Prime.append(p0)
 
-        #for p in self.pts:
-        #    drawEventArgs.Display.DrawPoint(
-        #        curve=c,
-        #        color=self.color,
-        #        thickness=crv_thk)
+            if iG_T0 in (1,2,3):
+                p1 = nc_In.Points[1].Location
+                xform = rg.Transform.Scale(p0, fScale)
+                p1p = rg.Point3d(p1)
+                p1p.Transform(xform)
+                pts_Prime.append(p1p)
+
+                if iG_T0 in (2,3):
+                    p2 = nc_In.Points[2].Location
+                    m2 = ((p1p - p0).Length/(p1 - p0).Length)**2.0
+                    p2p = 2.0*p1p + -p0 + m2*(-2.0*p1 + p2 + p0)
+                    pts_Prime.append(p2p)
+
+                    if iG_T0 == 3:
+                        p3 = nc_In.Points[3].Location
+                        m3 = ((p1p - p0).Length/(p1 - p0).Length)**3.0
+                        p3p = 3.0*p2p - 3.0*p1p + p0 + m3*(p3 - 3.0*p2 + 3.0*p1 - p0)
+                        pts_Prime.append(p3p)
+
+
+    # ----------------------------------------------------
+    # DUPLICATE UNAFFECTED MIDDLE POINTS
+    # ----------------------------------------------------
+    iCt_PtsNotNeededByT1Scale = nc_In.Points.Count - (iG_T1 + 1)
+    for i in range(len(pts_Prime), iCt_PtsNotNeededByT1Scale):
+        pts_Prime.append(nc_In.Points[i].Location)
+
+
+    # ----------------------------------------------------
+    # SCALE T1 END
+    # ----------------------------------------------------
+    if iEndToScale in (1,2):
+        if iG_T1 in (0,1,2,3):
+            pts_New_T1 = [] # To be reversed and extended on pts_Prime.
+            p0 = nc_In.Points[nc_In.Points.Count-1].Location
+            pts_New_T1.append(p0)
+
+            if iG_T1 in (1,2,3):
+                p1 = nc_In.Points[nc_In.Points.Count-2].Location
+                xform = rg.Transform.Scale(p0, fScale)
+                p1p = rg.Point3d(p1) # G1 CP location prime.
+                p1p.Transform(xform)
+                pts_New_T1.append(p1p)
+
+                if iG_T1 in (2,3):
+                    p2 = nc_In.Points[nc_In.Points.Count-3].Location
+                    m2 = ((p1p - p0).Length/(p1 - p0).Length)**2.0
+                    p2p = 2.0*p1p + -p0 + m2*(-2.0*p1 + p2 + p0)
+                    pts_New_T1.append(p2p)
+
+                    if iG_T1 == 3:
+                        p3 = nc_In.Points[nc_In.Points.Count-4].Location
+                        m3 = ((p1p - p0).Length/(p1 - p0).Length)**3.0
+                        p3p = 3.0*p2p - 3.0*p1p + p0 + m3*(p3 - 3.0*p2 + 3.0*p1 - p0)
+                        pts_New_T1.append(p3p)
+
+            pts_New_T1.reverse()
+            pts_Prime.extend(pts_New_T1)
+
+
+    # Enforce minimum distance (1e-6 cm) converted to current document units
+    unit_scale = Rhino.RhinoMath.UnitScale(
+        Rhino.UnitSystem.Centimeters,
+        sc.doc.ModelUnitSystem)
+    min_dist = 1e-6 * unit_scale
+
+    for i in range(len(pts_Prime) - 1):
+        if pts_Prime[i].DistanceTo(pts_Prime[i+1]) < min_dist:
+            sReport = "Minimum control point distance (1e-6 cm) violated. Is Scale too small?"
+            Rhino.RhinoApp.SetCommandPromptMessage(sReport)
+            if bDebug: print(sReport)
+            return None
+
+
+    nc_Out = nc_In.Duplicate()
+
+    for i in range(nc_Out.Points.Count):
+        nc_Out.Points.SetPoint(
+            index=i,
+            point=pts_Prime[i],
+            weight=nc_In.Points.GetWeight(i))
+
+    if bDebug:
+        for i in range(len(pts_Prime)):
+            pt = pts_Prime[i]
+            rgDot = rg.TextDot("{}".format(i), pt)
+            rgDot.FontHeight = 11
+            sc.doc.Objects.AddTextDot(rgDot)
+        sc.doc.Views.Redraw()
+
+    return nc_Out
 
 
 class EndBulgePreviewConduit(Rhino.Display.DisplayConduit):
@@ -303,9 +406,18 @@ class EndBulgePreviewConduit(Rhino.Display.DisplayConduit):
     def __init__(self):
         super(EndBulgePreviewConduit, self).__init__()
         self.color = Rhino.ApplicationSettings.AppearanceSettings.FeedbackColor
-        self.crv = None # Holds the modified preview curve
+        self.crv = None
+        self.graph_scale = Opts.values['iGraphScale']
+        self.graph_density = Opts.values['iGraphDensity']
 
-    def PreDrawObjects(self, drawEventArgs):
+    def CalculateBoundingBox(self, calculateBoundingBoxEventArgs):
+        if self.crv is None:
+            return
+        bbox = self.crv.GetBoundingBox(accurate=False) # False uses control points, thus the convex hull.
+        bbox.Inflate(sc.doc.ModelAbsoluteTolerance * 100)
+        calculateBoundingBoxEventArgs.IncludeBoundingBox(bbox)
+
+    def PostDrawObjects(self, drawEventArgs):
         if self.crv is None:
             return
 
@@ -318,22 +430,29 @@ class EndBulgePreviewConduit(Rhino.Display.DisplayConduit):
             thickness=crv_thk
         )
 
-        cp_locations = [pt.Location for pt in self.crv.Points]
-        
-        drawEventArgs.Display.DrawPolyline(
-            points=cp_locations,
-            color=self.color,
-            thickness=1,
-            lineStyle=Rhino.Display.LineStyle.Dot # Dotted line looks cleaner for polygons
-        )
+        self.cp_locations = [pt.Location for pt in self.crv.Points]
 
-        # For CPs.
-        # drawEventArgs.Display.DrawPoints(
-        #     points=cp_locations,
-        #     style=Rhino.Display.PointStyle.Simple,
-        #     radius=3,
-        #     color=self.color
-        # )
+        drawEventArgs.Display.DrawPatternedPolyline(
+            points=self.cp_locations,
+            color=self.color,
+            pattern=0x00001111,
+            thickness=1,
+            close=False)
+
+        drawEventArgs.Display.DrawPoints(
+            points=self.cp_locations,
+            style=Rhino.Display.PointStyle.Simple,
+            radius=3,
+            color=self.color
+            )
+
+        drawEventArgs.Display.DrawCurvatureGraph(
+            curve=self.crv,
+            color=self.color,
+            hairScale=self.graph_scale,
+            hairDensity=self.graph_density,
+            sampleDensity=2
+            )
 
 
 class EtoDialog(ef.Dialog):
@@ -342,19 +461,35 @@ class EtoDialog(ef.Dialog):
     https://github.com/mcneel/rhino-developer-samples/blob/3179a8386a64602ee670cc832c77c561d1b0944b/rhinopython/SampleEtoModelessForm.py
     """
 
-
     def __init__(self, objref_In):
         self.Title = "EndBulge by Scale"
         self.objref_In = objref_In
-        
+        self.dialog_ok = False
+
         rgC_In = objref_In.Curve()
         if isinstance(rgC_In, rg.BrepEdge):
             self.nc_In = rgC_In.ToNurbsCurve()
         else:
             self.nc_In = rgC_In.ToNurbsCurve() # TODO: Review whether non-Nurbs should be rejected. Handles Curve and PolyCurve
 
+        self._exact_scale = Opts.values['fScale'] 
+        self._auto_updating = False
+
         self.create_controls()
         self.setup_layout()
+
+        # --- FIX: FORCE INITIAL BACKGROUND VALIDATION ON STARTUP ---
+        # Run the validation check on startup so if fScale is 1.0, 
+        # the text box immediately turns pink.
+        initial_scale = self.ParseToFloat(self.textBoxes['fScale'].Text)
+        if initial_scale is not None:
+            if (
+                initial_scale <= Rhino.RhinoMath.ZeroTolerance or 
+                abs(initial_scale - 1.0) <= Rhino.RhinoMath.ZeroTolerance
+            ):
+                self.textBoxes['fScale'].BackgroundColor = ed.Colors.LightPink
+            else:
+                self.textBoxes['fScale'].BackgroundColor = ed.Colors.White
 
 
     def UpdatePreview(self):
@@ -362,34 +497,39 @@ class EtoDialog(ef.Dialog):
         if not hasattr(self, 'conduit') or self.conduit is None:
             return
 
-        # 1. Parse current numeric inputs
         fScale = self.ParseToFloat(self.textBoxes['fScale'].Text)
-        
-        # If input is mid-typing or invalid (like 1.0), don't break; use an immutable fallback or skip
-        if fScale is None or abs(fScale - 1.0) <= Rhino.RhinoMath.ZeroTolerance or fScale <= 0:
+
+        # Handle invalid inputs (letters, empty strings, negative numbers/zero)
+        if (
+            fScale is None or
+            fScale <= Rhino.RhinoMath.ZeroTolerance
+        ):
             self.conduit.crv = None
             sc.doc.Views.Redraw()
             return
 
-        # 2. Extract configuration states from UI controls
+        if abs(fScale - 1.0) <= Rhino.RhinoMath.ZeroTolerance:
+            self.conduit.crv = self.nc_In.Duplicate()
+            sc.doc.Views.Redraw()
+            return
+
         bBothEnds = bool(self.radioButtonLists['bBothEnds'].SelectedIndex)
         iCont_Picked = self.radioButtonLists['iCont_Picked'].SelectedIndex
         iCont_Opp = self.radioButtonLists['iCont_Opp'].SelectedIndex
         bDebug = self.checkBoxes['bDebug'].Checked
 
-        # 3. Determine which end was picked (Logic adapted from your main script)
+
         bSuccess, t_AtPicked = self.nc_In.ClosestPoint(self.objref_In.SelectionPoint())
         if not bSuccess:
             return
 
         if t_AtPicked > self.nc_In.Domain.Mid:
             iEndToScale = 2 if bBothEnds else 1
-            iG_T0, iG_T1 = iCont_Opp, iCont_Picked
+            iG_T0, iG_T1 = iCont_Opp-1, iCont_Picked-1
         else:
             iEndToScale = 2 if bBothEnds else 0
-            iG_T0, iG_T1 = iCont_Picked, iCont_Opp
+            iG_T0, iG_T1 = iCont_Picked-1, iCont_Opp-1
 
-        # 4. Generate the new preview curve using your core math function
         nc_Res = createCurve(
             nc_In=self.nc_In,
             fScale=fScale,
@@ -399,7 +539,6 @@ class EtoDialog(ef.Dialog):
             bDebug=bDebug
         )
 
-        # 5. Push to conduit and force viewport update
         self.conduit.crv = nc_Res
         sc.doc.Views.Redraw()
 
@@ -418,6 +557,7 @@ class EtoDialog(ef.Dialog):
         self.radioButtonLists[key].DataStore = (Opts.offValues[key], Opts.onValues[key])
         self.radioButtonLists[key].SelectedValue = self.radioButtonLists[key].DataStore[int(Opts.values[key])]
 
+
         key = 'fScale'
         #        self.labels[key] = ef.Label(Text = "Scale:")
         #        self.numericSteppers[key] = ef.NumericStepper(
@@ -432,6 +572,11 @@ class EtoDialog(ef.Dialog):
         self.textBoxes[key].Text = str(Opts.values[key])
         self.textBoxes[key].TextChanged += self.OnScaleTextChanged
 
+        self.hold_timer = ef.UITimer()
+        self.hold_timer.Interval = 0.15 # Repeats every 150 milliseconds
+        self.hold_timer.Elapsed += self.OnHoldTimerElapsed
+        self.hold_direction = 0
+
         # Custom stepper buttons
         self.btnScaleUp = ef.Button(Text=unichr(9650), Width=16, Height=12)
         self.btnScaleDown = ef.Button(Text=unichr(9660), Width=16, Height=12)
@@ -440,14 +585,43 @@ class EtoDialog(ef.Dialog):
         self.btnScaleDown.Font = small_font
         self.btnScaleUp.MinimumSize = ed.Size(16, 12)
         self.btnScaleDown.MinimumSize = ed.Size(16, 12)
-        self.btnScaleUp.Click += self.OnScaleUpClick
-        self.btnScaleDown.Click += self.OnScaleDownClick
+        
+        self.btnScaleUp.MouseDown += lambda s, e: self.StartHoldTimer(1)
+        self.btnScaleUp.MouseUp += self.StopHoldTimer
+        self.btnScaleUp.MouseLeave += self.StopHoldTimer
+
+        self.btnScaleDown.MouseDown += lambda s, e: self.StartHoldTimer(-1)
+        self.btnScaleDown.MouseUp += self.StopHoldTimer
+        self.btnScaleDown.MouseLeave += self.StopHoldTimer
+
 
         key = 'fScaleIncrement'
-        self.labels[key] = ef.Label(Text = "Incr:")
+        self.labels[key] = ef.Label(Text = "Incr.:")
         self.textBoxes[key] = ef.TextBox()
         self.textBoxes[key].Text = str(Opts.values[key])
         self.textBoxes[key].TextChanged += self.OnIncrementTextChanged
+
+
+        key = 'iGraphScale'
+        self.labels[key] = ef.Label(Text = "Graph scale:")
+        self.numericSteppers[key] = ef.NumericStepper()
+        self.numericSteppers[key].DecimalPlaces = 0 # Forces integer steps to match Rhino
+        self.numericSteppers[key].MinValue = 1.0
+        self.numericSteppers[key].MaxValue = 10000.0
+        self.numericSteppers[key].Increment = 1.0
+        self.numericSteppers[key].Value = float(Opts.values[key])
+        self.numericSteppers[key].ValueChanged += self.OnGraphScaleStepperChanged
+
+        key = 'iGraphDensity'
+        self.labels[key] = ef.Label(Text = "Graph density:")
+        self.numericSteppers[key] = ef.NumericStepper()
+        self.numericSteppers[key].DecimalPlaces = 0
+        self.numericSteppers[key].MinValue = 1.0
+        self.numericSteppers[key].MaxValue = 100.0
+        self.numericSteppers[key].Increment = 1.0
+        self.numericSteppers[key].Value = float(Opts.values[key])
+        self.numericSteppers[key].ValueChanged += self.OnGraphDensityStepperChanged
+
 
         key = 'iCont_Picked'
         self.labels[key] = ef.Label(Text = "Cont. of picked end:    ")
@@ -503,17 +677,21 @@ class EtoDialog(ef.Dialog):
         layout.AddSeparateRow(None, ed.Size(4, 4), True, False, (
             self.labels['fScale'], 
             self.textBoxes['fScale'], 
-            stepper_layout,             # <--- Inserted fake stepper arrows
+            stepper_layout,
+            ef.Label(Width=20),
             self.labels['fScaleIncrement'], 
             self.textBoxes['fScaleIncrement'], 
             None
         ))
 
-        #        key = 'fScale'
-        #        layout.AddSeparateRow(None, ed.Size(4, 4), True, False, (self.labels['fScale'], self.numericSteppers['fScale'], self.labels['fScaleIncrement'], self.textBoxes['fScaleIncrement'], None))
-
-#        key = 'iCont_Picked'
-#        layout.AddSeparateRow(None, ed.Size(4, 4), True, False, (self.labels[key], self.radioButtonLists[key]))
+        layout.AddSeparateRow(None, ed.Size(4, 4), True, False, (
+            self.labels['iGraphScale'],
+            self.numericSteppers['iGraphScale'],
+            ef.Label(Width=20),
+            self.labels['iGraphDensity'],
+            self.numericSteppers['iGraphDensity'],
+            None
+        ))
 
 
         cont_layout = ef.DynamicLayout()
@@ -531,138 +709,30 @@ class EtoDialog(ef.Dialog):
 
         layout.AddSeparateRow(None, ed.Size(20, 5), False, False, (self.checkBoxes['bDeleteInput'], self.checkBoxes['bEcho'], self.checkBoxes['bDebug']))
 
-        ok_button = ef.Button(Text = 'OK')
-        ok_button.Click += self.OnOKButtonClick
+        self.ok_button = ef.Button(Text = 'OK')
+        self.ok_button.Click += self.OnOKButtonClick
 
         save_button = ef.Button(Text = 'Save Settings')
         save_button.Click += self.OnSaveSettingsButtonClick
 
-        abort_button = ef.Button(Text = 'Cancel')
-        abort_button.Click += self.OnCancelButtonClick
+        self.abort_button = ef.Button(Text = 'Cancel')
+        self.abort_button.Click += self.OnCancelButtonClick
 
+        self.DefaultButton = self.ok_button
+        self.AbortButton = self.abort_button
 
         button_stack = ef.StackLayout()
         button_stack.Orientation = ef.Orientation.Horizontal
         button_stack.Spacing = 8
 
-        button_stack.Items.Add(ok_button)
+        button_stack.Items.Add(self.ok_button)
         button_stack.Items.Add(save_button)
-        button_stack.Items.Add(abort_button)
+        button_stack.Items.Add(self.abort_button)
 
         layout.AddRow(None) # Top spacing
         layout.AddSeparateRow(None, button_stack, None)
 
         self.Content = layout
-
-
-    def addCurveSetListItem(self, cs, fTol):
-        item = ef.ListItem()
-        total_length = 0.0
-        span_count = 0
-        cp_count = 0
-        for c in cs:
-            total_length += c.GetLength()
-            nc = c.ToNurbsCurve()
-            span_count += nc.SpanCount
-            cp_count += nc.Points.Count
-            nc.Dispose()
-        iPrec = sc.doc.ModelDistanceDisplayPrecision + 1
-        item.Text = ""
-        item.Text += "{:<10.6f}".format(fTol)
-        item.Text += "{:<{:}.{:}f}".format(total_length, iPrec+8, iPrec)
-        item.Text += "{:<11}".format(len(cs))
-        item.Text += "{:<11}".format(span_count)
-        item.Text += "{:<6}".format(cp_count)
-        self.listbox.Items.Add(item)
-
-
-    def fillListBox(self):
-        for i in range(len(self.cs_nested)):
-            self.addCurveSetListItem(self.cs_nested[i], self.fTols[i])
-        self.listbox.SelectedIndex = 0
-
-    def addDataToForm(self, d4_cs, d4_fTols):
-        self.d4_cs = d4_cs
-        self.d4_fTols = d4_fTols
-        self.bUnder_A = self.bUnder_B = False
-        self.cs_nested = self.d4_cs[(self.bUnder_A, self.bUnder_B)]
-        self.fTols = self.d4_fTols[(self.bUnder_A, self.bUnder_B)]
-        self.fillListBox()
-
-    def CreateFormControls(self):
-        layout = ef.DynamicLayout()
-        layout.Padding = ed.Padding(10)
-        layout.Spacing = ed.Size(4, 4)
-
-
-
-
-
-
-
-
-        layout.Rows.Add(self.CreateCheckBoxListRow())
-
-        layout.AddRow(None)
-
-        iPrec = sc.doc.ModelDistanceDisplayPrecision + 1
-
-        sLabel = "   {:<14}{:<12}{:<10}{:<8}{:<6}".format(
-            'Tol', 'Length', 'Crvs', 'Spans', 'CPs')
-
-        layout.Rows.Add(ef.Label(Text=sLabel))
-        layout.Rows.Add(self.CreateListBoxRow())
-
-        ok_button = ef.Button(Text = 'OK')
-        ok_button.Click += self.OnOKButtonClick
-        self.AbortButton = ef.Button(Text = 'Cancel')
-        self.AbortButton.Click += self.OnCancelButtonClick
-
-        layout.BeginVertical()
-        layout.AddRow(None, ok_button, self.AbortButton, None)
-        layout.EndVertical()
-
-        self.Content = layout
-
-    def OnUnderlyingChange(self, sender, e):
-        #print('-'*10
-        #for x in self.checkBoxList.SelectedValues:
-        ss = [str(item) for item in self.checkBoxList.SelectedValues]
-        self.bUnder_A = self.sUnder_A in ss
-        self.bUnder_B = self.sUnder_B in ss
-        self.conduit.Enabled = False
-        sc.doc.Views.Redraw()
-        self.listbox.Items.Clear()
-        self.cs_nested = self.d4_cs[(self.bUnder_A, self.bUnder_B)]
-        self.fTols = self.d4_fTols[(self.bUnder_A, self.bUnder_B)]
-        self.fillListBox()
-
-    def CreateCheckBoxListRow(self):
-        self.checkBoxList = ef.CheckBoxList()
-        self.sUnder_A = "Use face A's underlying surface"
-        self.checkBoxList.Items.Add(self.sUnder_A)
-        self.sUnder_B = "Use face B's underlying surface"
-        self.checkBoxList.Items.Add(self.sUnder_B)
-        self.checkBoxList.Orientation = ef.Orientation.Vertical
-        self.checkBoxList.SelectedValuesChanged += self.OnUnderlyingChange
-        return self.checkBoxList
-
-    def OnSelectedIndexChanged(self, sender, e):
-        index = self.listbox.SelectedIndex
-        if index >= 0:
-            self.conduit.Enabled = False
-            item = self.listbox.Items[index]
-            self.conduit.curves = self.cs_nested[index]
-            self.conduit.Enabled = True
-            sc.doc.Views.Redraw()
-
-    def CreateListBoxRow(self):
-        self.listbox = ef.ListBox()
-        #self.m_listbox.Size = ed.Size(200, 100)
-        self.listbox.SelectedIndexChanged += self.OnSelectedIndexChanged
-        d_row = ef.DynamicRow()
-        d_row.Add(self.listbox)
-        return d_row
 
 
     def ParseToFloat(self, text):
@@ -679,10 +749,13 @@ class EtoDialog(ef.Dialog):
 
     def OnScaleTextChanged(self, sender, e):
         val = self.ParseToFloat(sender.Text)
-        
+
+        if not self._auto_updating and val is not None:
+            self._exact_scale = val
+
         # Base validation: Must be a number > 0
         is_valid = val is not None and val > Rhino.RhinoMath.ZeroTolerance
-        
+
         # 1.0 is an invalid scale factor
         if is_valid and abs(val - 1.0) <= Rhino.RhinoMath.ZeroTolerance:
             is_valid = False
@@ -695,23 +768,38 @@ class EtoDialog(ef.Dialog):
         self.UpdatePreview() # For conduit.
 
 
-    def OnScaleUpClick(self, sender, e):
-        self.AdjustScale(1)
+    def StartHoldTimer(self, direction):
+        """Fires immediately on first click and starts the repeat timer."""
+        self.AdjustScale(direction)
+        self.hold_direction = direction
+        self.hold_timer.Start()
 
 
-    def OnScaleDownClick(self, sender, e):
-        self.AdjustScale(-1)
+    def StopHoldTimer(self, sender, e):
+        """Kills the repeat timer when the mouse is released or drifts away."""
+        self.hold_timer.Stop()
+
+
+    def OnHoldTimerElapsed(self, sender, e):
+        """Fires continuously while the timer is running."""
+        self.AdjustScale(self.hold_direction)
 
 
     def AdjustScale(self, direction):
-        current_val = self.ParseToFloat(self.textBoxes['fScale'].Text)
+        current_val = self._exact_scale
         incr_val = self.ParseToFloat(self.textBoxes['fScaleIncrement'].Text)
-        
+
         if current_val is not None and incr_val is not None:
             new_val = current_val + (incr_val * direction)
             if new_val > Rhino.RhinoMath.ZeroTolerance:
-                # Format to a maximum of 4 decimal places, stripping trailing zeros
+
+                # Save the perfect floating-point math internally
+                self._exact_scale = new_val
+
+                # Lock the text box, update the display, then unlock it
+                self._auto_updating = True
                 self.textBoxes['fScale'].Text = "{:g}".format(round(new_val, 4))
+                self._auto_updating = False
 
         self.UpdatePreview() # For conduit.
 
@@ -740,21 +828,44 @@ class EtoDialog(ef.Dialog):
             sender.BackgroundColor = ed.Colors.LightPink
 
 
+    def OnGraphScaleStepperChanged(self, sender, e):
+        if hasattr(self, 'conduit') and self.conduit is not None:
+            self.conduit.graph_scale = sender.Value
+            sc.doc.Views.Redraw()
+
+
+    def OnGraphDensityStepperChanged(self, sender, e):
+        if hasattr(self, 'conduit') and self.conduit is not None:
+            self.conduit.graph_density = int(sender.Value)
+            sc.doc.Views.Redraw()
+
+
     def SaveSettings(self):
+
+        key = 'iGraphScale'
+        sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = int(self.numericSteppers[key].Value)
+
+        key = 'iGraphDensity'
+        sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = int(self.numericSteppers[key].Value)
+
         key = 'bBothEnds'
         sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = bool(self.radioButtonLists[key].SelectedIndex)
 
         key = 'fScale'
-        sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = float(self.textBoxes[key].Text)
+        parsed_scale = self.ParseToFloat(self.textBoxes[key].Text)
+        if parsed_scale is not None:
+            sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = parsed_scale
 
         key = 'fScaleIncrement'
-        sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = float(self.textBoxes[key].Text)
+        parsed_incr = self.ParseToFloat(self.textBoxes[key].Text)
+        if parsed_incr is not None:
+            sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = parsed_incr
 
         key = 'iCont_Picked'
-        sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = bool(self.radioButtonLists[key].SelectedIndex)
+        sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = self.radioButtonLists[key].SelectedIndex
 
         key = 'iCont_Opp'
-        sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = bool(self.radioButtonLists[key].SelectedIndex)
+        sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = self.radioButtonLists[key].SelectedIndex
 
         key = 'bDeleteInput'
         sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = self.checkBoxes[key].Checked
@@ -765,29 +876,29 @@ class EtoDialog(ef.Dialog):
         key = 'bDebug'
         sc.sticky[Opts.stickyKeys[key]] = Opts.values[key] = self.checkBoxes[key].Checked
 
-    #        for key in Opts.keys:
-    #            if key == 'bGUI': continue
-    #            print(sc.sticky[Opts.stickyKeys[key]])
-
+        #        for key in Opts.keys:
+        #            if key == 'bGUI': continue
+        #            print(sc.sticky[Opts.stickyKeys[key]])
 
 
     def OnOKButtonClick(self, sender, e):
 
+        fScale = self.ParseToFloat(self.textBoxes['fScale'].Text)
+
+        # If the scale is invalid or exactly 1.0, treat it as a Cancel action 
+        # so we don't output or bake a redundant duplicate curve.
+        if (
+            fScale is None or 
+            fScale <= Rhino.RhinoMath.ZeroTolerance or 
+            abs(fScale - 1.0) <= Rhino.RhinoMath.ZeroTolerance
+        ):
+            print("Scale is 1.0 or invalid. No changes were applied.")
+            self.dialog_ok = False
+            self.Close()
+            return
+
         self.SaveSettings()
-        self.Close()
-
-        return
-
-
-        UInt32_Undo = sc.doc.BeginUndoRecord("Surface-Surface Intersect")
-
-        for c in self.cs_nested[i]:
-            sc.doc.Objects.AddCurve(c)
-        sc.doc.Views.Redraw()
-
-        if not sc.doc.EndUndoRecord(UInt32_Undo):
-            print("Warning: EndUndoRecord==False")
-
+        self.dialog_ok = True
         self.Close()
 
 
@@ -798,6 +909,7 @@ class EtoDialog(ef.Dialog):
 
 
     def OnCancelButtonClick(self, sender, e):
+        self.Result = ef.DialogResult.Cancel
         self.Close()
 
 
@@ -806,7 +918,30 @@ class EtoDialog(ef.Dialog):
         sc.doc.Views.Redraw()
 
 
-def getInput_GUI(objref_In):
+def _isScaleOK(fScale):
+
+    if fScale is None:
+        return False, "Scale is not set. Script canceled."
+
+    if fScale == 0:
+        return False, "Scale set to 0, which would result in stacked control points. Script canceled."
+
+    if fScale < 0:
+        return False, "Scale set to a negative value. Script canceled.".format(fScale)
+
+    if abs(fScale) <= Rhino.RhinoMath.ZeroTolerance:
+        return False, "Scale set to {}, which would result in almost stacked control points. Script canceled.".format(fScale)
+
+    if fScale == 1:
+        return False, "Scale set to 1, so curve cannot be modified. Script canceled."
+
+    if abs(fScale - 1.0) <= Rhino.RhinoMath.ZeroTolerance:
+        return False, "Scale set within {} of 1.0. Script canceled.".format(Rhino.RhinoMath.ZeroTolerance)
+
+    return True, None
+
+
+def _createCurve_viaGUI(objref_In):
 
     key = 'conduit'
     stickyKey = '{}({})'.format(key, __file__)
@@ -826,138 +961,18 @@ def getInput_GUI(objref_In):
     dialog.conduit.Enabled = True
     sc.doc.Views.Redraw()
 
-    dialog.DefaultButton = ef.Button()
-    dialog.AbortButton = ef.Button()
-
-    rv = Rhino.UI.EtoExtensions.ShowSemiModal(dialog, sc.doc, parent)
-    print(rv)
+    Rhino.UI.EtoExtensions.ShowSemiModal(dialog, sc.doc, parent)
 
     dialog.conduit.Enabled = False
     sc.doc.Views.Redraw()
 
-
-def createCurve(nc_In, fScale, iEndToScale=2, iG_T0=2, iG_T1=2, bDebug=False):
-    """
-    Parameters:
-        nc_In: rg.NurbsCurve
-        fScale: float of scale factor
-        iTEndsToScale: int(0 for T0, 1 for T1, or 3 for both ends nc_In)
-        iG_T0: int(-1 for No continuity, 0 for G0, 1 for G1, or 2 for G2)
-        iG_T1: int(-1 for No continuity, 0 for G0, 1 for G1, or 2 for G2)
-        bDebug: bool
-    Returns on success: rg.NurbsCurve
-    Returns on fail: None
-    """
-
-    if iG_T0 is None and iG_T1 is None: return
-
-    if nc_In.IsPeriodic: return
-    if not isinstance(nc_In, rg.NurbsCurve): return
-    #if nc_In.Degree + 1 < nc_In.Points.Count: return # because not Bezier.
-
-    if nc_In.Points.Count < (iG_T0 + 1) + (iG_T1 + 1):
-        print("Curve needs {} more points to maintain continuities.".format(
-            (iG_T0 + 1) + (iG_T1 + 1) - nc_In.Points.Count))
+    if not dialog.dialog_ok:
         return
 
-    pts_Prime = []
+    return dialog.conduit.crv
 
 
-    if iEndToScale in (0,2):
-        # Scale T0 end.
-
-
-        if iG_T0 in (0,1,2):
-            p0 = nc_In.Points[0].Location
-            pts_Prime.append(p0)
-
-            if iG_T0 in (1,2):
-                p1 = nc_In.Points[1].Location
-
-                xform = rg.Transform.Scale(p0, fScale)
-
-                p1p = rg.Point3d(p1)
-                p1p.Transform(xform)
-                pts_Prime.append(p1p)
-
-                if iG_T0 == 2:
-                    p2 = nc_In.Points[2].Location
-
-                    m = ((p1p - p0).Length/(p1 - p0).Length)**2.0
-
-                    p2p = 2.0*p1p + -p0 + m*(-2.0*p1 + p2 + p0)
-
-                    pts_Prime.append(p2p)
-
-
-
-    # Duplicate the points that are not needed by either end scale.
-    iCt_PtsNotNeededByT1Scale = nc_In.Points.Count - (iG_T1 + 1)
-    for i in range(len(pts_Prime), iCt_PtsNotNeededByT1Scale):
-        pts_Prime.append(nc_In.Points[i].Location)
-
-
-    if iEndToScale in (1,2):
-        # Scale T1 end.
-
-
-        if iG_T1 in (0,1,2):
-            pts_New_T1 = [] # To be reversed and extended on pts_Prime.
-
-            p0 = nc_In.Points[nc_In.Points.Count-1].Location
-            pts_New_T1.append(p0)
-
-            if iG_T1 in (1,2):
-                p1 = nc_In.Points[nc_In.Points.Count-2].Location
-
-                xform = rg.Transform.Scale(p0, fScale)
-
-                p1p = rg.Point3d(p1) # G1 CP location prime.
-                p1p.Transform(xform)
-                pts_New_T1.append(p1p)
-
-                if iG_T1 == 2:
-                    p2 = nc_In.Points[nc_In.Points.Count-3].Location
-
-                    m = ((p1p - p0).Length/(p1 - p0).Length)**2.0
-
-                    p2p = 2.0*p1p + -p0 + m*(-2.0*p1 + p2 + p0)
-
-                    pts_New_T1.append(p2p)
-
-            pts_New_T1.reverse()
-
-            pts_Prime.extend(pts_New_T1)
-
-
-    #for pt in pts_Prime:
-    #    sc.doc.Objects.AddPoint(pt)
-    #sc.doc.Views.Redraw(); return
-
-
-    nc_Out = nc_In.Duplicate()
-
-    for i in range(nc_Out.Points.Count):
-        nc_Out.Points.SetPoint(
-            index=i,
-            point=pts_Prime[i],
-            weight=nc_In.Points.GetWeight(i))
-
-
-    if bDebug:
-        for i in range(len(pts_Prime)):
-            pt = pts_Prime[i]
-            rgDot = rg.TextDot("{}".format(i), pt)
-            rgDot.FontHeight = 11
-            sc.doc.Objects.AddTextDot(rgDot)
-        sc.doc.Views.Redraw()
-
-
-
-    return nc_Out
-
-
-def processCurveObject(objref_In, **kwargs):
+def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
     """
     """
 
@@ -976,47 +991,52 @@ def processCurveObject(objref_In, **kwargs):
         print("Both continuities are set to 0, so curve cannot be modified. Script canceled.")
         return
 
-    if fScale == 1:
-        print("Scale set to 1, so curve cannot be modified. Script canceled.")
+    bOkay, sReport = _isScaleOK(fScale)
+    if not bOkay:
+        print(sReport)
         return
 
-    rgC_In = objref_In.Curve()
 
-    if isinstance(rgC_In, rg.BrepEdge):
-        nc_In = rgC_In.ToNurbsCurve()
-    elif isinstance(rgC_In, rg.NurbsCurve):
-        nc_In = rgC_In
-    elif isinstance(rgC_In, rg.PolyCurve):
-        nc_In = rgC_In.ToNurbsCurve()
+    if nc_Precalc is not None:
+        nc_Res = nc_Precalc
     else:
-        return
+        rgC_In = objref_In.Curve()
+
+        if isinstance(rgC_In, rg.BrepEdge):
+            nc_In = rgC_In.ToNurbsCurve()
+        elif isinstance(rgC_In, rg.NurbsCurve):
+            nc_In = rgC_In
+        elif isinstance(rgC_In, rg.PolyCurve):
+            nc_In = rgC_In.ToNurbsCurve()
+        else:
+            return
 
 
-    bSuccess, t_AtPicked = nc_In.ClosestPoint(objref_In.SelectionPoint())
-    if not bSuccess:
-        return
+        bSuccess, t_AtPicked = nc_In.ClosestPoint(objref_In.SelectionPoint())
+        if not bSuccess:
+            return
 
 
-    if t_AtPicked > nc_In.Domain.Mid:
-        iEndToScale = 2 if bBothEnds else 1
-        iG_T0, iG_T1 = iCont_Opp, iCont_Picked
-    else:
-        iEndToScale = 2 if bBothEnds else 0
-        iG_T0, iG_T1 = iCont_Picked, iCont_Opp
+        if t_AtPicked > nc_In.Domain.Mid:
+            iEndToScale = 2 if bBothEnds else 1
+            iG_T0, iG_T1 = iCont_Opp, iCont_Picked
+        else:
+            iEndToScale = 2 if bBothEnds else 0
+            iG_T0, iG_T1 = iCont_Picked, iCont_Opp
 
 
-    nc_Res = createCurve(
-        nc_In=nc_In,
-        fScale=fScale,
-        iEndToScale=iEndToScale,
-        iG_T0=iG_T0,
-        iG_T1=iG_T1,
-        bDebug=bDebug,
-        )
+        nc_Res = createCurve(
+            nc_In=nc_In,
+            fScale=fScale,
+            iEndToScale=iEndToScale,
+            iG_T0=iG_T0,
+            iG_T1=iG_T1,
+            bDebug=bDebug,
+            )
 
-    if nc_Res is None:
-        print("Curve could not be created.")
-        return
+        if nc_Res is None:
+            print("Curve could not be created.")
+            return
 
 
     if not bDeleteInput or objref_In.Edge():
@@ -1036,7 +1056,7 @@ def processCurveObject(objref_In, **kwargs):
 
 
 def main():
-    
+
     rv = getInput_CLI()
     if rv is None: return
 
@@ -1044,22 +1064,13 @@ def main():
 
     bGUI = Opts.values['bGUI']
 
-    if bGUI:
+    if not bGUI:
+        nc_Res = None
+    else:
         Rhino.RhinoApp.SetCommandPromptMessage("Continuing in dialog...")
-        getInput_GUI(objref_In)
+        nc_Res = _createCurve_viaGUI(objref_In)
 
-
-
-                #Opts.values['bBothEnds'],
-                #Opts.values['fScale'],
-                #-1 if Opts.values['iCont_Picked'] == 3 else Opts.values['iCont_Picked'],
-                #-1 if Opts.values['iCont_Opp'] == 3 else Opts.values['iCont_Opp'],
-                #Opts.values['bDeleteInput'],
-                #Opts.values['bEcho'],
-                #Opts.values['bDebug'],
-                #)
-
-    return
+        if nc_Res is None: return
 
     bBothEnds = Opts.values['bBothEnds']
     fScale = Opts.values['fScale']
@@ -1080,6 +1091,7 @@ def main():
 
     gC_Res = processCurveObject(
         objref_In=objref_In,
+        nc_Precalc=nc_Res,
         bBothEnds=bBothEnds,
         fScale=fScale,
         iCont_Picked=iCont_Picked,
@@ -1088,6 +1100,7 @@ def main():
         bEcho=bEcho,
         bDebug=bDebug,
         )
+
     if gC_Res is None:
         return
 

@@ -5,11 +5,15 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 This script will translate the G1 [1] (1st from the end) [0] from the end [0] control point
 by a scale (1 is no change).
 For G2 setting of MaintainPicked or MaintainOpp, the respective G2 [2] control points will also be translated.
+
+This script was modified with the use of Google Gemini 3.1 Pro.
+
+Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 
 """
 210303, 0307: Created.
-260420-25, 0709-11: Added an optional dialog. Added a preview for the dialog.
+260420-25, 0709-12: Added an optional dialog. Added a preview for the dialog.
         Refactored.
 
 Tangential sliding: Translating the 3rd control point, p2, parallel to the tangent vector (p1 - p0).
@@ -22,7 +26,6 @@ import scriptcontext as sc
 
 import Eto.Drawing as ed
 import Eto.Forms as ef
-from Rhino.UI import RhinoEtoApp, EtoExtensions
 
 
 class Opts:
@@ -68,7 +71,7 @@ class Opts:
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fScale_Picked'; keys.append(key)
-    values[key] = 0.5
+    values[key] = 0.75
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -84,7 +87,7 @@ class Opts:
 
     # --- OPPOSITE END CONTROLS ---
     key = 'fScale_Opp'; keys.append(key)
-    values[key] = 0.5
+    values[key] = 0.75
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -313,77 +316,71 @@ def canMaintainG3(nc, bEvalT1End):
 
 
 def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=1.0, fFullG2_T1=1.0, fFullG3_T1=1.0, iG_T0=2, iG_T1=2, iPickedEnd=0, bDebug=False):
-    """
-    Parameters:
-        nc_In: rg.NurbsCurve
-        fScale_T0: float of scale factor
-        fFullG2_T0
-        fFullG3_T0
-        fScale_T1
-        fFullG2_T1
-        fFullG3_T1
-        iG_T0: int(-1 for No continuity, 0 for G0, 1 for G1, or 2 for G2)
-        iG_T1: int(-1 for No continuity, 0 for G0, 1 for G1, or 2 for G2)
-        iPickedEnd: int
-        bDebug: bool
-    Returns on success: rg.NurbsCurve
-    Returns on fail: None
-    """
+    if iG_T0 is None and iG_T1 is None: return None, "Both continuity inputs are None.", None
+    if nc_In.IsPeriodic: return None, "Input curve is periodic.", None
+    if not isinstance(nc_In, rg.NurbsCurve): return None, "Input curve is a {}".format(nc_In.GetType().Name), None
 
-    if iG_T0 is None and iG_T1 is None: return None, "Both continuity inputs are None."
-    if nc_In.IsPeriodic: return None, "Input curve is periodic."
-    if not isinstance(nc_In, rg.NurbsCurve): return None, "Input curve is a {}".format(nc_In.GetType().Name)
-
-
-    # --- OVERLAP RESOLVER ---
-    # Decides which end "owns" each control point based on proximity.
-    # Lower continuity order (e.g., G2 vs G3) wins. Ties go to the Picked End.
-    max_mod_T0 = 0
-    max_mod_T1 = 0
+    # --- POINT ALLOCATION ENGINE ---
     N = nc_In.Points.Count
-    for i in range(N):
-        g_t0 = i
-        g_t1 = N - 1 - i
-        if g_t0 < g_t1:
-            max_mod_T0 = max(max_mod_T0, g_t0)
-        elif g_t1 < g_t0:
-            max_mod_T1 = max(max_mod_T1, g_t1)
-        else: # Tie
+    req_0 = max(0, iG_T0 + 1)
+    req_1 = max(0, iG_T1 + 1)
+    
+    bOverlap = False
+    if req_0 + req_1 > N:
+        bOverlap = True
+        # Higher continuity request wins contested points. Tie goes to Picked End.
+        if req_0 > req_1:
+            alloc_0 = min(req_0, N)
+            alloc_1 = N - alloc_0
+        elif req_1 > req_0:
+            alloc_1 = min(req_1, N)
+            alloc_0 = N - alloc_1
+        else:
             if iPickedEnd == 0:
-                max_mod_T0 = max(max_mod_T0, g_t0)
+                alloc_0 = min(req_0, N)
+                alloc_1 = N - alloc_0
             else:
-                max_mod_T1 = max(max_mod_T1, g_t1)
-                
-    # Cap modifications at G3
-    max_mod_T0 = min(3, max_mod_T0)
-    max_mod_T1 = min(3, max_mod_T1)
+                alloc_1 = min(req_1, N)
+                alloc_0 = N - alloc_1
+    else:
+        alloc_0 = req_0
+        alloc_1 = req_1
 
-    iG_T0_orig, iG_T1_orig = iG_T0, iG_T1
-    iG_T0 = min(iG_T0, max_mod_T0)
-    iG_T1 = min(iG_T1, max_mod_T1)
-            
-    if bDebug:
-        if iG_T0 != iG_T0_orig:
-            print("T0 mathematical continuity capped at G{} to prevent overlap.".format(iG_T0))
-        if iG_T1 != iG_T1_orig:
-            print("T1 mathematical continuity capped at G{} to prevent overlap.".format(iG_T1))
+    # Actual maintainable continuities based on secured points
+    max_mod_T0 = alloc_0 - 1
+    max_mod_T1 = alloc_1 - 1
+    
+    # Distribute remaining "free" points for spatial scaling
+    free = N - alloc_0 - alloc_1
+    if free > 0:
+        half = free // 2
+        extra = free % 2
+        scale_limit_T0 = alloc_0 + half
+        scale_limit_T1 = alloc_1 + half
+        if extra:
+            if iPickedEnd == 0: scale_limit_T0 += 1
+            else: scale_limit_T1 += 1
+    else:
+        scale_limit_T0 = alloc_0
+        scale_limit_T1 = alloc_1
+
+    if bDebug and bOverlap:
+        print("Overlap detected. T0 continuity capped at G{}, T1 capped at G{}.".format(max_mod_T0, max_mod_T1))
 
     # --- BASELINE CHECK ---
-    # Dynamically ignores G2/G3 parameters if their continuity was disabled or demoted.
-    def is_baseline(s, g2, g3, max_mod):
-        if max_mod < 1: return True
+    def is_baseline(s, g2, g3, scale_limit):
+        if scale_limit < 2: return True # Only p0 is owned, scaling does nothing
         b = abs(s - 1.0) <= Rhino.RhinoMath.ZeroTolerance
-        if max_mod >= 2: b = b and (abs(g2 - 1.0) <= Rhino.RhinoMath.ZeroTolerance)
-        if max_mod >= 3: b = b and (abs(g3 - 1.0) <= Rhino.RhinoMath.ZeroTolerance)
+        if scale_limit > 2: b = b and (abs(g2 - 1.0) <= Rhino.RhinoMath.ZeroTolerance)
+        if scale_limit > 3: b = b and (abs(g3 - 1.0) <= Rhino.RhinoMath.ZeroTolerance)
         return b
 
-    base_T0 = is_baseline(fScale_T0, fFullG2_T0, fFullG3_T0, max_mod_T0)
-    base_T1 = is_baseline(fScale_T1, fFullG2_T1, fFullG3_T1, max_mod_T1)
+    base_T0 = is_baseline(fScale_T0, fFullG2_T0, fFullG3_T0, scale_limit_T0)
+    base_T1 = is_baseline(fScale_T1, fFullG2_T1, fFullG3_T1, scale_limit_T1)
 
     if base_T0 and base_T1:
-        return None, "Nothing to modify."
+        return None, "Nothing to modify.", (max_mod_T0, max_mod_T1, bOverlap)
 
-    # Copy all points as a baseline
     pts_Prime = [pt.Location for pt in nc_In.Points]
 
     # ----------------------------------------------------
@@ -391,100 +388,86 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
     # ----------------------------------------------------
     if not base_T0:
         p0 = nc_In.Points[0].Location
+        xform_T0 = rg.Transform.Scale(p0, fScale_T0)
         
-        if nc_In.Points.Count > 1 and max_mod_T0 >= 1:
+        # Spatial scale on all owned points
+        for i in range(1, scale_limit_T0):
+            pt_p = rg.Point3d(nc_In.Points[i].Location)
+            pt_p.Transform(xform_T0)
+            pts_Prime[i] = pt_p
+
+        # Apply geometric continuity overrides and tangent sliding
+        if scale_limit_T0 > 1:
             p1 = nc_In.Points[1].Location
-            
-            # G1 Proportional Scale
-            if iG_T0 >= 1:
-                xform = rg.Transform.Scale(p0, fScale_T0)
-                p1p = rg.Point3d(p1)
-                p1p.Transform(xform)
-            else:
-                p1p = rg.Point3d(p1)
-                
-            pts_Prime[1] = p1p
+            p1p = pts_Prime[1]
             slide_vec = p1p - p0
 
-            if nc_In.Points.Count > 2 and max_mod_T0 >= 2:
+            if scale_limit_T0 > 2:
                 p2 = nc_In.Points[2].Location
-                
-                # G2 Proportional Scale vs Original Base
-                if iG_T0 >= 2:
+                if max_mod_T0 >= 2:
                     m2 = ((p1p - p0).Length/(p1 - p0).Length)**2.0
-                    p2p_base = 2.0*p1p + -p0 + m2*(-2.0*p1 + p2 + p0)
+                    p2p_base = 2.0*p1p - p0 + m2*(-2.0*p1 + p2 + p0)
                 else:
-                    p2p_base = rg.Point3d(p2)
+                    p2p_base = pts_Prime[2]
                     
-                # G2 Tangent Slide (Applies regardless of iG_T0)
                 p2_slide = slide_vec * (fFullG2_T0 - 1.0)
-                p2p = p2p_base + p2_slide
-                pts_Prime[2] = p2p
+                pts_Prime[2] = p2p_base + p2_slide
 
-                if nc_In.Points.Count > 3 and max_mod_T0 >= 3:
+                if scale_limit_T0 > 3:
                     p3 = nc_In.Points[3].Location
-                    
-                    # G3 Proportional Scale vs Original Base
-                    if iG_T0 == 3:
+                    if max_mod_T0 >= 3:
                         m3 = ((p1p - p0).Length/(p1 - p0).Length)**3.0
                         p3p_base = 3.0*p2p_base - 3.0*p1p + p0 + m3*(p3 - 3.0*p2 + 3.0*p1 - p0)
                         p3_comp = 3.0 * p2_slide
                     else:
-                        p3p_base = rg.Point3d(p3)
+                        p3p_base = pts_Prime[3]
                         p3_comp = rg.Vector3d.Zero
                         
-                    # G3 Tangent Slide (Applies regardless of iG_T0)
                     p3_slide = slide_vec * (fFullG3_T0 - 1.0)
-                    p3p = p3p_base + p3_comp + p3_slide
-                    pts_Prime[3] = p3p
+                    pts_Prime[3] = p3p_base + p3_comp + p3_slide
 
     # ----------------------------------------------------
     # SCALE T1 END
     # ----------------------------------------------------
     if not base_T1:
-        last = nc_In.Points.Count - 1
+        last = N - 1
         p0 = nc_In.Points[last].Location
+        xform_T1 = rg.Transform.Scale(p0, fScale_T1)
+        
+        for i in range(1, scale_limit_T1):
+            idx = last - i
+            pt_p = rg.Point3d(nc_In.Points[idx].Location)
+            pt_p.Transform(xform_T1)
+            pts_Prime[idx] = pt_p
 
-        if nc_In.Points.Count > 1 and max_mod_T1 >= 1:
+        if scale_limit_T1 > 1:
             p1 = nc_In.Points[last-1].Location
-            
-            if iG_T1 >= 1:
-                xform = rg.Transform.Scale(p0, fScale_T1)
-                p1p = rg.Point3d(p1) 
-                p1p.Transform(xform)
-            else:
-                p1p = rg.Point3d(p1)
-                
-            pts_Prime[last-1] = p1p
+            p1p = pts_Prime[last-1]
             slide_vec = p1p - p0
 
-            if nc_In.Points.Count > 2 and max_mod_T1 >= 2:
+            if scale_limit_T1 > 2:
                 p2 = nc_In.Points[last-2].Location
-                
-                if iG_T1 >= 2:
+                if max_mod_T1 >= 2:
                     m2 = ((p1p - p0).Length/(p1 - p0).Length)**2.0
-                    p2p_base = 2.0*p1p + -p0 + m2*(-2.0*p1 + p2 + p0)
+                    p2p_base = 2.0*p1p - p0 + m2*(-2.0*p1 + p2 + p0)
                 else:
-                    p2p_base = rg.Point3d(p2)
+                    p2p_base = pts_Prime[last-2]
                     
                 p2_slide = slide_vec * (fFullG2_T1 - 1.0)
-                p2p = p2p_base + p2_slide
-                pts_Prime[last-2] = p2p
+                pts_Prime[last-2] = p2p_base + p2_slide
 
-                if nc_In.Points.Count > 3 and max_mod_T1 >= 3:
+                if scale_limit_T1 > 3:
                     p3 = nc_In.Points[last-3].Location
-                    
-                    if iG_T1 == 3:
+                    if max_mod_T1 >= 3:
                         m3 = ((p1p - p0).Length/(p1 - p0).Length)**3.0
                         p3p_base = 3.0*p2p_base - 3.0*p1p + p0 + m3*(p3 - 3.0*p2 + 3.0*p1 - p0)
                         p3_comp = 3.0 * p2_slide
                     else:
-                        p3p_base = rg.Point3d(p3)
+                        p3p_base = pts_Prime[last-3]
                         p3_comp = rg.Vector3d.Zero
                         
                     p3_slide = slide_vec * (fFullG3_T1 - 1.0)
-                    p3p = p3p_base + p3_comp + p3_slide
-                    pts_Prime[last-3] = p3p
+                    pts_Prime[last-3] = p3p_base + p3_comp + p3_slide
 
     # Enforce minimum distance (1e-6 cm) converted to current document units
     unit_scale = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Centimeters, sc.doc.ModelUnitSystem)
@@ -495,7 +478,7 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
             sReport = "Minimum control point distance (1e-6 cm) violated. Is Scale too small?"
             Rhino.RhinoApp.SetCommandPromptMessage(sReport)
             if bDebug: print(sReport)
-            return None, sReport
+            return None, sReport, None
 
     nc_Out = nc_In.Duplicate()
     for i in range(nc_Out.Points.Count):
@@ -511,7 +494,7 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
             sc.doc.Objects.AddTextDot(rgDot)
         sc.doc.Views.Redraw()
 
-    return nc_Out, None
+    return nc_Out, None, (max_mod_T0, max_mod_T1, bOverlap)
 
 
 class EndBulgePreviewConduit(Rhino.Display.DisplayConduit):
@@ -630,13 +613,42 @@ class EtoDialog(ef.Dialog):
             fScale_T1, fFullG2_T1, fFullG3_T1 = fScale_Opp, fFullG2_Opp, fFullG3_Opp
             iG_T0, iG_T1 = idxCont_Picked - 1, idxCont_Opp - 1
 
-        nc_Res, sReport = createCurve(
+        nc_Res, sReport, info = createCurve(
             nc_In=self.nc_In,
             fScale_T0=fScale_T0, fFullG2_T0=fFullG2_T0, fFullG3_T0=fFullG3_T0,
             fScale_T1=fScale_T1, fFullG2_T1=fFullG2_T1, fFullG3_T1=fFullG3_T1,
             iG_T0=iG_T0, iG_T1=iG_T1, iPickedEnd=iPickedEnd,
             bDebug=bDebug
         )
+
+        # Dynamic UI feedback to show continuity downgrades and break linked state
+        if info is not None:
+            actual_T0, actual_T1, bOverlap = info
+            actual_Picked = actual_T1 if (t_AtPicked > self.nc_In.Domain.Mid) else actual_T0
+            actual_Opp = actual_T0 if (t_AtPicked > self.nc_In.Domain.Mid) else actual_T1
+            
+            if not self._auto_updating:
+                self._auto_updating = True
+                changed = False
+                
+                # Check if continuity engine downgraded the requests
+                if actual_Picked != idxCont_Picked - 1:
+                    self.radioButtonLists['idxCont_Picked'].SelectedIndex = actual_Picked + 1
+                    changed = True
+                if actual_Opp != idxCont_Opp - 1:
+                    self.radioButtonLists['idxCont_Opp'].SelectedIndex = actual_Opp + 1
+                    changed = True
+                    
+                # If overlap forced a change, forcefully decouple the ends UI
+                if (bOverlap or changed) and self.radioButtonLists['bLinkedEnds'].SelectedIndex == 1:
+                    self.radioButtonLists['bLinkedEnds'].SelectedIndex = 0
+                    self.OnLinkedModeChanged(None, None)
+                    changed = True
+                    
+                if changed:
+                    self.UpdateControlStates()
+                    
+                self._auto_updating = False
 
         if nc_Res is None:
             self.conduit.crv = self.nc_In.Duplicate()
@@ -791,7 +803,7 @@ class EtoDialog(ef.Dialog):
         self.radioButtonLists[key].Spacing = ed.Size(4, 4)
         self.radioButtonLists[key].DataStore = list_Picked
         self.radioButtonLists[key].SelectedValue = self.radioButtonLists[key].DataStore[val_picked]
-        self.radioButtonLists[key].SelectedIndexChanged += lambda s, e: self.UpdatePreview()
+        self.radioButtonLists[key].SelectedIndexChanged += self.OnContinuityChanged
 
         key = 'idxCont_Opp'
         self.labels[key] = ef.Label(Text = "Maint. cont. of opp. end:")
@@ -799,7 +811,7 @@ class EtoDialog(ef.Dialog):
         self.radioButtonLists[key].Spacing = ed.Size(4, 4)
         self.radioButtonLists[key].DataStore = list_Opp
         self.radioButtonLists[key].SelectedValue = self.radioButtonLists[key].DataStore[val_opp]
-        self.radioButtonLists[key].SelectedIndexChanged += lambda s, e: self.UpdatePreview()
+        self.radioButtonLists[key].SelectedIndexChanged += self.OnContinuityChanged
 
         # --- SETTINGS CHECKBOXES ---
         key = 'bDeleteInput'
@@ -929,14 +941,96 @@ class EtoDialog(ef.Dialog):
 
 
     def OnLinkedModeChanged(self, sender, e):
+        self.UpdateControlStates()
+        if bool(self.radioButtonLists['bLinkedEnds'].SelectedIndex):
+            self.SyncLinkedControls()
+        self.UpdatePreview()
+
+
+    def UpdateControlStates(self):
         is_linked = bool(self.radioButtonLists['bLinkedEnds'].SelectedIndex)
+        idx_picked = self.radioButtonLists['idxCont_Picked'].SelectedIndex
+        idx_opp = self.radioButtonLists['idxCont_Opp'].SelectedIndex
+
+        # --- REAL-TIME UI POINT ALLOCATOR ---
+        N = self.nc_In.Points.Count
+        
+        if idx_picked + idx_opp > N:
+            if idx_picked > idx_opp:
+                alloc_P = min(idx_picked, N)
+                alloc_O = N - alloc_P
+            elif idx_opp > idx_picked:
+                alloc_O = min(idx_opp, N)
+                alloc_P = N - alloc_O
+            else: # Tie goes to the Picked End
+                alloc_P = min(idx_picked, N)
+                alloc_O = N - alloc_P
+        else:
+            alloc_P = idx_picked
+            alloc_O = idx_opp
+
+        free = N - alloc_P - alloc_O
+        if free > 0:
+            half = free // 2
+            extra = free % 2
+            scale_limit_P = alloc_P + half + extra
+            scale_limit_O = alloc_O + half
+        else:
+            scale_limit_P = alloc_P
+            scale_limit_O = alloc_O
+
+        # Enable sliders based on physically available points (3 points for G2, 4 points for G3)
+        self.numericSteppers['fFullG2_Picked'].Enabled = (scale_limit_P >= 3)
+        self.numericSteppers['fFullG3_Picked'].Enabled = (scale_limit_P >= 4)
+
+        # Opposite End Controls
         self.textBoxes['fScale_Opp'].Enabled = not is_linked
-        self.numericSteppers['fFullG2_Opp'].Enabled = not is_linked
-        self.numericSteppers['fFullG3_Opp'].Enabled = not is_linked
         self.btnScaleUp_Opp.Enabled = not is_linked
         self.btnScaleDown_Opp.Enabled = not is_linked
+        
         if is_linked:
-            self.SyncLinkedControls()
+            self.numericSteppers['fFullG2_Opp'].Enabled = False
+            self.numericSteppers['fFullG3_Opp'].Enabled = False
+        else:
+            self.numericSteppers['fFullG2_Opp'].Enabled = (scale_limit_O >= 3)
+            self.numericSteppers['fFullG3_Opp'].Enabled = (scale_limit_O >= 4)
+
+
+    def OnContinuityChanged(self, sender, e):
+        # Prevent infinite loops if we programmatically change an index below
+        if getattr(self, '_auto_updating', False):
+            return
+
+        self._auto_updating = True
+
+        N = self.nc_In.Points.Count
+        idx_picked = self.radioButtonLists['idxCont_Picked'].SelectedIndex
+        idx_opp = self.radioButtonLists['idxCont_Opp'].SelectedIndex
+
+        downgraded = False
+
+        # If Picked was manually changed, Opp yields
+        if sender == self.radioButtonLists['idxCont_Picked']:
+            if idx_picked + idx_opp > N:
+                idx_opp = max(0, N - idx_picked)
+                self.radioButtonLists['idxCont_Opp'].SelectedIndex = idx_opp
+                downgraded = True
+
+        # If Opp was manually changed, Picked yields
+        elif sender == self.radioButtonLists['idxCont_Opp']:
+            if idx_picked + idx_opp > N:
+                idx_picked = max(0, N - idx_opp)
+                self.radioButtonLists['idxCont_Picked'].SelectedIndex = idx_picked
+                downgraded = True
+
+        # If a downgrade was forced, decouple the linked ends so the user clearly sees the split
+        if downgraded and self.radioButtonLists['bLinkedEnds'].SelectedIndex == 1:
+            self.radioButtonLists['bLinkedEnds'].SelectedIndex = 0
+            
+        self._auto_updating = False
+
+        # Apply visual enabled/disabled states and push to the geometry engine
+        self.UpdateControlStates()
         self.UpdatePreview()
 
 
@@ -1172,10 +1266,6 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
     bEcho = getOpt('bEcho')
     bDebug = getOpt('bDebug')
 
-    if idxCont_Picked == 0 and idxCont_Opp == 0:
-        if bEcho:
-            print("Both continuities are set to None, so curve cannot be modified. Script canceled.")
-        return
 
     if nc_Precalc is not None:
         nc_Res = nc_Precalc
@@ -1215,7 +1305,7 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
             iG_T1 = 2
             if bEcho: print("T1 continuity downgraded to G2. G3 requires internal knot multiplicity >= 3.")
 
-        nc_Res, sReport = createCurve(
+        nc_Res, sReport, info = createCurve(
             nc_In=nc_In,
             fScale_T0=fScale_T0, fFullG2_T0=fFullG2_T0, fFullG3_T0=fFullG3_T0,
             fScale_T1=fScale_T1, fFullG2_T1=fFullG2_T1, fFullG3_T1=fFullG3_T1,
@@ -1272,10 +1362,6 @@ def main():
     bDeleteInput = Opts.values['bDeleteInput']
     bEcho = Opts.values['bEcho']
     bDebug = Opts.values['bDebug']
-
-    if idxCont_Picked < 1 and idxCont_Opp < 1:
-        print("Continuity of at least one end of curve must be G1 or G2. Script canceled.")
-        return
 
     if not bDebug: sc.doc.Views.RedrawEnabled = False
     sc.doc.Objects.UnselectAll()

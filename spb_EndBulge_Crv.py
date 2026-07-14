@@ -28,7 +28,7 @@ Send any questions, comments, or script development service needs to @spb on the
 
 """
 210303, 0307: Created.
-260420-25, 0709-13: Added an optional dialog. Added a preview for the dialog.
+260420-25, 0709-14: Added an optional dialog. Added a preview for the dialog.
         Refactored.
 """
 
@@ -89,11 +89,11 @@ def getInput_CLI():
         if not ebk.Opts.values['bGUI']:
             addOption('bLinkedEnds')
             addOption('fScale_Picked')
-            addOption('fFullG2_Picked')
-            addOption('fFullG3_Picked')
+            addOption('fSlideG2_Picked')
+            addOption('fSlideG3_Picked')
             addOption('fScale_Opp')
-            addOption('fFullG2_Opp')
-            addOption('fFullG3_Opp')
+            addOption('fSlideG2_Opp')
+            addOption('fSlideG3_Opp')
             addOption('idxCont_Picked')
             addOption('idxCont_Opp')
             addOption('bDeleteInput')
@@ -159,11 +159,11 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
 
     bLinkedEnds = getOpt('bLinkedEnds')
     fScale_Picked = getOpt('fScale_Picked')
-    fFullG2_Picked = getOpt('fFullG2_Picked') 
-    fFullG3_Picked = getOpt('fFullG3_Picked') 
+    fSlideG2_Picked = getOpt('fSlideG2_Picked') 
+    fSlideG3_Picked = getOpt('fSlideG3_Picked') 
     fScale_Opp = getOpt('fScale_Opp')
-    fFullG2_Opp = getOpt('fFullG2_Opp')
-    fFullG3_Opp = getOpt('fFullG3_Opp')
+    fSlideG2_Opp = getOpt('fSlideG2_Opp')
+    fSlideG3_Opp = getOpt('fSlideG3_Opp')
     idxCont_Picked = getOpt('idxCont_Picked')
     idxCont_Opp = getOpt('idxCont_Opp')
     bDeleteInput = getOpt('bDeleteInput')
@@ -189,13 +189,13 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
 
         if t_AtPicked > nc_In.Domain.Mid:
             iPickedEnd = 1
-            fScale_T1, fFullG2_T1, fFullG3_T1 = fScale_Picked, fFullG2_Picked, fFullG3_Picked
-            fScale_T0, fFullG2_T0, fFullG3_T0 = fScale_Opp, fFullG2_Opp, fFullG3_Opp
+            fScale_T1, fSlideG2_T1, fSlideG3_T1 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked
+            fScale_T0, fSlideG2_T0, fSlideG3_T0 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp
             iG_T1, iG_T0 = idxCont_Picked - 1, idxCont_Opp - 1
         else:
             iPickedEnd = 0
-            fScale_T0, fFullG2_T0, fFullG3_T0 = fScale_Picked, fFullG2_Picked, fFullG3_Picked
-            fScale_T1, fFullG2_T1, fFullG3_T1 = fScale_Opp, fFullG2_Opp, fFullG3_Opp
+            fScale_T0, fSlideG2_T0, fSlideG3_T0 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked
+            fScale_T1, fSlideG2_T1, fSlideG3_T1 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp
             iG_T0, iG_T1 = idxCont_Picked - 1, idxCont_Opp - 1
 
         can_G3_T0 = ebk.canMaintainG3(nc_In, False)
@@ -210,8 +210,8 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
 
         nc_Res, sReport, info = ebk.createCurve(
             nc_In=nc_In,
-            fScale_T0=fScale_T0, fFullG2_T0=fFullG2_T0, fFullG3_T0=fFullG3_T0,
-            fScale_T1=fScale_T1, fFullG2_T1=fFullG2_T1, fFullG3_T1=fFullG3_T1,
+            fScale_T0=fScale_T0, fSlideG2_T0=fSlideG2_T0, fSlideG3_T0=fSlideG3_T0,
+            fScale_T1=fScale_T1, fSlideG2_T1=fSlideG2_T1, fSlideG3_T1=fSlideG3_T1,
             iG_T0=iG_T0,
             iG_T1=iG_T1,
             iPickedEnd=iPickedEnd,
@@ -258,11 +258,11 @@ def main():
     # Extract parsed variables from the Kernel's Opts dictionary
     bLinkedEnds = ebk.Opts.values['bLinkedEnds']
     fScale_Picked = ebk.Opts.values['fScale_Picked']
-    fFullG2_Picked = ebk.Opts.values['fFullG2_Picked'] 
-    fFullG3_Picked = ebk.Opts.values['fFullG3_Picked'] 
+    fSlideG2_Picked = ebk.Opts.values['fSlideG2_Picked'] 
+    fSlideG3_Picked = ebk.Opts.values['fSlideG3_Picked'] 
     fScale_Opp = ebk.Opts.values['fScale_Opp']
-    fFullG2_Opp = ebk.Opts.values['fFullG2_Opp']
-    fFullG3_Opp = ebk.Opts.values['fFullG3_Opp']
+    fSlideG2_Opp = ebk.Opts.values['fSlideG2_Opp']
+    fSlideG3_Opp = ebk.Opts.values['fSlideG3_Opp']
     
     idxCont_Picked = ebk.Opts.values['idxCont_Picked']
     idxCont_Opp = ebk.Opts.values['idxCont_Opp']
@@ -277,8 +277,8 @@ def main():
         objref_In=objref_In,
         nc_Precalc=nc_Res,
         bLinkedEnds=bLinkedEnds,
-        fScale_Picked=fScale_Picked, fFullG2_Picked=fFullG2_Picked, fFullG3_Picked=fFullG3_Picked,
-        fScale_Opp=fScale_Opp, fFullG2_Opp=fFullG2_Opp, fFullG3_Opp=fFullG3_Opp,
+        fScale_Picked=fScale_Picked, fSlideG2_Picked=fSlideG2_Picked, fSlideG3_Picked=fSlideG3_Picked,
+        fScale_Opp=fScale_Opp, fSlideG2_Opp=fSlideG2_Opp, fSlideG3_Opp=fSlideG3_Opp,
         idxCont_Picked=idxCont_Picked,
         idxCont_Opp=idxCont_Opp,
         bDeleteInput=bDeleteInput, bEcho=bEcho, bDebug=bDebug

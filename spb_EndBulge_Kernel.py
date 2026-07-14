@@ -26,7 +26,7 @@ Send any questions, comments, or script development service needs to @spb on the
 """
 
 """
-260712-13: Created by extracting refactored code from another script.
+260712-14: Created by extracting refactored code from another script.
 """
 
 import Rhino
@@ -84,13 +84,13 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fFullG2_Picked'; keys.append(key)
-    values[key] = 1.0
+    key = 'fSlideG2_Picked'; keys.append(key)
+    values[key] = 0.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fFullG3_Picked'; keys.append(key)
-    values[key] = 1.0
+    key = 'fSlideG3_Picked'; keys.append(key)
+    values[key] = 0.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -99,13 +99,13 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fFullG2_Opp'; keys.append(key)
-    values[key] = 1.0
+    key = 'fSlideG2_Opp'; keys.append(key)
+    values[key] = 0.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fFullG3_Opp'; keys.append(key)
-    values[key] = 1.0
+    key = 'fSlideG3_Opp'; keys.append(key)
+    values[key] = 0.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -209,13 +209,16 @@ def canMaintainG3(nc, bEvalT1End):
     return knots.KnotMultiplicity(iKnot) >= 3
 
 
-def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=1.0, fFullG2_T1=1.0, fFullG3_T1=1.0, iG_T0=2, iG_T1=2, iPickedEnd=0, bDebug=False):
+def createCurve(nc_In, fScale_T0=1.0, fSlideG2_T0=0.0, fSlideG3_T0=0.0, fScale_T1=1.0, fSlideG2_T1=0.0, fSlideG3_T1=0.0, iG_T0=2, iG_T1=2, iPickedEnd=0, bDebug=False):
     if iG_T0 is None and iG_T1 is None: return None, "Both continuity inputs are None.", None
     if nc_In.IsPeriodic: return None, "Input curve is periodic.", None
     if not isinstance(nc_In, rg.NurbsCurve): return None, "Input curve is a {}".format(nc_In.GetType().Name), None
-    if not any(_ != 1.0 for _ in (fScale_T0, fFullG2_T0, fFullG3_T0, fScale_T1, fFullG2_T1, fFullG3_T1)):
+    if any(abs(_ - Rhino.RhinoMath.ZeroTolerance) != 1.0 for _ in (fScale_T0, fScale_T1)):
         pass
-        return None, "All scale and fullness values are 1.0.", None
+    elif any(abs(_ - Rhino.RhinoMath.ZeroTolerance) != 0.0 for _ in (fSlideG2_T0, fSlideG3_T0, fSlideG2_T1, fSlideG3_T1)):
+        pass
+    else:
+        return None, "All scale and slide values result in no change to the geometry.", None
 
     # --- POINT ALLOCATION ENGINE ---
     N = nc_In.Points.Count
@@ -265,12 +268,12 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
     def is_baseline(s, g2, g3, scale_limit):
         if scale_limit < 2: return True 
         b = abs(s - 1.0) <= Rhino.RhinoMath.ZeroTolerance
-        if scale_limit > 2: b = b and (abs(g2 - 1.0) <= Rhino.RhinoMath.ZeroTolerance)
-        if scale_limit > 3: b = b and (abs(g3 - 1.0) <= Rhino.RhinoMath.ZeroTolerance)
+        if scale_limit > 2: b = b and (abs(g2) <= Rhino.RhinoMath.ZeroTolerance)
+        if scale_limit > 3: b = b and (abs(g3) <= Rhino.RhinoMath.ZeroTolerance)
         return b
 
-    base_T0 = is_baseline(fScale_T0, fFullG2_T0, fFullG3_T0, scale_limit_T0)
-    base_T1 = is_baseline(fScale_T1, fFullG2_T1, fFullG3_T1, scale_limit_T1)
+    base_T0 = is_baseline(fScale_T0, fSlideG2_T0, fSlideG3_T0, scale_limit_T0)
+    base_T1 = is_baseline(fScale_T1, fSlideG2_T1, fSlideG3_T1, scale_limit_T1)
 
     if base_T0 and base_T1:
         return None, "Nothing to modify.", (max_mod_T0, max_mod_T1, bOverlap)
@@ -308,7 +311,7 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
                 else:
                     p2p_base = pts_Prime[2]
                     
-                p2_slide = slide_vec * (fFullG2_T0 - 1.0)
+                p2_slide = slide_vec * fSlideG2_T0
                 pts_Prime[2] = p2p_base + p2_slide
 
                 if scale_limit_T0 > 3:
@@ -321,7 +324,7 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
                         p3p_base = pts_Prime[3]
                         p3_comp = rg.Vector3d.Zero
                         
-                    p3_slide = slide_vec * (fFullG3_T0 - 1.0)
+                    p3_slide = slide_vec * fSlideG3_T0
                     pts_Prime[3] = p3p_base + p3_comp + p3_slide
 
     # ----------------------------------------------------
@@ -352,7 +355,7 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
                 else:
                     p2p_base = pts_Prime[last-2]
                     
-                p2_slide = slide_vec * (fFullG2_T1 - 1.0)
+                p2_slide = slide_vec * fSlideG2_T1
                 pts_Prime[last-2] = p2p_base + p2_slide
 
                 if scale_limit_T1 > 3:
@@ -365,7 +368,7 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
                         p3p_base = pts_Prime[last-3]
                         p3_comp = rg.Vector3d.Zero
                         
-                    p3_slide = slide_vec * (fFullG3_T1 - 1.0)
+                    p3_slide = slide_vec * fSlideG3_T1
                     pts_Prime[last-3] = p3p_base + p3_comp + p3_slide
 
     # Enforce minimum distance (but ignore inherently stacked singularity points)
@@ -445,12 +448,12 @@ class EtoDialog(ef.Dialog):
         if not hasattr(self, 'conduit') or self.conduit is None: return
 
         fScale_Picked = self.ParseToFloat(self.textBoxes['fScale_Picked'].Text)
-        fFullG2_Picked = self.numericSteppers['fFullG2_Picked'].Value
-        fFullG3_Picked = self.numericSteppers['fFullG3_Picked'].Value
+        fSlideG2_Picked = self.numericSteppers['fSlideG2_Picked'].Value
+        fSlideG3_Picked = self.numericSteppers['fSlideG3_Picked'].Value
         
         fScale_Opp = self.ParseToFloat(self.textBoxes['fScale_Opp'].Text)
-        fFullG2_Opp = self.numericSteppers['fFullG2_Opp'].Value
-        fFullG3_Opp = self.numericSteppers['fFullG3_Opp'].Value
+        fSlideG2_Opp = self.numericSteppers['fSlideG2_Opp'].Value
+        fSlideG3_Opp = self.numericSteppers['fSlideG3_Opp'].Value
 
         if (fScale_Picked is None or fScale_Picked <= Rhino.RhinoMath.ZeroTolerance or
             fScale_Opp is None or fScale_Opp <= Rhino.RhinoMath.ZeroTolerance):
@@ -467,19 +470,19 @@ class EtoDialog(ef.Dialog):
 
         if t_AtPicked > self.nc_In.Domain.Mid:
             iPickedEnd = 1
-            fScale_T1, fFullG2_T1, fFullG3_T1 = fScale_Picked, fFullG2_Picked, fFullG3_Picked
-            fScale_T0, fFullG2_T0, fFullG3_T0 = fScale_Opp, fFullG2_Opp, fFullG3_Opp
+            fScale_T1, fSlideG2_T1, fSlideG3_T1 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked
+            fScale_T0, fSlideG2_T0, fSlideG3_T0 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp
             iG_T1, iG_T0 = idxCont_Picked - 1, idxCont_Opp - 1
         else:
             iPickedEnd = 0
-            fScale_T0, fFullG2_T0, fFullG3_T0 = fScale_Picked, fFullG2_Picked, fFullG3_Picked
-            fScale_T1, fFullG2_T1, fFullG3_T1 = fScale_Opp, fFullG2_Opp, fFullG3_Opp
+            fScale_T0, fSlideG2_T0, fSlideG3_T0 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked
+            fScale_T1, fSlideG2_T1, fSlideG3_T1 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp
             iG_T0, iG_T1 = idxCont_Picked - 1, idxCont_Opp - 1
 
         nc_Res, sReport, info = createCurve(
             nc_In=self.nc_In,
-            fScale_T0=fScale_T0, fFullG2_T0=fFullG2_T0, fFullG3_T0=fFullG3_T0,
-            fScale_T1=fScale_T1, fFullG2_T1=fFullG2_T1, fFullG3_T1=fFullG3_T1,
+            fScale_T0=fScale_T0, fSlideG2_T0=fSlideG2_T0, fSlideG3_T0=fSlideG3_T0,
+            fScale_T1=fScale_T1, fSlideG2_T1=fSlideG2_T1, fSlideG3_T1=fSlideG3_T1,
             iG_T0=iG_T0, iG_T1=iG_T1, iPickedEnd=iPickedEnd, bDebug=bDebug
         )
 
@@ -564,21 +567,21 @@ class EtoDialog(ef.Dialog):
         self.btnScaleDown_Picked.MouseUp += self.StopHoldTimer
         self.btnScaleDown_Picked.MouseLeave += self.StopHoldTimer
 
-        key = 'fFullG2_Picked'
-        self.labels[key] = ef.Label(Text = "G2 fullness:")
+        key = 'fSlideG2_Picked'
+        self.labels[key] = ef.Label(Text = "G2 slide:")
         self.numericSteppers[key] = ef.NumericStepper()
         self.numericSteppers[key].DecimalPlaces = 2
         self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
         self.numericSteppers[key].Value = float(Opts.values[key])
-        self.numericSteppers[key].ValueChanged += self.OnFullnessValueChanged
+        self.numericSteppers[key].ValueChanged += self.OnSlideValueChanged
 
-        key = 'fFullG3_Picked'
-        self.labels[key] = ef.Label(Text = "G3 fullness:")
+        key = 'fSlideG3_Picked'
+        self.labels[key] = ef.Label(Text = "G3 slide:")
         self.numericSteppers[key] = ef.NumericStepper()
         self.numericSteppers[key].DecimalPlaces = 2
         self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
         self.numericSteppers[key].Value = float(Opts.values[key])
-        self.numericSteppers[key].ValueChanged += self.OnFullnessValueChanged
+        self.numericSteppers[key].ValueChanged += self.OnSlideValueChanged
 
         key = 'fScale_Opp'
         self.labels[key] = ef.Label(Text = "Scale:")
@@ -599,21 +602,21 @@ class EtoDialog(ef.Dialog):
         self.btnScaleDown_Opp.MouseUp += self.StopHoldTimer
         self.btnScaleDown_Opp.MouseLeave += self.StopHoldTimer
 
-        key = 'fFullG2_Opp'
-        self.labels[key] = ef.Label(Text = "G2 fullness:")
+        key = 'fSlideG2_Opp'
+        self.labels[key] = ef.Label(Text = "G2 slide:")
         self.numericSteppers[key] = ef.NumericStepper()
         self.numericSteppers[key].DecimalPlaces = 2
         self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
         self.numericSteppers[key].Value = float(Opts.values[key])
-        self.numericSteppers[key].ValueChanged += self.OnFullnessValueChanged
+        self.numericSteppers[key].ValueChanged += self.OnSlideValueChanged
 
-        key = 'fFullG3_Opp'
-        self.labels[key] = ef.Label(Text = "G3 fullness:")
+        key = 'fSlideG3_Opp'
+        self.labels[key] = ef.Label(Text = "G3 slide:")
         self.numericSteppers[key] = ef.NumericStepper()
         self.numericSteppers[key].DecimalPlaces = 2
         self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
         self.numericSteppers[key].Value = float(Opts.values[key])
-        self.numericSteppers[key].ValueChanged += self.OnFullnessValueChanged
+        self.numericSteppers[key].ValueChanged += self.OnSlideValueChanged
 
         key = 'iGraphScale'
         self.labels[key] = ef.Label(Text = "Graph scale:")
@@ -704,9 +707,9 @@ class EtoDialog(ef.Dialog):
             None
         ))
         layout.AddSeparateRow(None, ed.Size(4, 4), True, False, (
-            self.labels['fFullG2_Picked'], self.numericSteppers['fFullG2_Picked'],
+            self.labels['fSlideG2_Picked'], self.numericSteppers['fSlideG2_Picked'],
             ef.Label(Width=20),
-            self.labels['fFullG3_Picked'], self.numericSteppers['fFullG3_Picked'],
+            self.labels['fSlideG3_Picked'], self.numericSteppers['fSlideG3_Picked'],
             None
         ))
         layout.AddRow(None)
@@ -722,9 +725,9 @@ class EtoDialog(ef.Dialog):
             None
         ))
         layout.AddSeparateRow(None, ed.Size(4, 4), True, False, (
-            self.labels['fFullG2_Opp'], self.numericSteppers['fFullG2_Opp'],
+            self.labels['fSlideG2_Opp'], self.numericSteppers['fSlideG2_Opp'],
             ef.Label(Width=20),
-            self.labels['fFullG3_Opp'], self.numericSteppers['fFullG3_Opp'],
+            self.labels['fSlideG3_Opp'], self.numericSteppers['fSlideG3_Opp'],
             None
         ))
         layout.AddRow(None)
@@ -775,10 +778,10 @@ class EtoDialog(ef.Dialog):
         if bool(self.radioButtonLists['bLinkedEnds'].SelectedIndex):
             if self.textBoxes['fScale_Opp'].Text != self.textBoxes['fScale_Picked'].Text:
                 self.textBoxes['fScale_Opp'].Text = self.textBoxes['fScale_Picked'].Text
-            if self.numericSteppers['fFullG2_Opp'].Value != self.numericSteppers['fFullG2_Picked'].Value:
-                self.numericSteppers['fFullG2_Opp'].Value = self.numericSteppers['fFullG2_Picked'].Value
-            if self.numericSteppers['fFullG3_Opp'].Value != self.numericSteppers['fFullG3_Picked'].Value:
-                self.numericSteppers['fFullG3_Opp'].Value = self.numericSteppers['fFullG3_Picked'].Value
+            if self.numericSteppers['fSlideG2_Opp'].Value != self.numericSteppers['fSlideG2_Picked'].Value:
+                self.numericSteppers['fSlideG2_Opp'].Value = self.numericSteppers['fSlideG2_Picked'].Value
+            if self.numericSteppers['fSlideG3_Opp'].Value != self.numericSteppers['fSlideG3_Picked'].Value:
+                self.numericSteppers['fSlideG3_Opp'].Value = self.numericSteppers['fSlideG3_Picked'].Value
 
     def UpdateControlStates(self):
         is_linked = bool(self.radioButtonLists['bLinkedEnds'].SelectedIndex)
@@ -810,19 +813,19 @@ class EtoDialog(ef.Dialog):
             scale_limit_P = alloc_P
             scale_limit_O = alloc_O
 
-        self.numericSteppers['fFullG2_Picked'].Enabled = (scale_limit_P >= 3)
-        self.numericSteppers['fFullG3_Picked'].Enabled = (scale_limit_P >= 4)
+        self.numericSteppers['fSlideG2_Picked'].Enabled = (scale_limit_P >= 3)
+        self.numericSteppers['fSlideG3_Picked'].Enabled = (scale_limit_P >= 4)
 
         self.textBoxes['fScale_Opp'].Enabled = not is_linked
         self.btnScaleUp_Opp.Enabled = not is_linked
         self.btnScaleDown_Opp.Enabled = not is_linked
         
         if is_linked:
-            self.numericSteppers['fFullG2_Opp'].Enabled = False
-            self.numericSteppers['fFullG3_Opp'].Enabled = False
+            self.numericSteppers['fSlideG2_Opp'].Enabled = False
+            self.numericSteppers['fSlideG3_Opp'].Enabled = False
         else:
-            self.numericSteppers['fFullG2_Opp'].Enabled = (scale_limit_O >= 3)
-            self.numericSteppers['fFullG3_Opp'].Enabled = (scale_limit_O >= 4)
+            self.numericSteppers['fSlideG2_Opp'].Enabled = (scale_limit_O >= 3)
+            self.numericSteppers['fSlideG3_Opp'].Enabled = (scale_limit_O >= 4)
 
     def OnContinuityChanged(self, sender, e):
         if getattr(self, '_auto_updating', False): return
@@ -875,7 +878,7 @@ class EtoDialog(ef.Dialog):
         self.SyncLinkedControls()
         self.UpdatePreview()
 
-    def OnFullnessValueChanged(self, sender, e):
+    def OnSlideValueChanged(self, sender, e):
         self.SyncLinkedControls()
         self.UpdatePreview()
 
@@ -938,10 +941,10 @@ class EtoDialog(ef.Dialog):
         except (ValueError, ZeroDivisionError): pass
         if val is not None and val > Rhino.RhinoMath.ZeroTolerance:
             sender.BackgroundColor = ed.Colors.White 
-            self.numericSteppers['fFullG2_Picked'].Increment = val
-            self.numericSteppers['fFullG3_Picked'].Increment = val
-            self.numericSteppers['fFullG2_Opp'].Increment = val
-            self.numericSteppers['fFullG3_Opp'].Increment = val
+            self.numericSteppers['fSlideG2_Picked'].Increment = val
+            self.numericSteppers['fSlideG3_Picked'].Increment = val
+            self.numericSteppers['fSlideG2_Opp'].Increment = val
+            self.numericSteppers['fSlideG3_Opp'].Increment = val
         else:
             sender.BackgroundColor = ed.Colors.LightPink
 
@@ -968,8 +971,8 @@ class EtoDialog(ef.Dialog):
             parsed_scale = self.ParseToFloat(self.textBoxes['fScale' + end].Text)
             if parsed_scale is not None:
                 sc.sticky[Opts.stickyKeys['fScale' + end]] = Opts.values['fScale' + end] = parsed_scale
-            sc.sticky[Opts.stickyKeys['fFullG2' + end]] = Opts.values['fFullG2' + end] = self.numericSteppers['fFullG2' + end].Value
-            sc.sticky[Opts.stickyKeys['fFullG3' + end]] = Opts.values['fFullG3' + end] = self.numericSteppers['fFullG3' + end].Value
+            sc.sticky[Opts.stickyKeys['fSlideG2' + end]] = Opts.values['fSlideG2' + end] = self.numericSteppers['fSlideG2' + end].Value
+            sc.sticky[Opts.stickyKeys['fSlideG3' + end]] = Opts.values['fSlideG3' + end] = self.numericSteppers['fSlideG3' + end].Value
         sc.sticky[Opts.stickyKeys['idxCont_Picked']] = Opts.values['idxCont_Picked'] = self.radioButtonLists['idxCont_Picked'].SelectedIndex
         sc.sticky[Opts.stickyKeys['idxCont_Opp']] = Opts.values['idxCont_Opp'] = self.radioButtonLists['idxCont_Opp'].SelectedIndex
         sc.sticky[Opts.stickyKeys['bDeleteInput']] = Opts.values['bDeleteInput'] = self.checkBoxes['bDeleteInput'].Checked

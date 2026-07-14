@@ -27,7 +27,7 @@ Send any questions, comments, or script development service needs to @spb on the
 """
 
 """
-260712-13: Created.
+260712-14: Created.
 """
 
 import Rhino
@@ -174,15 +174,17 @@ def draw_surface_curvature_graph(display, ns, c, direction, const_param, scale, 
         display.DrawLine(P, P + hair, color, 1)
 
 
-def createSurface(ns_In, boundary, fScale_Picked=1.0, fFullG2_Picked=1.0, fFullG3_Picked=1.0, fScale_Opp=1.0, fFullG2_Opp=1.0, fFullG3_Opp=1.0, iG_Picked=2, iG_Opp=2, bDebug=False):
+def createSurface(ns_In, boundary, fScale_Picked=1.0, fSlideG2_Picked=0.0, fSlideG3_Picked=0.0, fScale_Opp=1.0, fSlideG2_Opp=0.0, fSlideG3_Opp=0.0, iG_Picked=2, iG_Opp=2, bDebug=False):
     """Loops through the orthogonal surface grid and executes the Kernel curve engine on each row."""
     ns_Out = ns_In.Duplicate()
     global_info = None
 
-    if not any(_ != 1.0 for _ in (fScale_Picked, fFullG2_Picked, fFullG3_Picked, fScale_Opp, fFullG2_Opp, fFullG3_Opp)):
-        return None, "All scale and fullness values are 1.0.", None
-    #else:
-    #    sEval = "fScale_Picked"; print(sEval, ':', eval(sEval))
+    if any(abs(_ - Rhino.RhinoMath.ZeroTolerance) != 1.0 for _ in (fScale_Picked, fScale_Opp)):
+        pass
+    elif any(abs(_ - Rhino.RhinoMath.ZeroTolerance) != 0.0 for _ in (fSlideG2_Picked, fSlideG3_Picked, fSlideG2_Opp, fSlideG3_Opp)):
+        pass
+    else:
+        return None, "All scale and slide values result in no change to the geometry.", None
 
     if boundary in ('U0', 'U1'):
         iPickedEnd = 0 if boundary == 'U0' else 1
@@ -190,16 +192,16 @@ def createSurface(ns_In, boundary, fScale_Picked=1.0, fFullG2_Picked=1.0, fFullG
             nc_temp = extract_temp_curve(ns_In, 'U', v)
             
             if iPickedEnd == 0:
-                s0, g2_0, g3_0, i0 = fScale_Picked, fFullG2_Picked, fFullG3_Picked, iG_Picked
-                s1, g2_1, g3_1, i1 = fScale_Opp, fFullG2_Opp, fFullG3_Opp, iG_Opp
+                s0, g2_0, g3_0, i0 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked, iG_Picked
+                s1, g2_1, g3_1, i1 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp, iG_Opp
             else:
-                s1, g2_1, g3_1, i1 = fScale_Picked, fFullG2_Picked, fFullG3_Picked, iG_Picked
-                s0, g2_0, g3_0, i0 = fScale_Opp, fFullG2_Opp, fFullG3_Opp, iG_Opp
+                s1, g2_1, g3_1, i1 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked, iG_Picked
+                s0, g2_0, g3_0, i0 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp, iG_Opp
 
             nc_res, sReport, info = ebk.createCurve(
                 nc_In=nc_temp,
-                fScale_T0=s0, fFullG2_T0=g2_0, fFullG3_T0=g3_0,
-                fScale_T1=s1, fFullG2_T1=g2_1, fFullG3_T1=g3_1,
+                fScale_T0=s0, fSlideG2_T0=g2_0, fSlideG3_T0=g3_0,
+                fScale_T1=s1, fSlideG2_T1=g2_1, fSlideG3_T1=g3_1,
                 iG_T0=i0, iG_T1=i1, iPickedEnd=iPickedEnd, bDebug=False
             )
 
@@ -216,16 +218,16 @@ def createSurface(ns_In, boundary, fScale_Picked=1.0, fFullG2_Picked=1.0, fFullG
             nc_temp = extract_temp_curve(ns_In, 'V', u)
             
             if iPickedEnd == 0:
-                s0, g2_0, g3_0, i0 = fScale_Picked, fFullG2_Picked, fFullG3_Picked, iG_Picked
-                s1, g2_1, g3_1, i1 = fScale_Opp, fFullG2_Opp, fFullG3_Opp, iG_Opp
+                s0, g2_0, g3_0, i0 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked, iG_Picked
+                s1, g2_1, g3_1, i1 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp, iG_Opp
             else:
-                s1, g2_1, g3_1, i1 = fScale_Picked, fFullG2_Picked, fFullG3_Picked, iG_Picked
-                s0, g2_0, g3_0, i0 = fScale_Opp, fFullG2_Opp, fFullG3_Opp, iG_Opp
+                s1, g2_1, g3_1, i1 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked, iG_Picked
+                s0, g2_0, g3_0, i0 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp, iG_Opp
 
             nc_res, sReport, info = ebk.createCurve(
                 nc_In=nc_temp,
-                fScale_T0=s0, fFullG2_T0=g2_0, fFullG3_T0=g3_0,
-                fScale_T1=s1, fFullG2_T1=g2_1, fFullG3_T1=g3_1,
+                fScale_T0=s0, fSlideG2_T0=g2_0, fSlideG3_T0=g3_0,
+                fScale_T1=s1, fSlideG2_T1=g2_1, fSlideG3_T1=g3_1,
                 iG_T0=i0, iG_T1=i1, iPickedEnd=iPickedEnd, bDebug=False
             )
 
@@ -322,11 +324,11 @@ class SrfEtoDialog(ebk.EtoDialog):
         if not hasattr(self, 'conduit') or self.conduit is None: return
 
         fScale_Picked = self.ParseToFloat(self.textBoxes['fScale_Picked'].Text)
-        fFullG2_Picked = self.numericSteppers['fFullG2_Picked'].Value
-        fFullG3_Picked = self.numericSteppers['fFullG3_Picked'].Value
+        fSlideG2_Picked = self.numericSteppers['fSlideG2_Picked'].Value
+        fSlideG3_Picked = self.numericSteppers['fSlideG3_Picked'].Value
         fScale_Opp = self.ParseToFloat(self.textBoxes['fScale_Opp'].Text)
-        fFullG2_Opp = self.numericSteppers['fFullG2_Opp'].Value
-        fFullG3_Opp = self.numericSteppers['fFullG3_Opp'].Value
+        fSlideG2_Opp = self.numericSteppers['fSlideG2_Opp'].Value
+        fSlideG3_Opp = self.numericSteppers['fSlideG3_Opp'].Value
 
         if (fScale_Picked is None or fScale_Picked <= Rhino.RhinoMath.ZeroTolerance or
             fScale_Opp is None or fScale_Opp <= Rhino.RhinoMath.ZeroTolerance):
@@ -339,8 +341,8 @@ class SrfEtoDialog(ebk.EtoDialog):
 
         ns_Res, sReport, info = createSurface(
             self.ns_In, self.boundary,
-            fScale_Picked, fFullG2_Picked, fFullG3_Picked,
-            fScale_Opp, fFullG2_Opp, fFullG3_Opp,
+            fScale_Picked, fSlideG2_Picked, fSlideG3_Picked,
+            fScale_Opp, fSlideG2_Opp, fSlideG3_Opp,
             idxCont_Picked - 1, idxCont_Opp - 1, False
         )
 
@@ -410,11 +412,11 @@ def getInput_CLI():
         if not ebk.Opts.values['bGUI']:
             addOption('bLinkedEnds')
             addOption('fScale_Picked')
-            addOption('fFullG2_Picked')
-            addOption('fFullG3_Picked')
+            addOption('fSlideG2_Picked')
+            addOption('fSlideG3_Picked')
             addOption('fScale_Opp')
-            addOption('fFullG2_Opp')
-            addOption('fFullG3_Opp')
+            addOption('fSlideG2_Opp')
+            addOption('fSlideG3_Opp')
             addOption('idxCont_Picked')
             addOption('idxCont_Opp')
             addOption('bDeleteInput')

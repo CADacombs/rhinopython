@@ -28,7 +28,7 @@ Send any questions, comments, or script development service needs to @spb on the
 
 """
 210303, 0307: Created.
-260420-25, 0709-12: Added an optional dialog. Added a preview for the dialog.
+260420-25, 0709-13: Added an optional dialog. Added a preview for the dialog.
         Refactored.
 """
 
@@ -38,6 +38,7 @@ import Rhino.Input as ri
 import scriptcontext as sc
 
 import spb_EndBulge_Kernel as ebk
+
 
 def getInput_CLI():
     """
@@ -220,6 +221,10 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
         if nc_Res is None:
             if bEcho: print("Curve could not be created. {}".format(sReport))
             return None
+
+    if nc_Res.EpsilonEquals(objref_In.Curve().ToNurbsCurve(), epsilon=Rhino.RhinoMath.ZeroTolerance):
+        print("Resultant curve is the same as input curve. No changes were made to the document.")
+        return
 
     if not bDeleteInput or objref_In.Edge():
         gC_Out = sc.doc.Objects.AddCurve(nc_Res)

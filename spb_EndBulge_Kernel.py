@@ -3,7 +3,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 """
 ================================================================================
-CRITICAL CORE KERNEL FILE — DO NOT DELETE OR RUN DIRECTLY
+CRITICAL CORE KERNEL FILE - DO NOT DELETE OR RUN DIRECTLY
 ================================================================================
 This file houses the shared mathematical solvers, geometric point-allocation 
 engines, and Eto UI frameworks for the spb_EndBulge tool suite.
@@ -26,7 +26,7 @@ Send any questions, comments, or script development service needs to @spb on the
 """
 
 """
-260712: Created by extracting refactored code from another script.
+260712-13: Created by extracting refactored code from another script.
 """
 
 import Rhino
@@ -37,6 +37,7 @@ import scriptcontext as sc
 import Eto.Drawing as ed
 import Eto.Forms as ef
 from Rhino.UI import RhinoEtoApp, EtoExtensions
+
 
 class Opts:
     keys = []
@@ -73,13 +74,13 @@ class Opts:
     riOpts[key] = ri.Custom.OptionToggle(values[key], offValues[key], onValues[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'fScaleIncrement'; keys.append(key) 
+    key = 'fIncrement'; keys.append(key) 
     values[key] = 0.05
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fScale_Picked'; keys.append(key)
-    values[key] = 0.5
+    values[key] = 1.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -94,7 +95,7 @@ class Opts:
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fScale_Opp'; keys.append(key)
-    values[key] = 0.5
+    values[key] = 1.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -110,13 +111,13 @@ class Opts:
 
     key = 'idxCont_Picked'; keys.append(key)
     listValues[key] = 'None', 'G0', 'G1', 'G2', 'G3'
-    values[key] = 4 
+    values[key] = 3
     names[key] = 'MaintainPicked'
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'idxCont_Opp'; keys.append(key)
     listValues[key] = 'None', 'G0', 'G1', 'G2', 'G3'
-    values[key] = 4 
+    values[key] = 3
     names[key] = 'MaintainOpp'
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -212,6 +213,9 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
     if iG_T0 is None and iG_T1 is None: return None, "Both continuity inputs are None.", None
     if nc_In.IsPeriodic: return None, "Input curve is periodic.", None
     if not isinstance(nc_In, rg.NurbsCurve): return None, "Input curve is a {}".format(nc_In.GetType().Name), None
+    if not any(_ != 1.0 for _ in (fScale_T0, fFullG2_T0, fFullG3_T0, fScale_T1, fFullG2_T1, fFullG3_T1)):
+        pass
+        return None, "All scale and fullness values are 1.0.", None
 
     # --- POINT ALLOCATION ENGINE ---
     N = nc_In.Points.Count
@@ -273,7 +277,13 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
 
     pts_Prime = [pt.Location for pt in nc_In.Points]
 
-    # --- SCALE T0 END ---
+    # Convert 1e-6 cm into current document units for our minimum distance threshold
+    unit_scale = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Centimeters, sc.doc.ModelUnitSystem)
+    min_dist = 1e-6 * unit_scale
+
+    # ----------------------------------------------------
+    # SCALE T0 END
+    # ----------------------------------------------------
     if not base_T0:
         p0 = nc_In.Points[0].Location
         xform_T0 = rg.Transform.Scale(p0, fScale_T0)
@@ -287,11 +297,13 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
             p1 = nc_In.Points[1].Location
             p1p = pts_Prime[1]
             slide_vec = p1p - p0
+            orig_len_T0 = (p1 - p0).Length
 
             if scale_limit_T0 > 2:
                 p2 = nc_In.Points[2].Location
-                if max_mod_T0 >= 2:
-                    m2 = ((p1p - p0).Length/(p1 - p0).Length)**2.0
+                # Bypass tangent division if p0 and p1 are stacked (Singularity/Pole)
+                if max_mod_T0 >= 2 and orig_len_T0 > min_dist:
+                    m2 = ((p1p - p0).Length / orig_len_T0)**2.0
                     p2p_base = 2.0*p1p - p0 + m2*(-2.0*p1 + p2 + p0)
                 else:
                     p2p_base = pts_Prime[2]
@@ -301,8 +313,8 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
 
                 if scale_limit_T0 > 3:
                     p3 = nc_In.Points[3].Location
-                    if max_mod_T0 >= 3:
-                        m3 = ((p1p - p0).Length/(p1 - p0).Length)**3.0
+                    if max_mod_T0 >= 3 and orig_len_T0 > min_dist:
+                        m3 = ((p1p - p0).Length / orig_len_T0)**3.0
                         p3p_base = 3.0*p2p_base - 3.0*p1p + p0 + m3*(p3 - 3.0*p2 + 3.0*p1 - p0)
                         p3_comp = 3.0 * p2_slide
                     else:
@@ -312,7 +324,9 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
                     p3_slide = slide_vec * (fFullG3_T0 - 1.0)
                     pts_Prime[3] = p3p_base + p3_comp + p3_slide
 
-    # --- SCALE T1 END ---
+    # ----------------------------------------------------
+    # SCALE T1 END
+    # ----------------------------------------------------
     if not base_T1:
         last = N - 1
         p0 = nc_In.Points[last].Location
@@ -328,11 +342,12 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
             p1 = nc_In.Points[last-1].Location
             p1p = pts_Prime[last-1]
             slide_vec = p1p - p0
+            orig_len_T1 = (p1 - p0).Length
 
             if scale_limit_T1 > 2:
                 p2 = nc_In.Points[last-2].Location
-                if max_mod_T1 >= 2:
-                    m2 = ((p1p - p0).Length/(p1 - p0).Length)**2.0
+                if max_mod_T1 >= 2 and orig_len_T1 > min_dist:
+                    m2 = ((p1p - p0).Length / orig_len_T1)**2.0
                     p2p_base = 2.0*p1p - p0 + m2*(-2.0*p1 + p2 + p0)
                 else:
                     p2p_base = pts_Prime[last-2]
@@ -342,8 +357,8 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
 
                 if scale_limit_T1 > 3:
                     p3 = nc_In.Points[last-3].Location
-                    if max_mod_T1 >= 3:
-                        m3 = ((p1p - p0).Length/(p1 - p0).Length)**3.0
+                    if max_mod_T1 >= 3 and orig_len_T1 > min_dist:
+                        m3 = ((p1p - p0).Length / orig_len_T1)**3.0
                         p3p_base = 3.0*p2p_base - 3.0*p1p + p0 + m3*(p3 - 3.0*p2 + 3.0*p1 - p0)
                         p3_comp = 3.0 * p2_slide
                     else:
@@ -353,16 +368,15 @@ def createCurve(nc_In, fScale_T0=1.0, fFullG2_T0=1.0, fFullG3_T0=1.0, fScale_T1=
                     p3_slide = slide_vec * (fFullG3_T1 - 1.0)
                     pts_Prime[last-3] = p3p_base + p3_comp + p3_slide
 
-    # Enforce minimum distance
-    unit_scale = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Centimeters, sc.doc.ModelUnitSystem)
-    min_dist = 1e-6 * unit_scale
-
+    # Enforce minimum distance (but ignore inherently stacked singularity points)
     for i in range(len(pts_Prime) - 1):
         if pts_Prime[i].DistanceTo(pts_Prime[i+1]) < min_dist:
-            sReport = "Minimum control point distance (1e-6 cm) violated. Is Scale too small?"
-            Rhino.RhinoApp.SetCommandPromptMessage(sReport)
-            if bDebug: print(sReport)
-            return None, sReport, None
+            orig_dist = nc_In.Points[i].Location.DistanceTo(nc_In.Points[i+1].Location)
+            if orig_dist >= min_dist:
+                sReport = "Minimum control point distance (1e-6 cm) violated. Is Scale too small?"
+                Rhino.RhinoApp.SetCommandPromptMessage(sReport)
+                if bDebug: print(sReport)
+                return None, sReport, None
 
     nc_Out = nc_In.Duplicate()
     for i in range(nc_Out.Points.Count):
@@ -411,7 +425,8 @@ class EndBulgePreviewConduit(Rhino.Display.DisplayConduit):
 
 class EtoDialog(ef.Dialog):
     def __init__(self, objref_In):
-        self.Title = "EndBulge Kernel"
+        self.is_surface = getattr(self, 'is_surface', False)
+        self.Title = "EndBulge by SPB"
         self.objref_In = objref_In
         self.dialog_ok = False
 
@@ -506,10 +521,11 @@ class EtoDialog(ef.Dialog):
         self.numericSteppers = {}
         self.textBoxes = {}
 
+        term_low = "edge" if self.is_surface else "end"
         small_font = ed.Font(ed.SystemFont.Default, 4)
 
         key = 'bLinkedEnds'
-        self.labels[key] = ef.Label(Text = "Adjust ends:")
+        self.labels[key] = ef.Label(Text = "Adjust {}s:".format(term_low))
         self.radioButtonLists[key] = ef.RadioButtonList()
         self.radioButtonLists[key].Orientation = ef.Orientation.Horizontal
         self.radioButtonLists[key].Spacing = ed.Size(16, 4)
@@ -517,7 +533,7 @@ class EtoDialog(ef.Dialog):
         self.radioButtonLists[key].SelectedValue = self.radioButtonLists[key].DataStore[int(Opts.values[key])]
         self.radioButtonLists[key].SelectedIndexChanged += self.OnLinkedModeChanged
 
-        key = 'fScaleIncrement'
+        key = 'fIncrement'
         self.labels[key] = ef.Label(Text = "Incr.:")
         self.textBoxes[key] = ef.TextBox()
         self.textBoxes[key].Text = str(Opts.values[key])
@@ -552,7 +568,7 @@ class EtoDialog(ef.Dialog):
         self.labels[key] = ef.Label(Text = "G2 fullness:")
         self.numericSteppers[key] = ef.NumericStepper()
         self.numericSteppers[key].DecimalPlaces = 2
-        self.numericSteppers[key].Increment = 0.05
+        self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
         self.numericSteppers[key].Value = float(Opts.values[key])
         self.numericSteppers[key].ValueChanged += self.OnFullnessValueChanged
 
@@ -560,7 +576,7 @@ class EtoDialog(ef.Dialog):
         self.labels[key] = ef.Label(Text = "G3 fullness:")
         self.numericSteppers[key] = ef.NumericStepper()
         self.numericSteppers[key].DecimalPlaces = 2
-        self.numericSteppers[key].Increment = 0.05
+        self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
         self.numericSteppers[key].Value = float(Opts.values[key])
         self.numericSteppers[key].ValueChanged += self.OnFullnessValueChanged
 
@@ -587,7 +603,7 @@ class EtoDialog(ef.Dialog):
         self.labels[key] = ef.Label(Text = "G2 fullness:")
         self.numericSteppers[key] = ef.NumericStepper()
         self.numericSteppers[key].DecimalPlaces = 2
-        self.numericSteppers[key].Increment = 0.05
+        self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
         self.numericSteppers[key].Value = float(Opts.values[key])
         self.numericSteppers[key].ValueChanged += self.OnFullnessValueChanged
 
@@ -595,7 +611,7 @@ class EtoDialog(ef.Dialog):
         self.labels[key] = ef.Label(Text = "G3 fullness:")
         self.numericSteppers[key] = ef.NumericStepper()
         self.numericSteppers[key].DecimalPlaces = 2
-        self.numericSteppers[key].Increment = 0.05
+        self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
         self.numericSteppers[key].Value = float(Opts.values[key])
         self.numericSteppers[key].ValueChanged += self.OnFullnessValueChanged
 
@@ -613,7 +629,7 @@ class EtoDialog(ef.Dialog):
         self.labels[key] = ef.Label(Text = "Graph density:")
         self.numericSteppers[key] = ef.NumericStepper()
         self.numericSteppers[key].DecimalPlaces = 0
-        self.numericSteppers[key].MinValue = 1.0
+        self.numericSteppers[key].MinValue = 0.0
         self.numericSteppers[key].MaxValue = 100.0
         self.numericSteppers[key].Increment = 1.0
         self.numericSteppers[key].Value = float(Opts.values[key])
@@ -633,7 +649,7 @@ class EtoDialog(ef.Dialog):
         if not can_G3_Opp and val_opp == 4: val_opp = 3
 
         key = 'idxCont_Picked'
-        self.labels[key] = ef.Label(Text = "Maint. cont. of picked end:")
+        self.labels[key] = ef.Label(Text = "Maint. cont. of picked {}:".format(term_low))
         self.radioButtonLists[key] = ef.RadioButtonList()
         self.radioButtonLists[key].Spacing = ed.Size(4, 4)
         self.radioButtonLists[key].DataStore = list_Picked
@@ -641,7 +657,7 @@ class EtoDialog(ef.Dialog):
         self.radioButtonLists[key].SelectedIndexChanged += self.OnContinuityChanged
 
         key = 'idxCont_Opp'
-        self.labels[key] = ef.Label(Text = "Maint. cont. of opp. end:")
+        self.labels[key] = ef.Label(Text = "Maint. cont. of opp. {}:".format(term_low))
         self.radioButtonLists[key] = ef.RadioButtonList()
         self.radioButtonLists[key].Spacing = ed.Size(4, 4)
         self.radioButtonLists[key].DataStore = list_Opp
@@ -665,6 +681,8 @@ class EtoDialog(ef.Dialog):
         self.checkBoxes[key].CheckedChanged += lambda s, e: self.UpdatePreview()
 
     def setup_layout(self):
+        term_cap = "Edge" if self.is_surface else "End"
+        
         layout = ef.DynamicLayout()
         layout.Padding = ed.Padding(10)
         layout.Spacing = ed.Size(4, 4)
@@ -673,7 +691,7 @@ class EtoDialog(ef.Dialog):
         layout.AddSeparateRow(None, ed.Size(4, 4), False, False, (self.labels[key], self.radioButtonLists[key]))
         layout.AddRow(None)
 
-        layout.AddRow(ef.Label(Text="Picked End Configuration", Font=ed.Font(ed.SystemFont.Bold, 10)))
+        layout.AddRow(ef.Label(Text="Picked {} Configuration".format(term_cap), Font=ed.Font(ed.SystemFont.Bold, 10)))
         stepper_picked = ef.DynamicLayout()
         stepper_picked.Spacing = ed.Size(0, 0)
         stepper_picked.AddRow(self.btnScaleUp_Picked)
@@ -682,7 +700,7 @@ class EtoDialog(ef.Dialog):
         layout.AddSeparateRow(None, ed.Size(4, 4), True, False, (
             self.labels['fScale_Picked'], self.textBoxes['fScale_Picked'], stepper_picked,
             ef.Label(Width=20),
-            self.labels['fScaleIncrement'], self.textBoxes['fScaleIncrement'],
+            self.labels['fIncrement'], self.textBoxes['fIncrement'],
             None
         ))
         layout.AddSeparateRow(None, ed.Size(4, 4), True, False, (
@@ -693,7 +711,7 @@ class EtoDialog(ef.Dialog):
         ))
         layout.AddRow(None)
 
-        layout.AddRow(ef.Label(Text="Opposite End Configuration", Font=ed.Font(ed.SystemFont.Bold, 10)))
+        layout.AddRow(ef.Label(Text="Opposite {} Configuration".format(term_cap), Font=ed.Font(ed.SystemFont.Bold, 10)))
         stepper_opp = ef.DynamicLayout()
         stepper_opp.Spacing = ed.Size(0, 0)
         stepper_opp.AddRow(self.btnScaleUp_Opp)
@@ -841,12 +859,19 @@ class EtoDialog(ef.Dialog):
 
     def OnScaleTextChanged(self, sender, e):
         val = self.ParseToFloat(sender.Text)
+        
+        # Identify which text box triggered the change and update its exact tracker
         if not self._auto_updating and val is not None:
-            self._exact_scale = val
+            if sender == self.textBoxes['fScale_Picked']:
+                self._exact_scale_picked = val
+            elif sender == self.textBoxes['fScale_Opp']:
+                self._exact_scale_opp = val
+                
         if val is not None and val > Rhino.RhinoMath.ZeroTolerance:
             sender.BackgroundColor = ed.Colors.White
         else:
             sender.BackgroundColor = ed.Colors.LightPink
+            
         self.SyncLinkedControls()
         self.UpdatePreview()
 
@@ -877,7 +902,7 @@ class EtoDialog(ef.Dialog):
         self.AdjustScale(self.hold_direction)
 
     def AdjustScale(self, direction):
-        incr_val = self.ParseToFloat(self.textBoxes['fScaleIncrement'].Text)
+        incr_val = self.ParseToFloat(self.textBoxes['fIncrement'].Text)
         if incr_val is None: return
 
         if self.active_stepper_end == 'Picked':
@@ -913,6 +938,10 @@ class EtoDialog(ef.Dialog):
         except (ValueError, ZeroDivisionError): pass
         if val is not None and val > Rhino.RhinoMath.ZeroTolerance:
             sender.BackgroundColor = ed.Colors.White 
+            self.numericSteppers['fFullG2_Picked'].Increment = val
+            self.numericSteppers['fFullG3_Picked'].Increment = val
+            self.numericSteppers['fFullG2_Opp'].Increment = val
+            self.numericSteppers['fFullG3_Opp'].Increment = val
         else:
             sender.BackgroundColor = ed.Colors.LightPink
 
@@ -930,6 +959,11 @@ class EtoDialog(ef.Dialog):
         sc.sticky[Opts.stickyKeys['iGraphScale']] = Opts.values['iGraphScale'] = int(self.numericSteppers['iGraphScale'].Value)
         sc.sticky[Opts.stickyKeys['iGraphDensity']] = Opts.values['iGraphDensity'] = int(self.numericSteppers['iGraphDensity'].Value)
         sc.sticky[Opts.stickyKeys['bLinkedEnds']] = Opts.values['bLinkedEnds'] = bool(self.radioButtonLists['bLinkedEnds'].SelectedIndex)
+        
+        parsed_incr = self.ParseToFloat(self.textBoxes['fIncrement'].Text)
+        if parsed_incr is not None:
+            sc.sticky[Opts.stickyKeys['fIncrement']] = Opts.values['fIncrement'] = parsed_incr
+
         for end in ('_Picked', '_Opp'):
             parsed_scale = self.ParseToFloat(self.textBoxes['fScale' + end].Text)
             if parsed_scale is not None:

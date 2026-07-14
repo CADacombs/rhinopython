@@ -27,7 +27,7 @@ Send any questions, comments, or script development service needs to @spb on the
 """
 
 """
-260712: Created.
+260712-13: Created.
 """
 
 import Rhino
@@ -35,10 +35,9 @@ import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
-import sys
-import os
 
 import spb_EndBulge_Kernel as ebk
+
 
 def extract_temp_curve(ns, direction, index):
     """Slices a specific U or V row of control points into a mathematically perfect 1D NurbsCurve."""
@@ -99,44 +98,80 @@ def draw_surface_curvature_graph(display, ns, c, direction, const_param, scale, 
     Manually draws a curvature graph aligned strictly to the Surface Normal.
     Bypasses the curve's osculating plane to prevent 'tapered' or 'leaning' graphs.
     """
-    samples = int(50 + (density * 2)) 
-    dom = c.Domain
-    step = dom.Length / samples
     
+    # Convert 1e-6 cm into current document units for our minimum distance threshold
+    unit_scale = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Centimeters, sc.doc.ModelUnitSystem)
+    min_dist = 1e-6 * unit_scale    
+    
+    # Skip completely collapsed curves (singular boundaries)
+    if c.GetLength() < min_dist:
+        return
+        
     # --- RHINO's HIDDEN EXPONENTIAL SCALE FORMULA ---
-    # Converts the linear integer UI slider into the massive exponential 
-    # multiplier required for visual hair scaling. (e.g., 110 = 32x, 120 = 1024x)
     true_scale = 2.0 ** ((scale - 100.0) / 2.0)
     
-    tips = []
-    for i in range(samples + 1):
-        t = dom.Min + i * step
-        if i == samples: t = dom.Max
+    # --- DECOUPLED SPAN DENSITY LOGIC ---
+    hair_steps = max(1, int(density) + 1)
+    
+    if int(density) == 0:
+        # Special edge-case fallback: Rhino uses exactly 12 segments for density 0
+        multiplier = 12
+    else:
+        # Rhino's target 76-segment formula for all densities >= 1
+        # Integer ceiling division: (76 + hair_steps - 1) // hair_steps
+        multiplier = (76 + hair_steps - 1) // hair_steps
         
+    env_steps = hair_steps * multiplier
+    
+    hair_t_vals = []
+    env_t_vals = []
+    
+    # Evaluate parameters strictly along the knot spans
+    for i in range(c.SpanCount):
+        dom = c.SpanDomain(i)
+        for j in range(hair_steps):
+            hair_t_vals.append(dom.Min + (dom.Length / float(hair_steps)) * j)
+        for j in range(env_steps):
+            env_t_vals.append(dom.Min + (dom.Length / float(env_steps)) * j)
+            
+    # Cap the arrays with the absolute end parameter
+    hair_t_vals.append(c.Domain.Max)
+    env_t_vals.append(c.Domain.Max)
+    
+    # 1. Evaluate and draw the high-resolution smooth envelope
+    env_pts = []
+    for t in env_t_vals:
         P = c.PointAt(t)
         cv = c.CurvatureAt(t)
         
-        if direction == 0:
-            norm = ns.NormalAt(t, const_param)
-        else:
-            norm = ns.NormalAt(const_param, t)
+        if direction == 0: norm = ns.NormalAt(t, const_param)
+        else: norm = ns.NormalAt(const_param, t)
             
-        if not norm.IsValid or norm.Length < 1e-6 or not cv.IsValid:
-            tips.append(P)
+        if not norm.IsValid or norm.Length < min_dist or not cv.IsValid or cv.Length > 1e5:
+            env_pts.append(P)
             continue
             
-        # Project 3D curve curvature onto Surface Normal (Dot Product)
         kappa_n = cv * norm
-        
-        # Multiply by our exponential true_scale, and -1.0 to invert to Rhino's native side
         hair = norm * (kappa_n * true_scale * -1.0)
-        tip = P + hair
+        env_pts.append(P + hair)
         
-        tips.append(tip)
-        display.DrawLine(P, tip, color, 1)
+    if len(env_pts) > 1:
+        display.DrawPolyline(env_pts, color, 1)
+
+    # 2. Evaluate and draw the targeted density hairs
+    for t in hair_t_vals:
+        P = c.PointAt(t)
+        cv = c.CurvatureAt(t)
         
-    if len(tips) > 1:
-        display.DrawPolyline(tips, color, 1)
+        if direction == 0: norm = ns.NormalAt(t, const_param)
+        else: norm = ns.NormalAt(const_param, t)
+            
+        if not norm.IsValid or norm.Length < min_dist or not cv.IsValid or cv.Length > 1e5:
+            continue
+            
+        kappa_n = cv * norm
+        hair = norm * (kappa_n * true_scale * -1.0)
+        display.DrawLine(P, P + hair, color, 1)
 
 
 def createSurface(ns_In, boundary, fScale_Picked=1.0, fFullG2_Picked=1.0, fFullG3_Picked=1.0, fScale_Opp=1.0, fFullG2_Opp=1.0, fFullG3_Opp=1.0, iG_Picked=2, iG_Opp=2, bDebug=False):
@@ -144,12 +179,16 @@ def createSurface(ns_In, boundary, fScale_Picked=1.0, fFullG2_Picked=1.0, fFullG
     ns_Out = ns_In.Duplicate()
     global_info = None
 
+    if not any(_ != 1.0 for _ in (fScale_Picked, fFullG2_Picked, fFullG3_Picked, fScale_Opp, fFullG2_Opp, fFullG3_Opp)):
+        return None, "All scale and fullness values are 1.0.", None
+    #else:
+    #    sEval = "fScale_Picked"; print(sEval, ':', eval(sEval))
+
     if boundary in ('U0', 'U1'):
         iPickedEnd = 0 if boundary == 'U0' else 1
         for v in range(ns_In.Points.CountV):
             nc_temp = extract_temp_curve(ns_In, 'U', v)
             
-            # Map the generic picked/opp variables to the strict T0/T1 curve ends
             if iPickedEnd == 0:
                 s0, g2_0, g3_0, i0 = fScale_Picked, fFullG2_Picked, fFullG3_Picked, iG_Picked
                 s1, g2_1, g3_1, i1 = fScale_Opp, fFullG2_Opp, fFullG3_Opp, iG_Opp
@@ -165,7 +204,7 @@ def createSurface(ns_In, boundary, fScale_Picked=1.0, fFullG2_Picked=1.0, fFullG
             )
 
             if nc_res is None: return None, sReport, None
-            if v == 0: global_info = info # Grab overlap info from the first row
+            if v == 0: global_info = info 
 
             for u in range(ns_In.Points.CountU):
                 pt = nc_res.Points[u]
@@ -232,26 +271,30 @@ class SrfPreviewConduit(Rhino.Display.DisplayConduit):
         all_pts = [self.ns.Points.GetControlPoint(u, v).Location for u in range(self.ns.Points.CountU) for v in range(self.ns.Points.CountV)]
         e.Display.DrawPoints(all_pts, Rhino.Display.PointStyle.Simple, 3, self.color)
 
-        # Draw Custom Normal-Aligned Curvature Graphs
+        # Draw Base Isocurves and Custom Normal-Aligned Curvature Graphs
         for c, direction, const_param in self.cg_curves:
+            e.Display.DrawCurve(c, self.color, 1)
             draw_surface_curvature_graph(e.Display, self.ns, c, direction, const_param, self.graph_scale, self.graph_density, self.color)
 
 
 class SrfEtoDialog(ebk.EtoDialog):
     """Subclasses the Kernel Dialog to intercept Surface selections and override the preview routine."""
     def __init__(self, objref_In):
-        self.Title = "SideBulge Surface"
+        self.is_surface = True  # Injects the "Edge" terminology into the Kernel's dialog builder
+        self.Title = "EndBulge Surface (Side Bulge) by SPB"
         self.objref_In = objref_In
         self.dialog_ok = False
 
-        face = objref_In.Face()
-        if face is None: return
+        edge = objref_In.Edge()
+        face = edge.Brep.Faces[edge.AdjacentFaces()[0]]
         self.ns_In = face.ToNurbsSurface()
 
-        # Identify which boundary the user clicked closest to
-        bSuccess, u, v = face.ClosestPoint(objref_In.SelectionPoint())
-        domU, domV = face.Domain(0), face.Domain(1)
+        # Identify which boundary the user clicked based on edge midpoint
+        t_mid = edge.Domain.Mid
+        pt_mid = edge.PointAt(t_mid)
+        bSuccess, u, v = face.ClosestPoint(pt_mid)
         
+        domU, domV = face.Domain(0), face.Domain(1)
         dU0, dU1 = abs(u - domU.Min), abs(domU.Max - u)
         dV0, dV1 = abs(v - domV.Min), abs(domV.Max - v)
         min_d = min(dU0, dU1, dV0, dV1)
@@ -340,9 +383,21 @@ class SrfEtoDialog(ebk.EtoDialog):
 
 def getInput_CLI():
     go = ri.Custom.GetObject()
-    go.SetCommandPrompt("Pick surface near an edge")
-    go.GeometryFilter = rd.ObjectType.Surface | rd.ObjectType.Brep
+    go.SetCommandPrompt("Pick edge of an untrimmed surface")
+    go.GeometryFilter = rd.ObjectType.Curve
+    go.GeometryAttributeFilter = ri.Custom.GeometryAttributeFilter.EdgeCurve
     go.DisablePreSelect()
+    
+    # Custom filter to ensure the edge belongs to an untrimmed surface
+    def edge_filter(rhObj, geom, compIdx):
+        if isinstance(geom, rg.BrepEdge):
+            faces = geom.AdjacentFaces()
+            if faces.Count > 0:
+                face = geom.Brep.Faces[faces[0]]
+                if face.IsSurface:
+                    return True
+        return False
+    go.SetCustomGeometryFilter(edge_filter)
 
     idxs_Opt = {}
     def addOption(key): idxs_Opt[key] = ebk.Opts.addOption(go, key)
@@ -379,7 +434,6 @@ def main():
     if objref_In is None: return
 
     if not ebk.Opts.values['bGUI']:
-        # Future Expansion: Add CLI-only surface processor logic here.
         print("CLI processing for surfaces is under construction. Please use the GUI mode.")
         return
     
@@ -404,6 +458,10 @@ def main():
     sc.doc.Views.Redraw()
 
     if dialog.dialog_ok and dialog.conduit.ns:
+        if dialog.conduit.ns.EpsilonEquals(objref_In.Face().UnderlyingSurface(), epsilon=Rhino.RhinoMath.ZeroTolerance):
+            print("Resultant surface is the same as input surface. No changes were made to the document.")
+            return
+
         if ebk.Opts.values['bDeleteInput']:
             sc.doc.Objects.Replace(objref_In.ObjectId, dialog.conduit.ns.ToBrep())
             print("Replaced surface.")

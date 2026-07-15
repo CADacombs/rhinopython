@@ -247,6 +247,9 @@ class SrfPreviewConduit(Rhino.Display.DisplayConduit):
         self.color = Rhino.ApplicationSettings.AppearanceSettings.FeedbackColor
         self.ns = None
         self.cg_curves = []
+        self.show_graph = ebk.Opts.values['bShowGraph']
+        self.show_polygon = ebk.Opts.values['bShowPolygon']
+        self.show_geom = ebk.Opts.values['bShowGeom']
         self.graph_scale = ebk.Opts.values['iGraphScale']
         self.graph_density = ebk.Opts.values['iGraphDensity']
 
@@ -259,24 +262,27 @@ class SrfPreviewConduit(Rhino.Display.DisplayConduit):
     def PostDrawObjects(self, e):
         if not self.ns: return
 
-        # Draw U-direction CV net lines
-        for v in range(self.ns.Points.CountV):
-            pts = [self.ns.Points.GetControlPoint(u, v).Location for u in range(self.ns.Points.CountU)]
-            e.Display.DrawPolyline(pts, self.color, 1)
-        
-        # Draw V-direction CV net lines
-        for u in range(self.ns.Points.CountU):
-            pts = [self.ns.Points.GetControlPoint(u, v).Location for v in range(self.ns.Points.CountV)]
-            e.Display.DrawPolyline(pts, self.color, 1)
+        if self.show_polygon:
+            # Draw U-direction CV net lines
+            for v in range(self.ns.Points.CountV):
+                pts = [self.ns.Points.GetControlPoint(u, v).Location for u in range(self.ns.Points.CountU)]
+                e.Display.DrawPolyline(pts, self.color, 1)
+            
+            # Draw V-direction CV net lines
+            for u in range(self.ns.Points.CountU):
+                pts = [self.ns.Points.GetControlPoint(u, v).Location for v in range(self.ns.Points.CountV)]
+                e.Display.DrawPolyline(pts, self.color, 1)
 
-        # Draw CP Dots
-        all_pts = [self.ns.Points.GetControlPoint(u, v).Location for u in range(self.ns.Points.CountU) for v in range(self.ns.Points.CountV)]
-        e.Display.DrawPoints(all_pts, Rhino.Display.PointStyle.Simple, 3, self.color)
+            # Draw CP Dots
+            all_pts = [self.ns.Points.GetControlPoint(u, v).Location for u in range(self.ns.Points.CountU) for v in range(self.ns.Points.CountV)]
+            e.Display.DrawPoints(all_pts, Rhino.Display.PointStyle.Simple, 3, self.color)
 
         # Draw Base Isocurves and Custom Normal-Aligned Curvature Graphs
         for c, direction, const_param in self.cg_curves:
-            e.Display.DrawCurve(c, self.color, 1)
-            draw_surface_curvature_graph(e.Display, self.ns, c, direction, const_param, self.graph_scale, self.graph_density, self.color)
+            if self.show_geom:
+                e.Display.DrawCurve(c, self.color, 1)
+            if self.show_graph:
+                draw_surface_curvature_graph(e.Display, self.ns, c, direction, const_param, self.graph_scale, self.graph_density, self.color)
 
 
 class SrfEtoDialog(ebk.EtoDialog):
@@ -319,6 +325,10 @@ class SrfEtoDialog(ebk.EtoDialog):
         self.create_controls()
         self.setup_layout()
         self.OnLinkedModeChanged(None, None)
+
+        # Bind the window events
+        self.LoadComplete += self.OnFormLoadComplete
+        self.Closed += self.OnFormClosed
 
     def UpdatePreview(self):
         if not hasattr(self, 'conduit') or self.conduit is None: return

@@ -26,7 +26,7 @@ Send any questions, comments, or script development service needs to @spb on the
 """
 
 """
-260712-14: Created by extracting refactored code from another script.
+260712-15: Created by extracting refactored code from another script.
 """
 
 import Rhino
@@ -411,12 +411,12 @@ def createCurve(nc_In, fScale_T0=1.0, fSlideG2_T0=0.0, fSlideG3_T0=0.0, fScale_T
     for i in range(nc_Out.Points.Count):
         nc_Out.Points.SetPoint(index=i, point=pts_Prime[i], weight=nc_In.Points.GetWeight(i))
 
-    if bDebug:
-        for i in range(len(pts_Prime)):
-            rgDot = rg.TextDot("{}".format(i), pts_Prime[i])
-            rgDot.FontHeight = 11
-            sc.doc.Objects.AddTextDot(rgDot)
-        sc.doc.Views.Redraw()
+    #if bDebug:
+    #    for i in range(len(pts_Prime)):
+    #        rgDot = rg.TextDot("{}".format(i), pts_Prime[i])
+    #        rgDot.FontHeight = 11
+    #        sc.doc.Objects.AddTextDot(rgDot)
+    #    sc.doc.Views.Redraw()
 
     return nc_Out, None, (max_mod_T0, max_mod_T1, bOverlap)
 
@@ -472,12 +472,20 @@ class EtoDialog(ef.Dialog):
         self._exact_scale_opp = Opts.values['fScale_Opp']
         self._auto_updating = False
         self._auto_updating_slider = False
+        self.active_stepper_key = None
 
         self.create_controls()
         self.setup_layout()
         self.OnLinkedModeChanged(None, None)
 
-        # Bind the window events
+        # Lock the original object so it acts as a visual reference during the command
+        sc.doc.Objects.Lock(self.objref_In.ObjectId, True)
+
+        # Initialize the Debounce Timer (200ms)
+        self.debounce_timer = ef.UITimer()
+        self.debounce_timer.Interval = 0.2
+        self.debounce_timer.Elapsed += self.OnDebounceTimerElapsed
+
         self.LoadComplete += self.OnFormLoadComplete
         self.Closed += self.OnFormClosed
 
@@ -485,18 +493,25 @@ class EtoDialog(ef.Dialog):
         if not hasattr(self, 'conduit') or self.conduit is None: return
 
         fScale_Picked = self.ParseToFloat(self.textBoxes['fScale_Picked'].Text)
-        fSlideG2_Picked = self.numericSteppers['fSlideG2_Picked'].Value
-        fSlideG3_Picked = self.numericSteppers['fSlideG3_Picked'].Value
-        
         fScale_Opp = self.ParseToFloat(self.textBoxes['fScale_Opp'].Text)
-        fSlideG2_Opp = self.numericSteppers['fSlideG2_Opp'].Value
-        fSlideG3_Opp = self.numericSteppers['fSlideG3_Opp'].Value
-
+        
         if (fScale_Picked is None or fScale_Picked <= Rhino.RhinoMath.ZeroTolerance or
             fScale_Opp is None or fScale_Opp <= Rhino.RhinoMath.ZeroTolerance):
             self.conduit.crv = None
             sc.doc.Views.Redraw()
             return
+
+        fSlideG2_Picked = self.ParseToFloat(self.textBoxes['fSlideG2_Picked'].Text)
+        fSlideG2_Picked = fSlideG2_Picked if fSlideG2_Picked is not None else 0.0
+        
+        fSlideG3_Picked = self.ParseToFloat(self.textBoxes['fSlideG3_Picked'].Text)
+        fSlideG3_Picked = fSlideG3_Picked if fSlideG3_Picked is not None else 0.0
+
+        fSlideG2_Opp = self.ParseToFloat(self.textBoxes['fSlideG2_Opp'].Text)
+        fSlideG2_Opp = fSlideG2_Opp if fSlideG2_Opp is not None else 0.0
+        
+        fSlideG3_Opp = self.ParseToFloat(self.textBoxes['fSlideG3_Opp'].Text)
+        fSlideG3_Opp = fSlideG3_Opp if fSlideG3_Opp is not None else 0.0
 
         idxCont_Picked = self.radioButtonLists['idxCont_Picked'].SelectedIndex
         idxCont_Opp = self.radioButtonLists['idxCont_Opp'].SelectedIndex
@@ -554,6 +569,10 @@ class EtoDialog(ef.Dialog):
             
         sc.doc.Views.Redraw()
 
+        # Restart the debounce timer so it doesn't fire during active sliding
+        self.debounce_timer.Stop()
+        self.debounce_timer.Start()
+
     def OnFormLoadComplete(self, sender, e):
         loc_key = 'spb_EndBulge_WindowLoc'
         if loc_key in sc.sticky:
@@ -569,6 +588,8 @@ class EtoDialog(ef.Dialog):
         self.textBoxes = {}
         self.dropDowns = {}
         self.sliders = {}
+        self.btnUp = {}
+        self.btnDown = {}
 
         bSuccess, t_AtPicked = self.nc_In.ClosestPoint(self.objref_In.SelectionPoint())
         bPickedIsT1 = t_AtPicked > self.nc_In.Domain.Mid
@@ -628,14 +649,13 @@ class EtoDialog(ef.Dialog):
         self.hold_timer.Interval = 0.15 
         self.hold_timer.Elapsed += self.OnHoldTimerElapsed
         self.hold_direction = 0
-        self.active_stepper_end = 'Picked'
 
         self.slider_prev_vals = {}
 
         # --- JOG SLIDER GENERATOR ---
         def create_jog_slider(s_key):
             slider = ef.Slider()
-            slider.Width = 132  # Shrunk to mathematically align with the DropDown stack
+            slider.Width = 132  
             slider.SnapToTick = True
             slider.TickFrequency = 1
             self.slider_prev_vals[s_key] = 0
@@ -643,81 +663,44 @@ class EtoDialog(ef.Dialog):
             slider.MouseUp += lambda s, e, k=s_key: self.ZeroSlider(s, k)
             self.sliders[s_key] = slider
 
-        key = 'fScale_Picked'
-        self.labels[key] = ef.Label(Text = "Scale:")
-        self.textBoxes[key] = ef.TextBox()
-        self.textBoxes[key].Text = "{:.4f}".format(float(Opts.values[key]))
-        self.textBoxes[key].TextChanged += self.OnScaleTextChanged
-        create_jog_slider(key)
+        # --- HOMEMADE STEPPER GENERATOR ---
+        def create_homemade_stepper(s_key, label_text, is_scale=False):
+            self.labels[s_key] = ef.Label(Text = label_text)
+            self.textBoxes[s_key] = ef.TextBox()
+            self.textBoxes[s_key].Text = "{:.4f}".format(float(Opts.values[s_key]))
+            
+            if is_scale:
+                self.textBoxes[s_key].TextChanged += self.OnScaleTextChanged
+            else:
+                self.textBoxes[s_key].TextChanged += self.OnSlideTextChanged
+                
+            self.textBoxes[s_key].MouseWheel += lambda s, e, k=s_key: self.OnStepperMouseWheel(s, e, k)
+            self.textBoxes[s_key].KeyDown += lambda s, e, k=s_key: self.OnStepperKeyDown(s, e, k)
 
-        self.btnScaleUp_Picked = ef.Button(Text=unichr(9650), Width=16, Height=12)
-        self.btnScaleDown_Picked = ef.Button(Text=unichr(9660), Width=16, Height=12)
-        self.btnScaleUp_Picked.Font = small_font
-        self.btnScaleDown_Picked.Font = small_font
-        self.btnScaleUp_Picked.MinimumSize = ed.Size(16, 12)
-        self.btnScaleDown_Picked.MinimumSize = ed.Size(16, 12)
-        self.btnScaleUp_Picked.MouseDown += lambda s, e: self.StartHoldTimer(1, 'Picked')
-        self.btnScaleUp_Picked.MouseUp += self.StopHoldTimer
-        self.btnScaleUp_Picked.MouseLeave += self.StopHoldTimer
-        self.btnScaleDown_Picked.MouseDown += lambda s, e: self.StartHoldTimer(-1, 'Picked')
-        self.btnScaleDown_Picked.MouseUp += self.StopHoldTimer
-        self.btnScaleDown_Picked.MouseLeave += self.StopHoldTimer
+            create_jog_slider(s_key)
 
-        key = 'fSlideG2_Picked'
-        self.labels[key] = ef.Label(Text = "G2 slide:")
-        self.numericSteppers[key] = ef.NumericStepper()
-        self.numericSteppers[key].DecimalPlaces = 4
-        self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
-        self.numericSteppers[key].Value = float(Opts.values[key])
-        self.numericSteppers[key].ValueChanged += self.OnSlideValueChanged
-        create_jog_slider(key)
+            self.btnUp[s_key] = ef.Button(Text=unichr(9650), Width=16, Height=12)
+            self.btnDown[s_key] = ef.Button(Text=unichr(9660), Width=16, Height=12)
+            self.btnUp[s_key].Font = small_font
+            self.btnDown[s_key].Font = small_font
+            self.btnUp[s_key].MinimumSize = ed.Size(16, 12)
+            self.btnDown[s_key].MinimumSize = ed.Size(16, 12)
+            
+            self.btnUp[s_key].MouseDown += lambda s, e, k=s_key: self.StartHoldTimer(1, k)
+            self.btnUp[s_key].MouseUp += self.StopHoldTimer
+            self.btnUp[s_key].MouseLeave += self.StopHoldTimer
+            
+            self.btnDown[s_key].MouseDown += lambda s, e, k=s_key: self.StartHoldTimer(-1, k)
+            self.btnDown[s_key].MouseUp += self.StopHoldTimer
+            self.btnDown[s_key].MouseLeave += self.StopHoldTimer
 
-        key = 'fSlideG3_Picked'
-        self.labels[key] = ef.Label(Text = "G3 slide:")
-        self.numericSteppers[key] = ef.NumericStepper()
-        self.numericSteppers[key].DecimalPlaces = 4
-        self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
-        self.numericSteppers[key].Value = float(Opts.values[key])
-        self.numericSteppers[key].ValueChanged += self.OnSlideValueChanged
-        create_jog_slider(key)
-
-        key = 'fScale_Opp'
-        self.labels[key] = ef.Label(Text = "Scale:")
-        self.textBoxes[key] = ef.TextBox()
-        self.textBoxes[key].Text = "{:.4f}".format(float(Opts.values[key]))
-        self.textBoxes[key].TextChanged += self.OnScaleTextChanged
-        create_jog_slider(key)
-
-        self.btnScaleUp_Opp = ef.Button(Text=unichr(9650), Width=16, Height=12)
-        self.btnScaleDown_Opp = ef.Button(Text=unichr(9660), Width=16, Height=12)
-        self.btnScaleUp_Opp.Font = small_font
-        self.btnScaleDown_Opp.Font = small_font
-        self.btnScaleUp_Opp.MinimumSize = ed.Size(16, 12)
-        self.btnScaleDown_Opp.MinimumSize = ed.Size(16, 12)
-        self.btnScaleUp_Opp.MouseDown += lambda s, e: self.StartHoldTimer(1, 'Opp')
-        self.btnScaleUp_Opp.MouseUp += self.StopHoldTimer
-        self.btnScaleUp_Opp.MouseLeave += self.StopHoldTimer
-        self.btnScaleDown_Opp.MouseDown += lambda s, e: self.StartHoldTimer(-1, 'Opp')
-        self.btnScaleDown_Opp.MouseUp += self.StopHoldTimer
-        self.btnScaleDown_Opp.MouseLeave += self.StopHoldTimer
-
-        key = 'fSlideG2_Opp'
-        self.labels[key] = ef.Label(Text = "G2 slide:")
-        self.numericSteppers[key] = ef.NumericStepper()
-        self.numericSteppers[key].DecimalPlaces = 4
-        self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
-        self.numericSteppers[key].Value = float(Opts.values[key])
-        self.numericSteppers[key].ValueChanged += self.OnSlideValueChanged
-        create_jog_slider(key)
-
-        key = 'fSlideG3_Opp'
-        self.labels[key] = ef.Label(Text = "G3 slide:")
-        self.numericSteppers[key] = ef.NumericStepper()
-        self.numericSteppers[key].DecimalPlaces = 4
-        self.numericSteppers[key].Increment = float(Opts.values['fIncrement'])
-        self.numericSteppers[key].Value = float(Opts.values[key])
-        self.numericSteppers[key].ValueChanged += self.OnSlideValueChanged
-        create_jog_slider(key)
+        create_homemade_stepper('fScale_Picked', "Scale:", True)
+        create_homemade_stepper('fSlideG2_Picked', "G2 slide:", False)
+        create_homemade_stepper('fSlideG3_Picked', "G3 slide:", False)
+        
+        create_homemade_stepper('fScale_Opp', "Scale:", True)
+        create_homemade_stepper('fSlideG2_Opp', "G2 slide:", False)
+        create_homemade_stepper('fSlideG3_Opp', "G3 slide:", False)
 
         self.UpdateSliderRanges()
 
@@ -776,38 +759,20 @@ class EtoDialog(ef.Dialog):
         self.checkBoxes[key].CheckedChanged += lambda s, e: self.UpdatePreview()
 
         # --- COMPACT UI WIDTHS ---
-        # 0. Tight, exact label width to vertically align separate grids without gaps
         lbl_w = 50
-        self.labels['fIncrement'].Width = lbl_w
-        self.labels['fScale_Picked'].Width = lbl_w
-        self.labels['fSlideG2_Picked'].Width = lbl_w
-        self.labels['fSlideG3_Picked'].Width = lbl_w
-        self.labels['fScale_Opp'].Width = lbl_w
-        self.labels['fSlideG2_Opp'].Width = lbl_w
-        self.labels['fSlideG3_Opp'].Width = lbl_w
+        for k in ('fIncrement', 'fScale_Picked', 'fSlideG2_Picked', 'fSlideG3_Picked', 'fScale_Opp', 'fSlideG2_Opp', 'fSlideG3_Opp'):
+            self.labels[k].Width = lbl_w
 
-        # 1. Match Increment box strictly to the 80px steppers below it
         self.textBoxes['fIncrement'].Width = 80 
-        
-        # 1b. Lock the Slider Steps combo so it perfectly matches the 132px sliders
         self.labels['iSliderSteps'].Width = 64
         self.dropDowns['iSliderSteps'].Width = 60
 
-        # 2. Scale Combos (TextBox[64] + ButtonStack[16] = 80px)
-        self.textBoxes['fScale_Picked'].Width = 64
-        self.textBoxes['fScale_Opp'].Width = 64
+        # All 6 configuration textboxes share the 64px width constraint
+        for k in ('fScale_Picked', 'fSlideG2_Picked', 'fSlideG3_Picked', 'fScale_Opp', 'fSlideG2_Opp', 'fSlideG3_Opp'):
+            self.textBoxes[k].Width = 64
 
-        # 3. Numeric Steppers (80px)
-        self.numericSteppers['fSlideG2_Picked'].Width = 80
-        self.numericSteppers['fSlideG3_Picked'].Width = 80
-        self.numericSteppers['fSlideG2_Opp'].Width = 80
-        self.numericSteppers['fSlideG3_Opp'].Width = 80
-
-        # 4. Shrink Graph steppers
         self.numericSteppers['iGraphScale'].Width = 45
         self.numericSteppers['iGraphDensity'].Width = 45
-
-        self.UpdateSliderRanges()
 
     def setup_layout(self):
         term_cap = "Edge" if self.is_surface else "End"
@@ -820,14 +785,21 @@ class EtoDialog(ef.Dialog):
             
         def gap():
             return ef.Label(Width=12)
+            
+        def build_combo(key):
+            stepper = ef.StackLayout(Spacing=0)
+            stepper.Items.Add(self.btnUp[key])
+            stepper.Items.Add(self.btnDown[key])
+            combo = ef.StackLayout(Orientation=ef.Orientation.Horizontal, Spacing=0)
+            combo.Items.Add(self.textBoxes[key])
+            combo.Items.Add(stepper)
+            return combo
         
-        # 1. ROOT CLAMP
         root_layout = ef.StackLayout()
         root_layout.Padding = ed.Padding(10)
         root_layout.Spacing = 8
         root_layout.HorizontalContentAlignment = ef.HorizontalAlignment.Left
 
-        # 2. CONTINUITY CONSTRAINTS
         root_layout.Items.Add(ef.Label(Text="Continuity Constraints", Font=ed.Font(ed.SystemFont.Bold, 10)))
         cont_grid = ef.DynamicLayout()
         cont_grid.Spacing = ed.Size(4, 4)
@@ -836,7 +808,6 @@ class EtoDialog(ef.Dialog):
         root_layout.Items.Add(cont_grid)
         root_layout.Items.Add(ef.Label(Height=4))
 
-        # 3. CONFIGURATIONS HEADER & ADJUST ENDS
         root_layout.Items.Add(ef.Label(Text="Configurations", Font=ed.Font(ed.SystemFont.Bold, 10)))
         adj_row = ef.StackLayout()
         adj_row.Orientation = ef.Orientation.Horizontal
@@ -847,9 +818,6 @@ class EtoDialog(ef.Dialog):
         root_layout.Items.Add(adj_row)
         root_layout.Items.Add(ef.Label(Height=2))
 
-        # 4. DECOUPLED GRIDS (Aligning via exact 60px label widths)
-        
-        # A. Increment Grid
         incr_grid = ef.DynamicLayout()
         incr_grid.Spacing = ed.Size(4, 4)
         
@@ -864,54 +832,27 @@ class EtoDialog(ef.Dialog):
         root_layout.Items.Add(incr_grid)
         root_layout.Items.Add(ef.Label(Height=6))
 
-        # Pre-build Scale Combos
-        stepper_picked = ef.StackLayout()
-        stepper_picked.Spacing = 0
-        stepper_picked.Items.Add(self.btnScaleUp_Picked)
-        stepper_picked.Items.Add(self.btnScaleDown_Picked)
-
-        scale_combo_picked = ef.StackLayout()
-        scale_combo_picked.Orientation = ef.Orientation.Horizontal
-        scale_combo_picked.Spacing = 0
-        scale_combo_picked.Items.Add(self.textBoxes['fScale_Picked'])
-        scale_combo_picked.Items.Add(stepper_picked)
-
-        stepper_opp = ef.StackLayout()
-        stepper_opp.Spacing = 0
-        stepper_opp.Items.Add(self.btnScaleUp_Opp)
-        stepper_opp.Items.Add(self.btnScaleDown_Opp)
-        
-        scale_combo_opp = ef.StackLayout()
-        scale_combo_opp.Orientation = ef.Orientation.Horizontal
-        scale_combo_opp.Spacing = 0
-        scale_combo_opp.Items.Add(self.textBoxes['fScale_Opp'])
-        scale_combo_opp.Items.Add(stepper_opp)
-
-        # B. Picked End Grid
         root_layout.Items.Add(ef.Label(Text="Picked {}".format(term_cap), Font=ed.Font(ed.SystemFont.Bold)))
         picked_grid = ef.DynamicLayout()
         picked_grid.Spacing = ed.Size(4, 4)
-        picked_grid.AddRow(self.labels['fScale_Picked'], scale_combo_picked, gap(), self.sliders['fScale_Picked'], None)
-        picked_grid.AddRow(self.labels['fSlideG2_Picked'], wrap(self.numericSteppers['fSlideG2_Picked']), gap(), self.sliders['fSlideG2_Picked'], None)
-        picked_grid.AddRow(self.labels['fSlideG3_Picked'], wrap(self.numericSteppers['fSlideG3_Picked']), gap(), self.sliders['fSlideG3_Picked'], None)
+        picked_grid.AddRow(self.labels['fScale_Picked'], build_combo('fScale_Picked'), gap(), self.sliders['fScale_Picked'], None)
+        picked_grid.AddRow(self.labels['fSlideG2_Picked'], build_combo('fSlideG2_Picked'), gap(), self.sliders['fSlideG2_Picked'], None)
+        picked_grid.AddRow(self.labels['fSlideG3_Picked'], build_combo('fSlideG3_Picked'), gap(), self.sliders['fSlideG3_Picked'], None)
         
         root_layout.Items.Add(picked_grid)
         root_layout.Items.Add(ef.Label(Height=6))
 
-        # C. Opposite End Grid
         root_layout.Items.Add(ef.Label(Text="Opposite {}".format(term_cap), Font=ed.Font(ed.SystemFont.Bold)))
         opp_grid = ef.DynamicLayout()
         opp_grid.Spacing = ed.Size(4, 4)
-        opp_grid.AddRow(self.labels['fScale_Opp'], scale_combo_opp, gap(), self.sliders['fScale_Opp'], None)
-        opp_grid.AddRow(self.labels['fSlideG2_Opp'], wrap(self.numericSteppers['fSlideG2_Opp']), gap(), self.sliders['fSlideG2_Opp'], None)
-        opp_grid.AddRow(self.labels['fSlideG3_Opp'], wrap(self.numericSteppers['fSlideG3_Opp']), gap(), self.sliders['fSlideG3_Opp'], None)
+        opp_grid.AddRow(self.labels['fScale_Opp'], build_combo('fScale_Opp'), gap(), self.sliders['fScale_Opp'], None)
+        opp_grid.AddRow(self.labels['fSlideG2_Opp'], build_combo('fSlideG2_Opp'), gap(), self.sliders['fSlideG2_Opp'], None)
+        opp_grid.AddRow(self.labels['fSlideG3_Opp'], build_combo('fSlideG3_Opp'), gap(), self.sliders['fSlideG3_Opp'], None)
 
         root_layout.Items.Add(opp_grid)
         root_layout.Items.Add(ef.Label(Height=4))
 
-        # 5. DISPLAY
         root_layout.Items.Add(ef.Label(Text="Display", Font=ed.Font(ed.SystemFont.Bold, 10)))
-        
         display_group = ef.StackLayout()
         display_group.Spacing = 4
         
@@ -931,7 +872,6 @@ class EtoDialog(ef.Dialog):
         root_layout.Items.Add(display_group)
         root_layout.Items.Add(ef.Label(Height=4))
 
-        # 6. BOTTOM CHECKBOXES
         chk_stack = ef.StackLayout()
         chk_stack.Orientation = ef.Orientation.Horizontal
         chk_stack.Spacing = 20
@@ -942,7 +882,6 @@ class EtoDialog(ef.Dialog):
         root_layout.Items.Add(chk_stack)
         root_layout.Items.Add(ef.Label(Height=8))
 
-        # 7. BUTTONS
         self.ok_button = ef.Button(Text = 'OK')
         self.ok_button.Click += self.OnOKButtonClick
         save_button = ef.Button(Text = 'Save Settings')
@@ -966,13 +905,12 @@ class EtoDialog(ef.Dialog):
         self.AutoSize = True
         self.Resizable = False
 
-    # --- JOG SLIDER LOGIC ---
     def UpdateSliderRanges(self):
         steps = int(self.dropDowns['iSliderSteps'].SelectedValue)
         for s in self.sliders.values():
             s.MinValue = -steps
             s.MaxValue = steps
-            
+
     def OnSliderStepsChanged(self, sender, e):
         self.UpdateSliderRanges()
 
@@ -989,18 +927,18 @@ class EtoDialog(ef.Dialog):
         change = delta * incr_val
 
         self._auto_updating = True
+        
         if 'Scale' in target_key:
-            if target_key == 'fScale_Picked':
-                new_val = max(incr_val, self._exact_scale_picked + change)
-                self._exact_scale_picked = new_val
-                self.textBoxes[target_key].Text = "{:.4f}".format(self._exact_scale_picked)
-            else:
-                new_val = max(incr_val, self._exact_scale_opp + change)
-                self._exact_scale_opp = new_val
-                self.textBoxes[target_key].Text = "{:.4f}".format(self._exact_scale_opp)
+            current_val = self._exact_scale_picked if 'Picked' in target_key else self._exact_scale_opp
+            new_val = max(incr_val, current_val + change)
+            if 'Picked' in target_key: self._exact_scale_picked = new_val
+            else: self._exact_scale_opp = new_val
         else:
-            stepper = self.numericSteppers[target_key]
-            stepper.Value += change
+            current_val = self.ParseToFloat(self.textBoxes[target_key].Text)
+            if current_val is None: current_val = 0.0
+            new_val = current_val + change
+            
+        self.textBoxes[target_key].Text = "{:.4f}".format(new_val)
 
         self._auto_updating = False
         self.SyncLinkedControls()
@@ -1011,16 +949,15 @@ class EtoDialog(ef.Dialog):
         slider.Value = 0
         self.slider_prev_vals[target_key] = 0
         self._auto_updating_slider = False
-    # ------------------------
 
     def SyncLinkedControls(self, sender=None, e=None):
         if bool(self.radioButtonLists['bLinkedEnds'].SelectedIndex):
             if self.textBoxes['fScale_Opp'].Text != self.textBoxes['fScale_Picked'].Text:
                 self.textBoxes['fScale_Opp'].Text = self.textBoxes['fScale_Picked'].Text
-            if self.numericSteppers['fSlideG2_Opp'].Value != self.numericSteppers['fSlideG2_Picked'].Value:
-                self.numericSteppers['fSlideG2_Opp'].Value = self.numericSteppers['fSlideG2_Picked'].Value
-            if self.numericSteppers['fSlideG3_Opp'].Value != self.numericSteppers['fSlideG3_Picked'].Value:
-                self.numericSteppers['fSlideG3_Opp'].Value = self.numericSteppers['fSlideG3_Picked'].Value
+            if self.textBoxes['fSlideG2_Opp'].Text != self.textBoxes['fSlideG2_Picked'].Text:
+                self.textBoxes['fSlideG2_Opp'].Text = self.textBoxes['fSlideG2_Picked'].Text
+            if self.textBoxes['fSlideG3_Opp'].Text != self.textBoxes['fSlideG3_Picked'].Text:
+                self.textBoxes['fSlideG3_Opp'].Text = self.textBoxes['fSlideG3_Picked'].Text
 
     def UpdateControlStates(self):
         is_linked = bool(self.radioButtonLists['bLinkedEnds'].SelectedIndex)
@@ -1052,27 +989,40 @@ class EtoDialog(ef.Dialog):
             scale_limit_P = alloc_P
             scale_limit_O = alloc_O
 
-        self.numericSteppers['fSlideG2_Picked'].Enabled = (scale_limit_P >= 3)
+        self.textBoxes['fSlideG2_Picked'].Enabled = (scale_limit_P >= 3)
+        self.btnUp['fSlideG2_Picked'].Enabled = (scale_limit_P >= 3)
+        self.btnDown['fSlideG2_Picked'].Enabled = (scale_limit_P >= 3)
         self.sliders['fSlideG2_Picked'].Enabled = (scale_limit_P >= 3)
         
-        self.numericSteppers['fSlideG3_Picked'].Enabled = (scale_limit_P >= 4)
+        self.textBoxes['fSlideG3_Picked'].Enabled = (scale_limit_P >= 4)
+        self.btnUp['fSlideG3_Picked'].Enabled = (scale_limit_P >= 4)
+        self.btnDown['fSlideG3_Picked'].Enabled = (scale_limit_P >= 4)
         self.sliders['fSlideG3_Picked'].Enabled = (scale_limit_P >= 4)
 
         self.textBoxes['fScale_Opp'].Enabled = not is_linked
-        self.btnScaleUp_Opp.Enabled = not is_linked
-        self.btnScaleDown_Opp.Enabled = not is_linked
+        self.btnUp['fScale_Opp'].Enabled = not is_linked
+        self.btnDown['fScale_Opp'].Enabled = not is_linked
         self.sliders['fScale_Opp'].Enabled = not is_linked
         
         if is_linked:
-            self.numericSteppers['fSlideG2_Opp'].Enabled = False
+            self.textBoxes['fSlideG2_Opp'].Enabled = False
+            self.btnUp['fSlideG2_Opp'].Enabled = False
+            self.btnDown['fSlideG2_Opp'].Enabled = False
             self.sliders['fSlideG2_Opp'].Enabled = False
-            self.numericSteppers['fSlideG3_Opp'].Enabled = False
+            
+            self.textBoxes['fSlideG3_Opp'].Enabled = False
+            self.btnUp['fSlideG3_Opp'].Enabled = False
+            self.btnDown['fSlideG3_Opp'].Enabled = False
             self.sliders['fSlideG3_Opp'].Enabled = False
         else:
-            self.numericSteppers['fSlideG2_Opp'].Enabled = (scale_limit_O >= 3)
+            self.textBoxes['fSlideG2_Opp'].Enabled = (scale_limit_O >= 3)
+            self.btnUp['fSlideG2_Opp'].Enabled = (scale_limit_O >= 3)
+            self.btnDown['fSlideG2_Opp'].Enabled = (scale_limit_O >= 3)
             self.sliders['fSlideG2_Opp'].Enabled = (scale_limit_O >= 3)
             
-            self.numericSteppers['fSlideG3_Opp'].Enabled = (scale_limit_O >= 4)
+            self.textBoxes['fSlideG3_Opp'].Enabled = (scale_limit_O >= 4)
+            self.btnUp['fSlideG3_Opp'].Enabled = (scale_limit_O >= 4)
+            self.btnDown['fSlideG3_Opp'].Enabled = (scale_limit_O >= 4)
             self.sliders['fSlideG3_Opp'].Enabled = (scale_limit_O >= 4)
 
     def OnContinuityChanged(self, sender, e):
@@ -1122,12 +1072,20 @@ class EtoDialog(ef.Dialog):
         else:
             sender.BackgroundColor = ed.Colors.LightPink
             
-        self.SyncLinkedControls()
-        self.UpdatePreview()
+        if not self._auto_updating:
+            self.SyncLinkedControls()
+            self.UpdatePreview()
 
-    def OnSlideValueChanged(self, sender, e):
-        self.SyncLinkedControls()
-        self.UpdatePreview()
+    def OnSlideTextChanged(self, sender, e):
+        val = self.ParseToFloat(sender.Text)
+        if val is not None:
+            sender.BackgroundColor = ed.Colors.White
+        else:
+            sender.BackgroundColor = ed.Colors.LightPink
+            
+        if not self._auto_updating:
+            self.SyncLinkedControls()
+            self.UpdatePreview()
 
     def ParseToFloat(self, text):
         text = text.strip()
@@ -1139,41 +1097,73 @@ class EtoDialog(ef.Dialog):
         except (ValueError, ZeroDivisionError):
             return None
 
-    def StartHoldTimer(self, direction, end_name):
-        self.active_stepper_end = end_name
-        self.AdjustScale(direction)
+    def OnStepperMouseWheel(self, sender, e, key):
+        import time
+        now = time.time()
+        # Time Gate: Ignore event if less than 0.15 seconds have passed
+        if now - getattr(self, '_last_input_time', 0) < 0.15:
+            e.Handled = True
+            return
+        self._last_input_time = now
+
+        direction = 1 if e.Delta.Height > 0 else -1
+        self.active_stepper_key = key
+        self.AdjustStepper(direction, key)
+        e.Handled = True
+
+    def OnStepperKeyDown(self, sender, e, key):
+        if e.Key == ef.Keys.Up or e.Key == ef.Keys.Down:
+            import time
+            now = time.time()
+            # Time Gate: Ignore event if less than 0.15 seconds have passed
+            if now - getattr(self, '_last_input_time', 0) < 0.15:
+                e.Handled = True
+                return
+            self._last_input_time = now
+
+            direction = 1 if e.Key == ef.Keys.Up else -1
+            self.active_stepper_key = key
+            self.AdjustStepper(direction, key)
+            e.Handled = True
+
+    def OnDebounceTimerElapsed(self, sender, e):
+        self.debounce_timer.Stop()
+
+    def StartHoldTimer(self, direction, key):
+        self.active_stepper_key = key
         self.hold_direction = direction
+        self.AdjustStepper(direction, key)
         self.hold_timer.Start()
 
     def StopHoldTimer(self, sender, e):
         self.hold_timer.Stop()
 
     def OnHoldTimerElapsed(self, sender, e):
-        self.AdjustScale(self.hold_direction)
+        self.AdjustStepper(self.hold_direction, self.active_stepper_key)
 
-    def AdjustScale(self, direction):
+    def AdjustStepper(self, direction, key):
         incr_val = self.ParseToFloat(self.textBoxes['fIncrement'].Text)
         if incr_val is None: return
 
-        if self.active_stepper_end == 'Picked':
-            current_val = self._exact_scale_picked
-            target_key = 'fScale_Picked'
+        if 'Scale' in key:
+            current_val = self._exact_scale_picked if 'Picked' in key else self._exact_scale_opp
         else:
-            current_val = self._exact_scale_opp
-            target_key = 'fScale_Opp'
+            current_val = self.ParseToFloat(self.textBoxes[key].Text)
 
-        if current_val is not None:
-            # Clamps the minimum value to the current Increment
-            new_val = max(incr_val, current_val + (incr_val * direction))
-            
-            if self.active_stepper_end == 'Picked':
+        if current_val is None: return
+
+        new_val = current_val + (incr_val * direction)
+        
+        if 'Scale' in key:
+            new_val = max(incr_val, new_val)
+            if 'Picked' in key:
                 self._exact_scale_picked = new_val
             else:
                 self._exact_scale_opp = new_val
                 
-            self._auto_updating = True
-            self.textBoxes[target_key].Text = "{:.4f}".format(new_val)
-            self._auto_updating = False
+        self._auto_updating = True
+        self.textBoxes[key].Text = "{:.4f}".format(new_val)
+        self._auto_updating = False
 
         self.SyncLinkedControls()
         self.UpdatePreview()
@@ -1188,12 +1178,9 @@ class EtoDialog(ef.Dialog):
             else:
                 val = float(text)
         except (ValueError, ZeroDivisionError): pass
+        
         if val is not None and val > Rhino.RhinoMath.ZeroTolerance:
             sender.BackgroundColor = ed.Colors.White 
-            self.numericSteppers['fSlideG2_Picked'].Increment = val
-            self.numericSteppers['fSlideG3_Picked'].Increment = val
-            self.numericSteppers['fSlideG2_Opp'].Increment = val
-            self.numericSteppers['fSlideG3_Opp'].Increment = val
         else:
             sender.BackgroundColor = ed.Colors.LightPink
 
@@ -1224,10 +1211,14 @@ class EtoDialog(ef.Dialog):
 
         for end in ('_Picked', '_Opp'):
             parsed_scale = self.ParseToFloat(self.textBoxes['fScale' + end].Text)
-            if parsed_scale is not None:
-                sc.sticky[Opts.stickyKeys['fScale' + end]] = Opts.values['fScale' + end] = parsed_scale
-            sc.sticky[Opts.stickyKeys['fSlideG2' + end]] = Opts.values['fSlideG2' + end] = self.numericSteppers['fSlideG2' + end].Value
-            sc.sticky[Opts.stickyKeys['fSlideG3' + end]] = Opts.values['fSlideG3' + end] = self.numericSteppers['fSlideG3' + end].Value
+            if parsed_scale is not None: sc.sticky[Opts.stickyKeys['fScale' + end]] = Opts.values['fScale' + end] = parsed_scale
+            
+            p_g2 = self.ParseToFloat(self.textBoxes['fSlideG2' + end].Text)
+            if p_g2 is not None: sc.sticky[Opts.stickyKeys['fSlideG2' + end]] = Opts.values['fSlideG2' + end] = p_g2
+            
+            p_g3 = self.ParseToFloat(self.textBoxes['fSlideG3' + end].Text)
+            if p_g3 is not None: sc.sticky[Opts.stickyKeys['fSlideG3' + end]] = Opts.values['fSlideG3' + end] = p_g3
+
         sc.sticky[Opts.stickyKeys['idxCont_Picked']] = Opts.values['idxCont_Picked'] = self.radioButtonLists['idxCont_Picked'].SelectedIndex
         sc.sticky[Opts.stickyKeys['idxCont_Opp']] = Opts.values['idxCont_Opp'] = self.radioButtonLists['idxCont_Opp'].SelectedIndex
         sc.sticky[Opts.stickyKeys['bShowGeom']] = Opts.values['bShowGeom'] = self.checkBoxes['bShowGeom'].Checked
@@ -1261,8 +1252,9 @@ class EtoDialog(ef.Dialog):
         self.Close()
 
     def OnFormClosed(self, sender, e):
-        # Save the exact X/Y screen coordinates to sticky memory
-        sc.sticky['spb_EndBulge_WindowLoc'] = (self.Location.X, self.Location.Y)
+        # Always unlock the reference object when the dialog closes
+        sc.doc.Objects.Unlock(self.objref_In.ObjectId, True)
         
+        sc.sticky['spb_EndBulge_WindowLoc'] = (self.Location.X, self.Location.Y)
         self.conduit.Enabled = False
         sc.doc.Views.Redraw()

@@ -36,7 +36,46 @@ import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
 
+import Eto.Forms as ef
+
 import spb_EndBulge_Kernel as ebk
+
+
+def _replace_and_preserve_modes(doc, obj_id, new_geom):
+    """Safely replaces document geometry without destroying active Zebra/Draft modes."""
+    import System
+    obj = doc.Objects.FindId(obj_id)
+    if not obj: return False
+    
+    active_modes = []
+    
+    # RhinoObject lacks a "GetActiveModes" method. We must test known GUIDs explicitly.
+    # We use hasattr/getattr to safely navigate known McNeel API spelling errors.
+    potential_mode_names = [
+        "RhinoZebraStripeAnalysisModeId",
+        "RhinoEmapAnalysisModeId",
+        "RhinoDraftAngleAnalysisModeId",
+        "RhinoCurvatureColorAnalyisModeId",  # Native API typo
+        "RhinoCurvatureColorAnalysisModeId"  # Fallback in case it is ever patched
+    ]
+    
+    for name in potential_mode_names:
+        if hasattr(Rhino.Display.VisualAnalysisMode, name):
+            guid = getattr(Rhino.Display.VisualAnalysisMode, name)
+            mode = Rhino.Display.VisualAnalysisMode.Find(guid)
+            if mode and obj.InVisualAnalysisMode(mode):
+                if mode not in active_modes:
+                    active_modes.append(mode)
+                
+    rc = doc.Objects.Replace(obj_id, new_geom)
+    
+    if rc and active_modes:
+        new_obj = doc.Objects.FindId(obj_id)
+        if new_obj:
+            for m in active_modes:
+                new_obj.EnableVisualAnalysisMode(m, True)
+                
+    return rc
 
 
 def extract_temp_curve(ns, direction, index):
@@ -252,6 +291,7 @@ class SrfPreviewConduit(Rhino.Display.DisplayConduit):
         self.show_geom = ebk.Opts.values['bShowGeom']
         self.graph_scale = ebk.Opts.values['iGraphScale']
         self.graph_density = ebk.Opts.values['iGraphDensity']
+        self.is_swapped = False
 
     def CalculateBoundingBox(self, e):
         if self.ns: 
@@ -279,7 +319,7 @@ class SrfPreviewConduit(Rhino.Display.DisplayConduit):
 
         # Draw Base Isocurves and Custom Normal-Aligned Curvature Graphs
         for c, direction, const_param in self.cg_curves:
-            if self.show_geom:
+            if self.show_geom and not self.is_swapped:
                 e.Display.DrawCurve(c, self.color, 1)
             if self.show_graph:
                 draw_surface_curvature_graph(e.Display, self.ns, c, direction, const_param, self.graph_scale, self.graph_density, self.color)
@@ -288,7 +328,7 @@ class SrfPreviewConduit(Rhino.Display.DisplayConduit):
 class SrfEtoDialog(ebk.EtoDialog):
     """Subclasses the Kernel Dialog to intercept Surface selections and override the preview routine."""
     def __init__(self, objref_In):
-        self.is_surface = True  # Injects the "Edge" terminology into the Kernel's dialog builder
+        self.is_surface = True  
         self.Title = "EndBulge Surface (Side Bulge) by SPB"
         self.objref_In = objref_In
         self.dialog_ok = False
@@ -297,7 +337,6 @@ class SrfEtoDialog(ebk.EtoDialog):
         face = edge.Brep.Faces[edge.AdjacentFaces()[0]]
         self.ns_In = face.ToNurbsSurface()
 
-        # Identify which boundary the user clicked based on edge midpoint
         t_mid = edge.Domain.Mid
         pt_mid = edge.PointAt(t_mid)
         bSuccess, u, v = face.ClosestPoint(pt_mid)
@@ -312,21 +351,28 @@ class SrfEtoDialog(ebk.EtoDialog):
         elif min_d == dV0: self.boundary = 'V0'
         else: self.boundary = 'V1'
 
-        # Supply a temporary 1D curve to the underlying Kernel so UI calculations (like point count) still work natively
         if self.boundary in ('U0', 'U1'):
             self.nc_In = extract_temp_curve(self.ns_In, 'U', 0)
         else:
             self.nc_In = extract_temp_curve(self.ns_In, 'V', 0)
+            
+        # GUARANTEED BACKUP: Explicitly pull the Brep geometry to prevent extracting the 1D Edge Curve
+        self.original_geom = objref_In.Brep().Duplicate()
 
         self._exact_scale_picked = ebk.Opts.values['fScale_Picked']
         self._exact_scale_opp = ebk.Opts.values['fScale_Opp']
         self._auto_updating = False
+        self._auto_updating_slider = False  
+        self.active_stepper_key = None      
 
         self.create_controls()
         self.setup_layout()
         self.OnLinkedModeChanged(None, None)
 
-        # Bind the window events
+        self.debounce_timer = ef.UITimer()
+        self.debounce_timer.Interval = 0.2
+        self.debounce_timer.Elapsed += self.OnDebounceTimerElapsed
+
         self.LoadComplete += self.OnFormLoadComplete
         self.Closed += self.OnFormClosed
 
@@ -334,11 +380,20 @@ class SrfEtoDialog(ebk.EtoDialog):
         if not hasattr(self, 'conduit') or self.conduit is None: return
 
         fScale_Picked = self.ParseToFloat(self.textBoxes['fScale_Picked'].Text)
-        fSlideG2_Picked = self.numericSteppers['fSlideG2_Picked'].Value
-        fSlideG3_Picked = self.numericSteppers['fSlideG3_Picked'].Value
+
+        fSlideG2_Picked = self.ParseToFloat(self.textBoxes['fSlideG2_Picked'].Text)
+        fSlideG2_Picked = fSlideG2_Picked if fSlideG2_Picked is not None else 0.0
+
+        fSlideG3_Picked = self.ParseToFloat(self.textBoxes['fSlideG3_Picked'].Text)
+        fSlideG3_Picked = fSlideG3_Picked if fSlideG3_Picked is not None else 0.0
+
         fScale_Opp = self.ParseToFloat(self.textBoxes['fScale_Opp'].Text)
-        fSlideG2_Opp = self.numericSteppers['fSlideG2_Opp'].Value
-        fSlideG3_Opp = self.numericSteppers['fSlideG3_Opp'].Value
+
+        fSlideG2_Opp = self.ParseToFloat(self.textBoxes['fSlideG2_Opp'].Text)
+        fSlideG2_Opp = fSlideG2_Opp if fSlideG2_Opp is not None else 0.0
+        
+        fSlideG3_Opp = self.ParseToFloat(self.textBoxes['fSlideG3_Opp'].Text)
+        fSlideG3_Opp = fSlideG3_Opp if fSlideG3_Opp is not None else 0.0
 
         if (fScale_Picked is None or fScale_Picked <= Rhino.RhinoMath.ZeroTolerance or
             fScale_Opp is None or fScale_Opp <= Rhino.RhinoMath.ZeroTolerance):
@@ -356,11 +411,9 @@ class SrfEtoDialog(ebk.EtoDialog):
             idxCont_Picked - 1, idxCont_Opp - 1, False
         )
 
-        # Dynamic UI feedback for continuity downgrades
         if info is not None:
             actual_T0, actual_T1, bOverlap = info
             
-            # Map T0/T1 back to Picked/Opp based on boundary
             if self.boundary in ('U1', 'V1'):
                 actual_Picked, actual_Opp = actual_T1, actual_T0
             else:
@@ -384,13 +437,54 @@ class SrfEtoDialog(ebk.EtoDialog):
 
         self.conduit.ns = self.ns_In.Duplicate() if ns_Res is None else ns_Res
         
-        # Extract isocurves for the curvature graph preview
         if self.conduit.ns:
             self.conduit.cg_curves = get_curvature_isocurves(self.conduit.ns)
         else:
             self.conduit.cg_curves = []
             
+        # Hide the document object while actively sliding (Conduit takes over)
+        sc.doc.Objects.Hide(self.objref_In.ObjectId, True)
+        self.conduit.is_swapped = False
         sc.doc.Views.Redraw()
+
+        self.debounce_timer.Stop()
+        self.debounce_timer.Start()
+
+    def OnDisplayCheckedChanged(self, sender, e):
+        # 1. Run the Kernel's native logic to update the conduit flags
+        super(SrfEtoDialog, self).OnDisplayCheckedChanged(sender, e)
+        
+        # 2. If the document object is currently swapped in, explicitly show/hide it
+        if hasattr(self, 'conduit') and self.conduit and self.conduit.is_swapped:
+            if self.checkBoxes['bShowGeom'].Checked:
+                sc.doc.Objects.Show(self.objref_In.ObjectId, True)
+            else:
+                sc.doc.Objects.Hide(self.objref_In.ObjectId, True)
+            
+            sc.doc.Views.Redraw()
+
+    def OnDebounceTimerElapsed(self, sender, e):
+        self.debounce_timer.Stop()
+        if hasattr(self.conduit, 'ns') and self.conduit.ns:
+            new_brep = self.conduit.ns.ToBrep()
+            if new_brep:
+                # The Golden Rule: Rhino refuses to replace hidden objects.
+                # We must unhide the original geometry right BEFORE we swap it.
+                sc.doc.Objects.Show(self.objref_In.ObjectId, True)
+                
+                # Now the replace will succeed, and Zebra is preserved
+                _replace_and_preserve_modes(sc.doc, self.objref_In.ObjectId, new_brep)
+                
+                # If the user doesn't want to see the surface, re-hide it instantly
+                if not self.checkBoxes['bShowGeom'].Checked:
+                    sc.doc.Objects.Hide(self.objref_In.ObjectId, True)
+                
+                self.conduit.is_swapped = True
+                sc.doc.Views.Redraw()
+
+    def OnFormClosed(self, sender, e):
+        # We leave the document state alone here; main() will clean it up inside the UndoRecord!
+        super(SrfEtoDialog, self).OnFormClosed(sender, e)
 
 
 def getInput_CLI():
@@ -464,23 +558,44 @@ def main():
     dialog.conduit.Enabled = True
     sc.doc.Views.Redraw()
 
-    Rhino.UI.EtoExtensions.ShowSemiModal(dialog, sc.doc, parent)
+    # START UNDO RECORD: Groups all live-swapping slider drags into one clean Undo step
+    undo_sn = sc.doc.BeginUndoRecord("EndBulge Srf")
 
-    dialog.conduit.Enabled = False
-    sc.doc.Views.Redraw()
+    try:
+        Rhino.UI.EtoExtensions.ShowSemiModal(dialog, sc.doc, parent)
 
-    if dialog.dialog_ok and dialog.conduit.ns:
-        if dialog.conduit.ns.EpsilonEquals(objref_In.Face().UnderlyingSurface(), epsilon=Rhino.RhinoMath.ZeroTolerance):
-            print("Resultant surface is the same as input surface. No changes were made to the document.")
-            return
-
-        if ebk.Opts.values['bDeleteInput']:
-            sc.doc.Objects.Replace(objref_In.ObjectId, dialog.conduit.ns.ToBrep())
-            print("Replaced surface.")
+        # POST-DIALOG LOGIC
+        if dialog.dialog_ok and dialog.conduit.ns:
+            if dialog.conduit.ns.EpsilonEquals(objref_In.Face().UnderlyingSurface(), epsilon=Rhino.RhinoMath.ZeroTolerance):
+                print("Resultant surface is the same as input surface. No changes were made to the document.")
+                _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
+                sc.doc.Objects.Show(objref_In.ObjectId, True)
+            elif ebk.Opts.values['bDeleteInput']:
+                # Replace final and keep Zebra active
+                _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.conduit.ns.ToBrep())
+                sc.doc.Objects.Show(objref_In.ObjectId, True)
+                print("Replaced surface.")
+            else:
+                # Restore original with Zebra, and add the new one cleanly
+                _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
+                sc.doc.Objects.Show(objref_In.ObjectId, True)
+                sc.doc.Objects.AddSurface(dialog.conduit.ns)
+                print("Surface was added.")
         else:
-            sc.doc.Objects.AddSurface(dialog.conduit.ns)
-            print("Surface was added.")
-        sc.doc.Views.Redraw()
+            # User Cancelled: Safely restore original geometry with Zebra intact
+            _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
+            sc.doc.Objects.Show(objref_In.ObjectId, True)
 
+    except Exception as e:
+        # CRASH RECOVERY: Ensure the object is recovered and unhidden if the script throws an error
+        print("Script Error Encountered: {}".format(e))
+        _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
+        sc.doc.Objects.Show(objref_In.ObjectId, True)
+        
+    finally:
+        # Guarantee cleanup regardless of OK, Cancel, or Exception
+        dialog.conduit.Enabled = False
+        sc.doc.EndUndoRecord(undo_sn)
+        sc.doc.Views.Redraw()
 
 if __name__ == '__main__': main()

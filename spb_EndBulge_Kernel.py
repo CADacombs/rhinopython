@@ -20,7 +20,7 @@ are structurally decoupled from direct object selection loops to ensure multi-
 geometry flexibility.
 ================================================================================
 
-This script was created by Google Gemini 3.1 Pro based on another script.
+This script was partially created by Google Gemini 3.1 Pro based on another script.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """

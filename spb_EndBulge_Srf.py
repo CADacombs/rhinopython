@@ -21,13 +21,13 @@ edge are explicitly defined and selectable by the user.
 
 There are more options, but the command should be used to really understand it.
 
-This script was created by Google Gemini 3.1 Pro based on the curve version.
+This script was partially created using Google Gemini 3.1 Pro based on the curve version of the script.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 
 """
-260712-14: Created.
+260712-16: Created.
 """
 
 import Rhino
@@ -490,20 +490,33 @@ class SrfEtoDialog(ebk.EtoDialog):
 def getInput_CLI():
     go = ri.Custom.GetObject()
     go.SetCommandPrompt("Pick edge of an untrimmed surface")
-    go.GeometryFilter = rd.ObjectType.Curve
-    go.GeometryAttributeFilter = ri.Custom.GeometryAttributeFilter.EdgeCurve
+    go.GeometryFilter = rd.ObjectType.EdgeFilter
+    go.GeometryAttributeFilter = (
+        ri.Custom.GeometryAttributeFilter.SurfaceBoundaryEdge |
+        ri.Custom.GeometryAttributeFilter.SeamEdge
+        )
     go.DisablePreSelect()
     
-    # Custom filter to ensure the edge belongs to an untrimmed surface
-    def edge_filter(rhObj, geom, compIdx):
-        if isinstance(geom, rg.BrepEdge):
-            faces = geom.AdjacentFaces()
-            if faces.Count > 0:
-                face = geom.Brep.Faces[faces[0]]
-                if face.IsSurface:
-                    return True
-        return False
-    go.SetCustomGeometryFilter(edge_filter)
+    def customGeometryFilter(rdObj, geom, compIdx):
+        #print(rdObj, geom, compIdx.ComponentIndexType, compIdx.Index)
+
+        if not isinstance(geom, rg.BrepTrim):
+            return False
+
+        rgT = geom
+
+        rgB = rgT.Brep
+        if rgB.Faces.Count > 1:
+            return False
+
+        rgF = rgB.Faces[0]
+
+        if not rgF.IsSurface:
+            return False
+
+        return True
+
+    go.SetCustomGeometryFilter(customGeometryFilter)
 
     idxs_Opt = {}
     def addOption(key): idxs_Opt[key] = ebk.Opts.addOption(go, key)
@@ -566,7 +579,9 @@ def main():
 
         # POST-DIALOG LOGIC
         if dialog.dialog_ok and dialog.conduit.ns:
-            if dialog.conduit.ns.EpsilonEquals(objref_In.Face().UnderlyingSurface(), epsilon=Rhino.RhinoMath.ZeroTolerance):
+            srf_In = objref_In.Face().UnderlyingSurface()
+            srf_In_ToNurbs = srf_In.ToNurbsSurface()
+            if dialog.conduit.ns.EpsilonEquals(srf_In_ToNurbs, epsilon=Rhino.RhinoMath.ZeroTolerance):
                 print("Resultant surface is the same as input surface. No changes were made to the document.")
                 _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
                 sc.doc.Objects.Show(objref_In.ObjectId, True)
@@ -574,21 +589,28 @@ def main():
                 # Replace final and keep Zebra active
                 _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.conduit.ns.ToBrep())
                 sc.doc.Objects.Show(objref_In.ObjectId, True)
-                print("Replaced surface.")
+                if isinstance(srf_In, rg.NurbsSurface):
+                    print("Replaced surface.")
+                else:
+                    print("Replaced {} with reshaped NurbsSurface.".format(srf_In.GetType().Name))
             else:
                 # Restore original with Zebra, and add the new one cleanly
                 _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
                 sc.doc.Objects.Show(objref_In.ObjectId, True)
                 sc.doc.Objects.AddSurface(dialog.conduit.ns)
                 print("Surface was added.")
+            srf_In_ToNurbs.Dispose()
         else:
             # User Cancelled: Safely restore original geometry with Zebra intact
             _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
             sc.doc.Objects.Show(objref_In.ObjectId, True)
 
     except Exception as e:
+        import traceback
         # CRASH RECOVERY: Ensure the object is recovered and unhidden if the script throws an error
         print("Script Error Encountered: {}".format(e))
+        print("Standard Traceback:")
+        print(traceback.format_exc())
         _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
         sc.doc.Objects.Show(objref_In.ObjectId, True)
         

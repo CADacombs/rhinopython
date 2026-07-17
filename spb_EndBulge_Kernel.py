@@ -20,13 +20,13 @@ are structurally decoupled from direct object selection loops to ensure multi-
 geometry flexibility.
 ================================================================================
 
-This script was partially created by Google Gemini 3.1 Pro based on another script.
+This script was partially developed by Google Gemini 3.1 Pro based on another script.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 
 """
-260712-15: Created by extracting refactored code from another script.
+260712-16: Created by extracting refactored code from another script.
 """
 
 import Rhino
@@ -54,6 +54,18 @@ class Opts:
     offValues[key] = 'No'
     onValues[key] = 'Yes'
     riOpts[key] = ri.Custom.OptionToggle(values[key], offValues[key], onValues[key])
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'idxCont_Picked'; keys.append(key)
+    listValues[key] = 'None', 'G0', 'G1', 'G2', 'G3'
+    values[key] = 3
+    names[key] = 'MaintainPicked'
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'idxCont_Opp'; keys.append(key)
+    listValues[key] = 'None', 'G0', 'G1', 'G2', 'G3'
+    values[key] = 3
+    names[key] = 'MaintainOpp'
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bLinkedEnds'; keys.append(key)
@@ -102,18 +114,6 @@ class Opts:
     key = 'fSlideG3_Opp'; keys.append(key)
     values[key] = 0.0
     riOpts[key] = ri.Custom.OptionDouble(values[key])
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'idxCont_Picked'; keys.append(key)
-    listValues[key] = 'None', 'G0', 'G1', 'G2', 'G3'
-    values[key] = 3
-    names[key] = 'MaintainPicked'
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'idxCont_Opp'; keys.append(key)
-    listValues[key] = 'None', 'G0', 'G1', 'G2', 'G3'
-    values[key] = 3
-    names[key] = 'MaintainOpp'
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bShowPolygon'; keys.append(key)
@@ -170,7 +170,7 @@ class Opts:
 
     for key in keys:
         if key not in names:
-            names[key] = key[1:]
+            names[key] = key[1:].replace('_', '')
 
     # Load sticky.
     for key in stickyKeys:
@@ -302,7 +302,7 @@ def createCurve(nc_In, fScale_T0=1.0, fSlideG2_T0=0.0, fSlideG3_T0=0.0, fScale_T
     base_T1 = is_baseline(fScale_T1, fSlideG2_T1, fSlideG3_T1, scale_limit_T1)
 
     if base_T0 and base_T1:
-        return None, "Nothing to modify.", (max_mod_T0, max_mod_T1, bOverlap)
+        return None, "Input parameters do not lead to modification of the geometry.", (max_mod_T0, max_mod_T1, bOverlap)
 
     pts_Prime = [pt.Location for pt in nc_In.Points]
 
@@ -477,9 +477,6 @@ class EtoDialog(ef.Dialog):
         self.create_controls()
         self.setup_layout()
         self.OnLinkedModeChanged(None, None)
-
-        # Lock the original object so it acts as a visual reference during the command
-        sc.doc.Objects.Lock(self.objref_In.ObjectId, True)
 
         # Initialize the Debounce Timer (200ms)
         self.debounce_timer = ef.UITimer()
@@ -1230,6 +1227,11 @@ class EtoDialog(ef.Dialog):
         sc.sticky[Opts.stickyKeys['bEcho']] = Opts.values['bEcho'] = self.checkBoxes['bEcho'].Checked
         sc.sticky[Opts.stickyKeys['bDebug']] = Opts.values['bDebug'] = self.checkBoxes['bDebug'].Checked
 
+        # SYNCHRONIZE CLI OPTIONS: Update the riOpts instances so the command line matches the GUI
+        for k, opt in Opts.riOpts.items():
+            if k in Opts.values:
+                opt.CurrentValue = Opts.values[k]
+
     def OnOKButtonClick(self, sender, e):
         fScale_Picked = self.ParseToFloat(self.textBoxes['fScale_Picked'].Text)
         fScale_Opp = self.ParseToFloat(self.textBoxes['fScale_Opp'].Text)
@@ -1252,9 +1254,5 @@ class EtoDialog(ef.Dialog):
         self.Close()
 
     def OnFormClosed(self, sender, e):
-        # Always unlock the reference object when the dialog closes
-        sc.doc.Objects.Unlock(self.objref_In.ObjectId, True)
-        
+        # We leave the document state alone here; main() will handle Unlock and Redraw
         sc.sticky['spb_EndBulge_WindowLoc'] = (self.Location.X, self.Location.Y)
-        self.conduit.Enabled = False
-        sc.doc.Views.Redraw()

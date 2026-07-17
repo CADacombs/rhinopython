@@ -21,7 +21,7 @@ edge are explicitly defined and selectable by the user.
 
 There are more options, but the command should be used to really understand it.
 
-This script was partially created using Google Gemini 3.1 Pro based on the curve version of the script.
+This script was partially developed using Google Gemini 3.1 Pro based on the curve version of the script.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """

@@ -21,14 +21,14 @@ end are explicitly defined and selectable by the user.
 
 There are more options, but the command should be used to really understand it.
 
-This script was partially modified by Google Gemini 3.1 Pro.
+This script was partially developed by Google Gemini 3.1 Pro.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
 
 """
 210303, 0307: Created.
-260420-25, 0709-14: Added an optional dialog. Added a preview for the dialog.
+260420-25, 0709-16: Added an optional dialog. Added a preview for the dialog.
         Refactored.
 """
 
@@ -87,15 +87,27 @@ def getInput_CLI():
 
         addOption('bGUI')
         if not ebk.Opts.values['bGUI']:
+            addOption('idxCont_Picked')
+            addOption('idxCont_Opp')
             addOption('bLinkedEnds')
+            if ebk.Opts.values['bLinkedEnds']:
+                ebk.Opts.names['fScale_Picked'] = 'Scale'
+                ebk.Opts.names['fSlideG2_Picked'] = 'SlideG2'
+                ebk.Opts.names['fSlideG3_Picked'] = 'SlideG3'
+            else:
+                ebk.Opts.names['fScale_Picked'] = 'Scale_Picked'
+                ebk.Opts.names['fSlideG2_Picked'] = 'SlideG2Picked'
+                ebk.Opts.names['fSlideG3_Picked'] = 'SlideG3Picked'
+                ebk.Opts.names['fScale_Opp'] = 'fScaleOpp'
+                ebk.Opts.names['fSlideG2_Opp'] = 'fSlideG2Opp'
+                ebk.Opts.names['fSlideG3_Opp'] = 'fSlideG3Opp'
             addOption('fScale_Picked')
             addOption('fSlideG2_Picked')
             addOption('fSlideG3_Picked')
-            addOption('fScale_Opp')
-            addOption('fSlideG2_Opp')
-            addOption('fSlideG3_Opp')
-            addOption('idxCont_Picked')
-            addOption('idxCont_Opp')
+            if not ebk.Opts.values['bLinkedEnds']:
+                addOption('fScale_Opp')
+                addOption('fSlideG2_Opp')
+                addOption('fSlideG3_Opp')
             addOption('bDeleteInput')
             addOption('bEcho')
         addOption('bDebug')
@@ -173,6 +185,7 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
     if nc_Precalc is not None:
         nc_Res = nc_Precalc
     else:
+        # --- CLI EXECUTION PATH ---
         rgC_In = objref_In.Curve()
 
         if isinstance(rgC_In, rg.BrepEdge):
@@ -187,27 +200,74 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
         bSuccess, t_AtPicked = nc_In.ClosestPoint(objref_In.SelectionPoint())
         if not bSuccess: return None
 
+        # Mirror linked ends strictly for CLI
+        if bLinkedEnds:
+            fScale_Opp = fScale_Picked
+            fSlideG2_Opp = fSlideG2_Picked
+            fSlideG3_Opp = fSlideG3_Picked
+
         if t_AtPicked > nc_In.Domain.Mid:
             iPickedEnd = 1
             fScale_T1, fSlideG2_T1, fSlideG3_T1 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked
             fScale_T0, fSlideG2_T0, fSlideG3_T0 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp
             iG_T1, iG_T0 = idxCont_Picked - 1, idxCont_Opp - 1
+            name_T1, name_T0 = "Picked end", "Opposite end"
         else:
             iPickedEnd = 0
             fScale_T0, fSlideG2_T0, fSlideG3_T0 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked
             fScale_T1, fSlideG2_T1, fSlideG3_T1 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp
             iG_T0, iG_T1 = idxCont_Picked - 1, idxCont_Opp - 1
+            name_T0, name_T1 = "Picked end", "Opposite end"
 
-        can_G3_T0 = ebk.canMaintainG3(nc_In, False)
-        can_G3_T1 = ebk.canMaintainG3(nc_In, True)
+        # --- STRICT CLI VALIDATION ---
+        errors = []
+        N = nc_In.Points.Count
+        req_0 = max(0, iG_T0 + 1)
+        req_1 = max(0, iG_T1 + 1)
 
-        if not can_G3_T0 and iG_T0 == 3:
-            iG_T0 = 2
-            if bEcho: print("T0 continuity downgraded to G2. G3 requires internal knot multiplicity >= 3.")
-        if not can_G3_T1 and iG_T1 == 3:
-            iG_T1 = 2
-            if bEcho: print("T1 continuity downgraded to G2. G3 requires internal knot multiplicity >= 3.")
+        if req_0 + req_1 > N:
+            errors.append("Continuity constraints overlap (not enough control points).")
 
+        if iG_T0 == 3 and not ebk.canMaintainG3(nc_In, False):
+            errors.append("{} continuity cannot be G3 (requires internal knot multiplicity >= 3).".format(name_T0))
+        if iG_T1 == 3 and not ebk.canMaintainG3(nc_In, True):
+            errors.append("{} continuity cannot be G3 (requires internal knot multiplicity >= 3).".format(name_T1))
+
+        if not errors:
+            alloc_0 = req_0
+            alloc_1 = req_1
+            free = N - alloc_0 - alloc_1
+            if free > 0:
+                half = free // 2
+                extra = free % 2
+                scale_limit_T0 = alloc_0 + half
+                scale_limit_T1 = alloc_1 + half
+                if extra:
+                    if iPickedEnd == 0: scale_limit_T0 += 1
+                    else: scale_limit_T1 += 1
+            else:
+                scale_limit_T0 = alloc_0
+                scale_limit_T1 = alloc_1
+
+            tol = Rhino.RhinoMath.ZeroTolerance
+            if abs(fSlideG2_T0) > tol and scale_limit_T0 < 3:
+                errors.append("{} G2 slide is not allowed due to point count constraints.".format(name_T0))
+            if abs(fSlideG3_T0) > tol and scale_limit_T0 < 4:
+                errors.append("{} G3 slide is not allowed due to point count constraints.".format(name_T0))
+            if abs(fSlideG2_T1) > tol and scale_limit_T1 < 3:
+                errors.append("{} G2 slide is not allowed due to point count constraints.".format(name_T1))
+            if abs(fSlideG3_T1) > tol and scale_limit_T1 < 4:
+                errors.append("{} G3 slide is not allowed due to point count constraints.".format(name_T1))
+
+        # Abort if any violations occurred
+        if errors:
+            if bEcho:
+                print("CLI Error: Invalid settings applied. No modifications made.")
+                for err in errors:
+                    print(" - " + err)
+            return None
+
+        # Execute creation if validation passes
         nc_Res, sReport, info = ebk.createCurve(
             nc_In=nc_In,
             fScale_T0=fScale_T0, fSlideG2_T0=fSlideG2_T0, fSlideG3_T0=fSlideG3_T0,
@@ -219,17 +279,21 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
         )
 
         if nc_Res is None:
-            if bEcho: print("Curve could not be created. {}".format(sReport))
+            if bEcho: print("Curve was not generated. {}".format(sReport))
             return None
 
     if nc_Res.EpsilonEquals(objref_In.Curve().ToNurbsCurve(), epsilon=Rhino.RhinoMath.ZeroTolerance):
         print("Resultant curve is the same as input curve. No changes were made to the document.")
         return
 
+    # Failsafe variable assignment
+    gC_Out = None
+    
     if not bDeleteInput or objref_In.Edge():
         gC_Out = sc.doc.Objects.AddCurve(nc_Res)
         if gC_Out == gC_Out.Empty:
             if bEcho: print("Could not add curve.")
+            gC_Out = None
         else:
             if bEcho: print("Curve was added.")
     else:
@@ -248,44 +312,81 @@ def main():
     objref_In = rv
 
     bGUI = ebk.Opts.values['bGUI']
+
     if not bGUI:
-        nc_Res = None
-    else:
-        Rhino.RhinoApp.SetCommandPromptMessage("Continuing in dialog...")
-        nc_Res = _createCurve_viaGUI(objref_In)
-        if nc_Res is None: return
+        # --- CLI EXECUTION PATH ---
+        sc.doc.Objects.UnselectAll()
+        gC_Res = processCurveObject(
+            objref_In=objref_In,
+            nc_Precalc=None,
+            bLinkedEnds=ebk.Opts.values['bLinkedEnds'],
+            fScale_Picked=ebk.Opts.values['fScale_Picked'], fSlideG2_Picked=ebk.Opts.values['fSlideG2_Picked'], fSlideG3_Picked=ebk.Opts.values['fSlideG3_Picked'],
+            fScale_Opp=ebk.Opts.values['fScale_Opp'], fSlideG2_Opp=ebk.Opts.values['fSlideG2_Opp'], fSlideG3_Opp=ebk.Opts.values['fSlideG3_Opp'],
+            idxCont_Picked=ebk.Opts.values['idxCont_Picked'],
+            idxCont_Opp=ebk.Opts.values['idxCont_Opp'],
+            bDeleteInput=ebk.Opts.values['bDeleteInput'], bEcho=ebk.Opts.values['bEcho'], bDebug=ebk.Opts.values['bDebug']
+        )
+        if gC_Res is not None: sc.doc.Views.Redraw()
+        return
 
-    # Extract parsed variables from the Kernel's Opts dictionary
-    bLinkedEnds = ebk.Opts.values['bLinkedEnds']
-    fScale_Picked = ebk.Opts.values['fScale_Picked']
-    fSlideG2_Picked = ebk.Opts.values['fSlideG2_Picked'] 
-    fSlideG3_Picked = ebk.Opts.values['fSlideG3_Picked'] 
-    fScale_Opp = ebk.Opts.values['fScale_Opp']
-    fSlideG2_Opp = ebk.Opts.values['fSlideG2_Opp']
-    fSlideG3_Opp = ebk.Opts.values['fSlideG3_Opp']
-    
-    idxCont_Picked = ebk.Opts.values['idxCont_Picked']
-    idxCont_Opp = ebk.Opts.values['idxCont_Opp']
-    bDeleteInput = ebk.Opts.values['bDeleteInput']
-    bEcho = ebk.Opts.values['bEcho']
-    bDebug = ebk.Opts.values['bDebug']
+    # --- GUI EXECUTION PATH ---
+    Rhino.RhinoApp.SetCommandPromptMessage("Continuing in dialog...")
+    key = 'conduit_crv'
+    stickyKey = '{}({})'.format(key, __file__)
+    if stickyKey in sc.sticky:
+        sc.sticky[stickyKey].Enabled = False
 
-    if not bDebug: sc.doc.Views.RedrawEnabled = False
-    sc.doc.Objects.UnselectAll()
+    parent = Rhino.UI.RhinoEtoApp.MainWindowForDocument(sc.doc)
+    dialog = ebk.EtoDialog(objref_In)
+    dialog.conduit = ebk.EndBulgePreviewConduit()
+    sc.sticky[stickyKey] = dialog.conduit
 
-    gC_Res = processCurveObject(
-        objref_In=objref_In,
-        nc_Precalc=nc_Res,
-        bLinkedEnds=bLinkedEnds,
-        fScale_Picked=fScale_Picked, fSlideG2_Picked=fSlideG2_Picked, fSlideG3_Picked=fSlideG3_Picked,
-        fScale_Opp=fScale_Opp, fSlideG2_Opp=fSlideG2_Opp, fSlideG3_Opp=fSlideG3_Opp,
-        idxCont_Picked=idxCont_Picked,
-        idxCont_Opp=idxCont_Opp,
-        bDeleteInput=bDeleteInput, bEcho=bEcho, bDebug=bDebug
-    )
+    # Lock the original object so it acts as a visual reference during the command
+    sc.doc.Objects.Lock(objref_In.ObjectId, True)
 
-    if gC_Res is None: return
-    sc.doc.Views.RedrawEnabled = True
+    dialog.UpdatePreview()
+    dialog.conduit.Enabled = True
+    sc.doc.Views.Redraw()
+
+    # START UNDO RECORD
+    undo_sn = sc.doc.BeginUndoRecord("EndBulge Crv")
+
+    try:
+        Rhino.UI.EtoExtensions.ShowSemiModal(dialog, sc.doc, parent)
+
+        # Suspend redraws immediately after dialog closes to prevent unlocking flicker
+        if not ebk.Opts.values['bDebug']: sc.doc.Views.RedrawEnabled = False
+        sc.doc.Objects.UnselectAll()
+
+        # UNLOCK HERE: Failsafe so doc.Objects.Replace() succeeds without error
+        sc.doc.Objects.Unlock(objref_In.ObjectId, True)
+
+        if dialog.dialog_ok and dialog.conduit.crv:
+            # Execute the final curve replacement with the freshest variables from the dialog
+            gC_Res = processCurveObject(
+                objref_In=objref_In,
+                nc_Precalc=dialog.conduit.crv,
+                bLinkedEnds=ebk.Opts.values['bLinkedEnds'],
+                fScale_Picked=ebk.Opts.values['fScale_Picked'], fSlideG2_Picked=ebk.Opts.values['fSlideG2_Picked'], fSlideG3_Picked=ebk.Opts.values['fSlideG3_Picked'],
+                fScale_Opp=ebk.Opts.values['fScale_Opp'], fSlideG2_Opp=ebk.Opts.values['fSlideG2_Opp'], fSlideG3_Opp=ebk.Opts.values['fSlideG3_Opp'],
+                idxCont_Picked=ebk.Opts.values['idxCont_Picked'],
+                idxCont_Opp=ebk.Opts.values['idxCont_Opp'],
+                bDeleteInput=ebk.Opts.values['bDeleteInput'], bEcho=ebk.Opts.values['bEcho'], bDebug=ebk.Opts.values['bDebug']
+            )
+
+    except Exception as e:
+        import traceback
+        print("Script Error Encountered: {}".format(e))
+        print("Standard Traceback:")
+        print(traceback.format_exc())
+        
+    finally:
+        # Cleanly disable the conduit and re-enable redrawing
+        dialog.conduit.Enabled = False
+        sc.doc.Objects.Unlock(objref_In.ObjectId, True) # Secondary failsafe just in case
+        sc.doc.EndUndoRecord(undo_sn)
+        sc.doc.Views.RedrawEnabled = True
+        sc.doc.Views.Redraw()
 
 
 if __name__ == '__main__': main()

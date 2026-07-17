@@ -27,7 +27,7 @@ Send any questions, comments, or script development service needs to @spb on the
 """
 
 """
-260712-16: Created.
+260712-17: Created.
 """
 
 import Rhino
@@ -498,25 +498,22 @@ def getInput_CLI():
     go.DisablePreSelect()
     
     def customGeometryFilter(rdObj, geom, compIdx):
-        #print(rdObj, geom, compIdx.ComponentIndexType, compIdx.Index)
-
         if not isinstance(geom, rg.BrepTrim):
             return False
 
         rgT = geom
-
         rgB = rgT.Brep
         if rgB.Faces.Count > 1:
             return False
 
         rgF = rgB.Faces[0]
-
         if not rgF.IsSurface:
             return False
 
         return True
 
     go.SetCustomGeometryFilter(customGeometryFilter)
+    go.AcceptNumber(True, acceptZero=True)
 
     idxs_Opt = {}
     def addOption(key): idxs_Opt[key] = ebk.Opts.addOption(go, key)
@@ -527,20 +524,40 @@ def getInput_CLI():
         
         addOption('bGUI')
         if not ebk.Opts.values['bGUI']:
+            addOption('idxCont_Picked')
+            addOption('idxCont_Opp')
             addOption('bLinkedEnds')
+            if ebk.Opts.values['bLinkedEnds']:
+                ebk.Opts.names['fScale_Picked'] = 'Scale'
+                ebk.Opts.names['fSlideG2_Picked'] = 'SlideG2'
+                ebk.Opts.names['fSlideG3_Picked'] = 'SlideG3'
+            else:
+                ebk.Opts.names['fScale_Picked'] = 'Scale_Picked'
+                ebk.Opts.names['fSlideG2_Picked'] = 'SlideG2Picked'
+                ebk.Opts.names['fSlideG3_Picked'] = 'SlideG3Picked'
+                ebk.Opts.names['fScale_Opp'] = 'fScaleOpp'
+                ebk.Opts.names['fSlideG2_Opp'] = 'fSlideG2Opp'
+                ebk.Opts.names['fSlideG3_Opp'] = 'fSlideG3Opp'
             addOption('fScale_Picked')
             addOption('fSlideG2_Picked')
             addOption('fSlideG3_Picked')
-            addOption('fScale_Opp')
-            addOption('fSlideG2_Opp')
-            addOption('fSlideG3_Opp')
-            addOption('idxCont_Picked')
-            addOption('idxCont_Opp')
+            if not ebk.Opts.values['bLinkedEnds']:
+                addOption('fScale_Opp')
+                addOption('fSlideG2_Opp')
+                addOption('fSlideG3_Opp')
             addOption('bDeleteInput')
+            addOption('bEcho')
+        addOption('bDebug')
         
         res = go.Get()
         if res == ri.GetResult.Cancel: return None
         if res == ri.GetResult.Object: return go.Object(0)
+
+        if res == ri.GetResult.Number:
+            key = 'fScale_Picked'
+            ebk.Opts.riOpts[key].CurrentValue = go.Number()
+            ebk.Opts.setValue(key)
+            continue
 
         for key in idxs_Opt:
             if go.Option().Index == idxs_Opt[key]:
@@ -548,14 +565,211 @@ def getInput_CLI():
                 break
 
 
+def processBrepObject(objref_In, ns_Precalc=None, original_geom=None, **kwargs):
+    def getOpt(key): return kwargs[key] if key in kwargs else ebk.Opts.values[key]
+
+    bLinkedEnds = getOpt('bLinkedEnds')
+    fScale_Picked = getOpt('fScale_Picked')
+    fSlideG2_Picked = getOpt('fSlideG2_Picked') 
+    fSlideG3_Picked = getOpt('fSlideG3_Picked') 
+    fScale_Opp = getOpt('fScale_Opp')
+    fSlideG2_Opp = getOpt('fSlideG2_Opp')
+    fSlideG3_Opp = getOpt('fSlideG3_Opp')
+    idxCont_Picked = getOpt('idxCont_Picked')
+    idxCont_Opp = getOpt('idxCont_Opp')
+    bDeleteInput = getOpt('bDeleteInput')
+    bEcho = getOpt('bEcho')
+    bDebug = getOpt('bDebug')
+
+    edge = objref_In.Edge()
+    face = edge.Brep.Faces[edge.AdjacentFaces()[0]]
+    ns_In = face.ToNurbsSurface()
+
+    t_mid = edge.Domain.Mid
+    pt_mid = edge.PointAt(t_mid)
+    bSuccess, u, v = face.ClosestPoint(pt_mid)
+    
+    domU, domV = face.Domain(0), face.Domain(1)
+    dU0, dU1 = abs(u - domU.Min), abs(domU.Max - u)
+    dV0, dV1 = abs(v - domV.Min), abs(domV.Max - v)
+    min_d = min(dU0, dU1, dV0, dV1)
+
+    if min_d == dU0: boundary = 'U0'
+    elif min_d == dU1: boundary = 'U1'
+    elif min_d == dV0: boundary = 'V0'
+    else: boundary = 'V1'
+
+    if ns_Precalc is not None:
+        ns_Res = ns_Precalc
+    else:
+        # --- CLI EXECUTION PATH ---
+        if boundary in ('U0', 'U1'):
+            nc_temp = extract_temp_curve(ns_In, 'U', 0)
+        else:
+            nc_temp = extract_temp_curve(ns_In, 'V', 0)
+
+        # Mirror linked ends strictly for CLI
+        if bLinkedEnds:
+            fScale_Opp = fScale_Picked
+            fSlideG2_Opp = fSlideG2_Picked
+            fSlideG3_Opp = fSlideG3_Picked
+
+        if boundary in ('U1', 'V1'):
+            iPickedEnd = 1
+            fScale_T1, fSlideG2_T1, fSlideG3_T1 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked
+            fScale_T0, fSlideG2_T0, fSlideG3_T0 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp
+            iG_T1, iG_T0 = idxCont_Picked - 1, idxCont_Opp - 1
+            name_T1, name_T0 = "Picked edge", "Opposite edge"
+        else:
+            iPickedEnd = 0
+            fScale_T0, fSlideG2_T0, fSlideG3_T0 = fScale_Picked, fSlideG2_Picked, fSlideG3_Picked
+            fScale_T1, fSlideG2_T1, fSlideG3_T1 = fScale_Opp, fSlideG2_Opp, fSlideG3_Opp
+            iG_T0, iG_T1 = idxCont_Picked - 1, idxCont_Opp - 1
+            name_T0, name_T1 = "Picked edge", "Opposite edge"
+
+        # --- STRICT CLI VALIDATION ---
+        errors = []
+        N = nc_temp.Points.Count
+        req_0 = max(0, iG_T0 + 1)
+        req_1 = max(0, iG_T1 + 1)
+
+        if req_0 + req_1 > N:
+            errors.append("Continuity constraints overlap (not enough control points).")
+
+        if iG_T0 == 3 and not ebk.canMaintainG3(nc_temp, False):
+            errors.append("{} continuity cannot be G3 (requires internal knot multiplicity >= 3).".format(name_T0))
+        if iG_T1 == 3 and not ebk.canMaintainG3(nc_temp, True):
+            errors.append("{} continuity cannot be G3 (requires internal knot multiplicity >= 3).".format(name_T1))
+
+        if not errors:
+            alloc_0 = req_0
+            alloc_1 = req_1
+            free = N - alloc_0 - alloc_1
+            if free > 0:
+                half = free // 2
+                extra = free % 2
+                scale_limit_T0 = alloc_0 + half
+                scale_limit_T1 = alloc_1 + half
+                if extra:
+                    if iPickedEnd == 0: scale_limit_T0 += 1
+                    else: scale_limit_T1 += 1
+            else:
+                scale_limit_T0 = alloc_0
+                scale_limit_T1 = alloc_1
+
+            tol = Rhino.RhinoMath.ZeroTolerance
+            if abs(fSlideG2_T0) > tol and scale_limit_T0 < 3:
+                errors.append("{} G2 slide is not allowed due to point count constraints.".format(name_T0))
+            if abs(fSlideG3_T0) > tol and scale_limit_T0 < 4:
+                errors.append("{} G3 slide is not allowed due to point count constraints.".format(name_T0))
+            if abs(fSlideG2_T1) > tol and scale_limit_T1 < 3:
+                errors.append("{} G2 slide is not allowed due to point count constraints.".format(name_T1))
+            if abs(fSlideG3_T1) > tol and scale_limit_T1 < 4:
+                errors.append("{} G3 slide is not allowed due to point count constraints.".format(name_T1))
+
+        # Abort if any violations occurred
+        if errors:
+            if bEcho:
+                print("CLI Error: Invalid settings applied. No modifications made.")
+                for err in errors:
+                    print(" - " + err)
+            if original_geom:
+                _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, original_geom)
+                sc.doc.Objects.Show(objref_In.ObjectId, True)
+            return None
+
+        # Execute creation if validation passes
+        ns_Res, sReport, info = createSurface(
+            ns_In=ns_In, boundary=boundary,
+            fScale_Picked=fScale_Picked, fSlideG2_Picked=fSlideG2_Picked, fSlideG3_Picked=fSlideG3_Picked,
+            fScale_Opp=fScale_Opp, fSlideG2_Opp=fSlideG2_Opp, fSlideG3_Opp=fSlideG3_Opp,
+            iG_Picked=idxCont_Picked - 1, iG_Opp=idxCont_Opp - 1, bDebug=bDebug
+        )
+
+        if ns_Res is None:
+            if bEcho: print("Surface was not generated. {}".format(sReport))
+            if original_geom:
+                _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, original_geom)
+                sc.doc.Objects.Show(objref_In.ObjectId, True)
+            return None
+
+    srf_In = face.UnderlyingSurface()
+    srf_In_ToNurbs = srf_In.ToNurbsSurface()
+
+    if ns_Res.EpsilonEquals(srf_In_ToNurbs, epsilon=Rhino.RhinoMath.ZeroTolerance):
+        print("Resultant surface is the same as input surface. No changes were made to the document.")
+        if original_geom:
+            _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, original_geom)
+            sc.doc.Objects.Show(objref_In.ObjectId, True)
+        srf_In_ToNurbs.Dispose()
+        return None
+
+    srf_In_ToNurbs.Dispose()
+
+    # Failsafe assignment
+    gB_Out = None
+
+    if not bDeleteInput:
+        if original_geom:
+            _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, original_geom)
+            sc.doc.Objects.Show(objref_In.ObjectId, True)
+            
+        gB_Out = sc.doc.Objects.AddSurface(ns_Res)
+        if gB_Out == gB_Out.Empty:
+            if bEcho: print("Could not add surface.")
+            gB_Out = None
+        else:
+            if bEcho: print("Surface was added.")
+    else:
+        if _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, ns_Res.ToBrep()):
+            sc.doc.Objects.Show(objref_In.ObjectId, True)
+            gB_Out = objref_In.ObjectId
+            if isinstance(srf_In, rg.NurbsSurface):
+                if bEcho: print("Replaced surface.")
+            else:
+                if bEcho: print("Replaced {} with reshaped NurbsSurface.".format(srf_In.GetType().Name))
+        else:
+            if bEcho: print("Could not replace surface.")
+
+    return gB_Out
+
+
 def main():
     objref_In = getInput_CLI()
     if objref_In is None: return
 
-    if not ebk.Opts.values['bGUI']:
-        print("CLI processing for surfaces is under construction. Please use the GUI mode.")
+    bGUI = ebk.Opts.values['bGUI']
+
+    if not bGUI:
+        # --- CLI EXECUTION PATH ---
+        sc.doc.Objects.UnselectAll()
+        original_geom = objref_In.Brep().Duplicate()
+        undo_sn = sc.doc.BeginUndoRecord("EndBulge Srf")
+        try:
+            gS_Res = processBrepObject(
+                objref_In=objref_In,
+                ns_Precalc=None,
+                original_geom=original_geom,
+                bLinkedEnds=ebk.Opts.values['bLinkedEnds'],
+                fScale_Picked=ebk.Opts.values['fScale_Picked'], fSlideG2_Picked=ebk.Opts.values['fSlideG2_Picked'], fSlideG3_Picked=ebk.Opts.values['fSlideG3_Picked'],
+                fScale_Opp=ebk.Opts.values['fScale_Opp'], fSlideG2_Opp=ebk.Opts.values['fSlideG2_Opp'], fSlideG3_Opp=ebk.Opts.values['fSlideG3_Opp'],
+                idxCont_Picked=ebk.Opts.values['idxCont_Picked'],
+                idxCont_Opp=ebk.Opts.values['idxCont_Opp'],
+                bDeleteInput=ebk.Opts.values['bDeleteInput'], bEcho=ebk.Opts.values['bEcho'], bDebug=ebk.Opts.values['bDebug']
+            )
+        except Exception as e:
+            import traceback
+            print("Script Error Encountered: {}".format(e))
+            print("Standard Traceback:")
+            print(traceback.format_exc())
+            _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, original_geom)
+            sc.doc.Objects.Show(objref_In.ObjectId, True)
+        finally:
+            sc.doc.EndUndoRecord(undo_sn)
+            sc.doc.Views.Redraw()
         return
-    
+
+    # --- GUI EXECUTION PATH ---
     Rhino.RhinoApp.SetCommandPromptMessage("Continuing in dialog...")
     key = 'conduit_srf'
     stickyKey = '{}({})'.format(key, __file__)
@@ -579,27 +793,17 @@ def main():
 
         # POST-DIALOG LOGIC
         if dialog.dialog_ok and dialog.conduit.ns:
-            srf_In = objref_In.Face().UnderlyingSurface()
-            srf_In_ToNurbs = srf_In.ToNurbsSurface()
-            if dialog.conduit.ns.EpsilonEquals(srf_In_ToNurbs, epsilon=Rhino.RhinoMath.ZeroTolerance):
-                print("Resultant surface is the same as input surface. No changes were made to the document.")
-                _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
-                sc.doc.Objects.Show(objref_In.ObjectId, True)
-            elif ebk.Opts.values['bDeleteInput']:
-                # Replace final and keep Zebra active
-                _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.conduit.ns.ToBrep())
-                sc.doc.Objects.Show(objref_In.ObjectId, True)
-                if isinstance(srf_In, rg.NurbsSurface):
-                    print("Replaced surface.")
-                else:
-                    print("Replaced {} with reshaped NurbsSurface.".format(srf_In.GetType().Name))
-            else:
-                # Restore original with Zebra, and add the new one cleanly
-                _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
-                sc.doc.Objects.Show(objref_In.ObjectId, True)
-                sc.doc.Objects.AddSurface(dialog.conduit.ns)
-                print("Surface was added.")
-            srf_In_ToNurbs.Dispose()
+            gS_Res = processBrepObject(
+                objref_In=objref_In,
+                ns_Precalc=dialog.conduit.ns,
+                original_geom=dialog.original_geom,
+                bLinkedEnds=ebk.Opts.values['bLinkedEnds'],
+                fScale_Picked=ebk.Opts.values['fScale_Picked'], fSlideG2_Picked=ebk.Opts.values['fSlideG2_Picked'], fSlideG3_Picked=ebk.Opts.values['fSlideG3_Picked'],
+                fScale_Opp=ebk.Opts.values['fScale_Opp'], fSlideG2_Opp=ebk.Opts.values['fSlideG2_Opp'], fSlideG3_Opp=ebk.Opts.values['fSlideG3_Opp'],
+                idxCont_Picked=ebk.Opts.values['idxCont_Picked'],
+                idxCont_Opp=ebk.Opts.values['idxCont_Opp'],
+                bDeleteInput=ebk.Opts.values['bDeleteInput'], bEcho=ebk.Opts.values['bEcho'], bDebug=ebk.Opts.values['bDebug']
+            )
         else:
             # User Cancelled: Safely restore original geometry with Zebra intact
             _replace_and_preserve_modes(sc.doc, objref_In.ObjectId, dialog.original_geom)
@@ -607,7 +811,6 @@ def main():
 
     except Exception as e:
         import traceback
-        # CRASH RECOVERY: Ensure the object is recovered and unhidden if the script throws an error
         print("Script Error Encountered: {}".format(e))
         print("Standard Traceback:")
         print(traceback.format_exc())

@@ -489,7 +489,7 @@ class SrfEtoDialog(ebk.EtoDialog):
 
 def getInput_CLI():
     go = ri.Custom.GetObject()
-    go.SetCommandPrompt("Pick edge of an untrimmed surface")
+    go.SetCommandPrompt("Select surface edge to adjust")
     go.GeometryFilter = rd.ObjectType.EdgeFilter
     go.GeometryAttributeFilter = (
         ri.Custom.GeometryAttributeFilter.SurfaceBoundaryEdge |
@@ -734,9 +734,10 @@ def processBrepObject(objref_In, ns_Precalc=None, original_geom=None, **kwargs):
     return gB_Out
 
 
-def main():
-    objref_In = getInput_CLI()
-    if objref_In is None: return
+def main(objref_In=None):
+    if objref_In is None:
+        objref_In = getInput_CLI()
+        if objref_In is None: return
 
     bDialog = ebk.Opts.values['bDialog']
 
@@ -822,5 +823,6 @@ def main():
         dialog.conduit.Enabled = False
         sc.doc.EndUndoRecord(undo_sn)
         sc.doc.Views.Redraw()
+
 
 if __name__ == '__main__': main()

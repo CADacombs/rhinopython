@@ -45,7 +45,7 @@ def getInput_CLI():
     Get curve with picked end and optional input.
     """
     go = ri.Custom.GetObject()
-    go.SetCommandPrompt("Pick curve near an end")
+    go.SetCommandPrompt("Select curve to adjust")
     go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve
 
     def geomFilter_Curve(rdObj, geom, compIdx):
@@ -306,10 +306,11 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
     return gC_Out
 
 
-def main():
-    rv = getInput_CLI()
-    if rv is None: return
-    objref_In = rv
+def main(objref_In=None):
+    if objref_In is None:
+        rv = getInput_CLI()
+        if rv is None: return
+        objref_In = rv
 
     bDialog = ebk.Opts.values['bDialog']
 

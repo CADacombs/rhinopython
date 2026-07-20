@@ -26,7 +26,7 @@ Send any questions, comments, or script development service needs to @spb on the
 """
 
 """
-260712-16: Created by extracting refactored code from another script.
+260712-20: Created by extracting refactored code from another script.
 """
 
 import Rhino
@@ -49,7 +49,7 @@ class Opts:
     listValues = {}
     stickyKeys = {}
 
-    key = 'bGUI'; keys.append(key)
+    key = 'bDialog'; keys.append(key)
     values[key] = True
     offValues[key] = 'No'
     onValues[key] = 'Yes'
@@ -1256,3 +1256,6 @@ class EtoDialog(ef.Dialog):
     def OnFormClosed(self, sender, e):
         # We leave the document state alone here; main() will handle Unlock and Redraw
         sc.sticky['spb_EndBulge_WindowLoc'] = (self.Location.X, self.Location.Y)
+
+if __name__ == '__main__':
+    print("DEPENDENCY NOTE: This script acts as a shared library module for the spb_EndBulge tool suite. It cannot be executed directly. Please run the associated Crv or Srf wrapper scripts instead.")

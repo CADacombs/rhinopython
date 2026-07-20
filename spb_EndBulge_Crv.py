@@ -28,7 +28,7 @@ Send any questions, comments, or script development service needs to @spb on the
 
 """
 210303, 0307: Created.
-260420-25, 0709-16: Added an optional dialog. Added a preview for the dialog.
+260420-25, 0709-18: Added an optional dialog. Added a preview for the dialog.
         Refactored.
 """
 
@@ -85,8 +85,8 @@ def getInput_CLI():
         go.ClearCommandOptions()
         idxs_Opt.clear()
 
-        addOption('bGUI')
-        if not ebk.Opts.values['bGUI']:
+        addOption('bDialog')
+        if not ebk.Opts.values['bDialog']:
             addOption('idxCont_Picked')
             addOption('idxCont_Opp')
             addOption('bLinkedEnds')
@@ -311,9 +311,9 @@ def main():
     if rv is None: return
     objref_In = rv
 
-    bGUI = ebk.Opts.values['bGUI']
+    bDialog = ebk.Opts.values['bDialog']
 
-    if not bGUI:
+    if not bDialog:
         # --- CLI EXECUTION PATH ---
         sc.doc.Objects.UnselectAll()
         gC_Res = processCurveObject(

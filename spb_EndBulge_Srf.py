@@ -8,7 +8,7 @@ TL;DR: The command should be used to really understand it. Compare with _EndBulg
 and see.
 
 Unlike _EndBulge, there is no dragging of control points in the graphics window.
-Instead, number steppers in a dialog are used to specify:
+Instead, number steppers and sliders in a dialog box are used to specify:
     1. The tangent vector (p1 - p0) scale relative to its starting position.
     2. Where the geometry allows it, and after #1 is applied,
     the G2 (p2) tangential sliding scale from p2's starting position.
@@ -27,7 +27,7 @@ Send any questions, comments, or script development service needs to @spb on the
 """
 
 """
-260712-17: Created.
+260712-18: Created.
 """
 
 import Rhino
@@ -522,8 +522,8 @@ def getInput_CLI():
         go.ClearCommandOptions()
         idxs_Opt.clear()
         
-        addOption('bGUI')
-        if not ebk.Opts.values['bGUI']:
+        addOption('bDialog')
+        if not ebk.Opts.values['bDialog']:
             addOption('idxCont_Picked')
             addOption('idxCont_Opp')
             addOption('bLinkedEnds')
@@ -738,9 +738,9 @@ def main():
     objref_In = getInput_CLI()
     if objref_In is None: return
 
-    bGUI = ebk.Opts.values['bGUI']
+    bDialog = ebk.Opts.values['bDialog']
 
-    if not bGUI:
+    if not bDialog:
         # --- CLI EXECUTION PATH ---
         sc.doc.Objects.UnselectAll()
         original_geom = objref_In.Brep().Duplicate()

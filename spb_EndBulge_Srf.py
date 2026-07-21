@@ -4,20 +4,34 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 """
 This script is an alternative to _EndBulge.
 
-TL;DR: The command should be used to really understand it. Compare with _EndBulge
-and see.
+TL;DR: The command should be used to really understand it. Compare it with _EndBulge.
 
-Unlike _EndBulge, there is no dragging of control points in the graphics window.
-Instead, number steppers and sliders in a dialog box are used to specify:
-    1. The tangent vector (p1 - p0) scale relative to its starting position.
-    2. Where the geometry allows it, and after #1 is applied,
-    the G2 (p2) tangential sliding scale from p2's starting position.
-    3. Where the geometry allows it, and after #1 & #2 are applied,
-    the G3 (p3) tangential sliding scale from p3's starting position.
-Unlike _EndBulge, both the picked edge and the opposite edge can be modified.
-Unlike _EndBulge, a curvature graph is automatically included.
-Unlike _EndBulge, the continuities to maintain for the picked edge and the opposite
-edge are explicitly defined and selectable by the user.
+For the following, "end/edge" refers to
+the end of a curve or
+the natural (isocurve at domain extreme) edge of a surface.
+
+Unlike _EndBulge:
+    1. There is both a command line interface (CLI) and a dialog interface.
+        A. The CLI allows for quick changes using predetermined settings.
+        B. The dialog allows for real-time modifications with a preview.
+    2. The GUI is not dragging of control points in the graphics window, but instead
+    controlling of numeric values in a dialog via various controls.
+    These controls specify:
+        A. The tangent vector (p1 - p0) scale relative to its starting position.
+        B. Where the geometry allows it, and after A is applied,
+        the G2 (p2) tangential sliding scale from p2's starting position.
+        C. Where the geometry allows it, and after A & B are applied,
+        the G3 (p3) tangential sliding scale from p3's starting position.
+    3. Both the picked end/edge and the opposite end/edge can be modified.
+    They can be modified independently or simultaneously (Linked).
+    4. A curvature graph is built into the dialog version of the script.
+    5. The continuities to maintain for the picked end/edge and the opposite
+    end/edge are explicitly defined and selectable by the user.
+
+Similar to EndBulge:
+    1. The core function of the command is to restrictively modify the p1 and p2 locations.
+    2. Shaded views and visual analysis modes, e.g., zebra and draft angle,
+    remain fully active and dynamically update during slider adjustments.
 
 There are more options, but the command should be used to really understand it.
 
@@ -28,6 +42,7 @@ Send any questions, comments, or script development service needs to @spb on the
 
 """
 260712-18: Created.
+260720-21: Updated notes.
 """
 
 import Rhino

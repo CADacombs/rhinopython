@@ -4,6 +4,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 """
 Entry point for the spb_EndBulge tool suite.
 Routes to the curve or surface solver based on user selection.
+See Crv or Srf scripts for more descriptions and notes.
 
 This script was partially developed by Google Gemini 3.1 Pro.
 
@@ -12,6 +13,7 @@ Send any questions, comments, or script development service needs to @spb on the
 
 """
 260720: Created.
+260721: Updated noted.
 """
 
 import Rhino

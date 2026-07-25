@@ -13,7 +13,8 @@ Send any questions, comments, or script development service needs to @spb on the
 
 """
 260720: Created.
-260721: Updated noted.
+260721: Updated notes.
+260724: Made script more plug-in friendly.
 """
 
 import Rhino
@@ -28,8 +29,23 @@ import spb_EndBulge_Srf as eb_srf
 
 
 def main():
-    go = ri.Custom.GetObject()
+    #try:
+    #    sEval = "__rhino_command__"; print(sEval, ':', eval(sEval))
+    #    sEval = "__rhino_doc__"; print(sEval, ':', eval(sEval))
+    #    sEval = "__rhino_runmode__ "; print(sEval, ':', eval(sEval))
+    #    sEval = "__is_interactive__ "; print(sEval, ':', eval(sEval))
+    #except:
+    #    pass
+    sc.doc = globals().get('__rhino_doc__', sc.doc)
+    is_plugin = '__rhino_command__' in globals()
+    #sEval = "is_plugin"; print(sEval, ':', eval(sEval))
+    is_interactive = globals().get('__is_interactive__', True)
+    #sEval = "is_interactive"; print(sEval, ':', eval(sEval))
 
+    if is_plugin:
+        ebk.Opts.values['bDialog'] = is_interactive
+
+    go = ri.Custom.GetObject()
 
     def master_filter(rdObj, geom, compIdx):
         # Surface logic
@@ -67,7 +83,6 @@ def main():
 
         return True
 
-
     go.SetCustomGeometryFilter(master_filter)
     go.DisablePreSelect()
     go.AcceptNumber(True, acceptZero=True)
@@ -79,6 +94,9 @@ def main():
         
     idxs_Opt = {}
     def addOption(key): idxs_Opt[key] = ebk.Opts.addOption(go, key)
+
+    if not is_interactive:
+        ebk.Opts.values['bDialog'] = False
 
     while True:
         go.ClearCommandOptions()
@@ -96,8 +114,9 @@ def main():
                 ri.Custom.GeometryAttributeFilter.SeamEdge
                 )
 
-        
-        addOption('bDialog')
+        if not is_plugin:
+            addOption('bDialog')
+            
         idx_Edge_forCrv_notSrf = go.AddOptionToggle("Edge", riOpt_Edge_forCrv_notSrf)[0]
 
         if not ebk.Opts.values['bDialog']:

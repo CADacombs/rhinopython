@@ -22,11 +22,13 @@ Unlike _EndBulge:
         the G2 (p2) tangential sliding scale from p2's starting position.
         C. Where the geometry allows it, and after A & B are applied,
         the G3 (p3) tangential sliding scale from p3's starting position.
-    3. Both the picked end/edge and the opposite end/edge can be modified.
-    They can be modified independently or simultaneously (Linked).
+    3. Both the picked end/edge and the opposite end/edge can be modified:
+        A. Independently or
+        B. simultaneously (Linked)
     4. A curvature graph is built into the dialog version of the script.
     5. The continuities to maintain for the picked end/edge and the opposite
     end/edge are explicitly defined and selectable by the user.
+    6. Surface only: The entire natural edge side of the surface is always modified.
 
 Similar to EndBulge:
     1. The core function of the command is to restrictively modify the p1 and p2 locations.
@@ -36,6 +38,7 @@ Similar to EndBulge:
 There are more options, but the command should be used to really understand it.
 
 This script was partially developed using Google Gemini 3.1 Pro.
+The core algorithms of the scripts are based on initial development of the curve script in 2021.
 
 Send any questions, comments, or script development service needs to @spb on the McNeel Forums: https://discourse.mcneel.com/
 """
@@ -44,7 +47,8 @@ Send any questions, comments, or script development service needs to @spb on the
 210303, 0307: Created.
 260420-25, 0709-18: Added an optional dialog. Added a preview for the dialog.
         Refactored.
-260721: Updated notes.
+260721,24: Updated notes.
+260724: Made script more plug-in friendly.
 """
 
 import Rhino
@@ -59,6 +63,13 @@ def getInput_CLI():
     """
     Get curve with picked end and optional input.
     """
+    sc.doc = globals().get('__rhino_doc__', sc.doc)
+    is_plugin = '__rhino_command__' in globals()
+    is_interactive = globals().get('__is_interactive__', True)
+
+    if is_plugin:
+        ebk.Opts.values['bDialog'] = is_interactive
+
     go = ri.Custom.GetObject()
     go.SetCommandPrompt("Select curve to adjust")
     go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve
@@ -96,13 +107,18 @@ def getInput_CLI():
     idxs_Opt = {}
     def addOption(key): idxs_Opt[key] = ebk.Opts.addOption(go, key)
 
+    if not is_interactive:
+        ebk.Opts.values['bDialog'] = False
+
     while True:
         go.ClearCommandOptions()
         idxs_Opt.clear()
 
-        addOption('bDialog')
+        if not is_plugin:
+            addOption('bDialog')
+            
         if not ebk.Opts.values['bDialog']:
-            addOption('idxCont_Picked')
+            addOption('idxCont_Picked') 
             addOption('idxCont_Opp')
             addOption('bLinkedEnds')
             if ebk.Opts.values['bLinkedEnds']:
@@ -322,6 +338,8 @@ def processCurveObject(objref_In, nc_Precalc=None, **kwargs):
 
 
 def main(objref_In=None):
+    sc.doc = globals().get('__rhino_doc__', sc.doc)
+    
     if objref_In is None:
         rv = getInput_CLI()
         if rv is None: return

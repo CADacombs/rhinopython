@@ -29,7 +29,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
             1. Only 1 of the 2 reference surfaces at corner is planar.
             2. Ends of both reference surfaces at corner are linear and intersect into created surface.
 231226: Bug fix in splitting of curve input that extend through adjacent input.
-240912: Big fix to allow G2 continuity for when the input are 2 adjacent edges (SumSurface).
+240912: Bug fix to allow G2 continuity for when the input are 2 adjacent edges (SumSurface).
+260829: Import-related update.
 
 TODO:
     Convert (some) rational input to non-rational degree 5?
@@ -42,7 +43,7 @@ import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
 
-import spb_NurbsSrf_MatchSrf_1Edge as spb
+import spb_MatchSrf as spb
 
 
 W = rg.IsoStatus.West
@@ -1284,9 +1285,9 @@ def createSurface(rhCrvs_In, **kwargs):
 
             cs_C = [getIsoCurveOfSide(s, ns_M_Start) for s in (W,S,E,N)]
 
-            idx_R_per_Ms_WSEN = spb.findMatchingCurveByEndPoints(
+            idx_R_per_Ms_WSEN, list_bSameDir = spb.findMatchingCurveByEndPoints(
                 cs_C, cs_R, bDebug=bDebug)
-            if idx_R_per_Ms_WSEN is None: return
+            if len(idx_R_per_Ms_WSEN) == 0: return
 
             for side, idx in zip((W,S,E,N), idx_R_per_Ms_WSEN):
                 if idx is None:
@@ -1345,9 +1346,9 @@ def createSurface(rhCrvs_In, **kwargs):
     # Match references to the Coons.
     cs_C = [getIsoCurveOfSide(s, ns_M_Start) for s in (W,S,E,N)]
 
-    idx_R_per_Ms_WSEN = spb.findMatchingCurveByEndPoints(
+    idx_R_per_Ms_WSEN, list_bSameDir = spb.findMatchingCurveByEndPoints(
         cs_C, cs_R, bDebug=bDebug)
-    if idx_R_per_Ms_WSEN is None: return
+    if len(idx_R_per_Ms_WSEN) == 0: return
 
     iConts_WSEN = [iContinuity_PerCrv_WIP[i] for i in idx_R_per_Ms_WSEN]
 

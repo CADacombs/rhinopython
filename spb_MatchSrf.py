@@ -54,6 +54,7 @@ Send any questions, comments, or script development service needs to @spb on the
 260415: Bug fix in G1 matching routine: When matching to a reference with parallel
         CP spans, the span distances will now sometimes be adjusted, such as when
         the G2 matching is later implemented. A boolean parameter was added for this.
+260829: Bug fix: Now direction of Pushup'ed curve is corrected if reversed to reference curve in createTanSrfFromEdge.
 """
 
 import Rhino
@@ -646,7 +647,7 @@ def findMatchingCurveByEndPoints(curvesA, curvesB, tolerance=None, bDebug=False)
     """ Returns list(int(Indices of B per order of A)) """
 
     idxBs_per_As = []
-    bSameDir = []
+    list_bSameDir = []
 
     fTol = sc.doc.ModelAbsoluteTolerance if tolerance is None else tolerance
 
@@ -666,7 +667,7 @@ def findMatchingCurveByEndPoints(curvesA, curvesB, tolerance=None, bDebug=False)
                 cA.PointAtEnd.DistanceTo(cB.PointAtEnd) <= fTol
             ):
                 idxBs_per_As.append(iB)
-                bSameDir.append(True)
+                list_bSameDir.append(True)
                 break # to next curveA.
 
             if (
@@ -675,16 +676,16 @@ def findMatchingCurveByEndPoints(curvesA, curvesB, tolerance=None, bDebug=False)
                 cA.PointAtEnd.DistanceTo(cB.PointAtStart) <= fTol
             ):
                 idxBs_per_As.append(iB)
-                bSameDir.append(False)
+                list_bSameDir.append(False)
                 break # to next curveA.
         else:
             if len(curvesA) == len(curvesB):
                 if bDebug:
                     print("Matching curve not found.")
             idxBs_per_As.append(None)
-            bSameDir.append(None)
+            list_bSameDir.append(None)
 
-    return idxBs_per_As#, bSameDir
+    return idxBs_per_As, list_bSameDir
 
 
 def createTanSrfFromEdge(rgT, bDebug=False):
@@ -696,9 +697,13 @@ def createTanSrfFromEdge(rgT, bDebug=False):
     ns = rgT.Face.UnderlyingSurface()
 
     ncA_Start = ns.Pushup(rgT, tolerance=0.1*sc.doc.ModelAbsoluteTolerance)
-    if findMatchingCurveByEndPoints([rgE], [ncA_Start])[0] is None:
+    idxs_MatchingCrvs, list_bSameDir = findMatchingCurveByEndPoints([rgE], [ncA_Start])
+    if len(idxs_MatchingCrvs) == 0:
         ncA_Start.Dispose()
         ncA_Start = rgE.ToNurbsCurve()
+    elif not list_bSameDir[0]:
+        if not ncA_Start.Reverse():
+            raise Exception("Could not reverse NurbsCurve.")
 
     def simplifyCrv(ncA_Start):
         # Try to make Bezier.
@@ -1041,7 +1046,8 @@ def getNurbsGeomFromGeom(In, iContinuity, bEcho=True, bDebug=False):
         if ns_Tan is None:
             return In.ToNurbsCurve(), None
         ncs_TanNS = [getIsoCurveOfSide(side, ns_Tan) for side in (W,S,E,N)]
-        idxB = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bDebug=bEcho)[0]
+        idxsB, list_bSameDir = findMatchingCurveByEndPoints([trim.Edge], ncs_TanNS, bDebug=bEcho)
+        idxB = idxsB[0]
         if bEcho:
             if not srf.IsPlanar(1e-9):
                 s = "Non-isocurve trim of a non-planar surface picked."
@@ -1269,14 +1275,14 @@ def pivot_M_about_C_onto_CR(R, C, M):
     fCM = vCM.Length
     vCR_Scaled = vCR
     vCR_Scaled.Unitize()
-    vCR_Scaled = vCR * fCM
+    vCR_Scaled *= fCM
     M_out = C - vCR_Scaled
 
     return M_out
 
 
 def get_all_parallel_G01_vector(ns, side):
-    pts = [cp.Location for cp in ns.Points]
+    pts = [cp.Location for cp in yns.Points]
     idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
     idxs_G0 = getPtRowIndicesPerG(ns, side, iG=0)
     idxs_G1 = getPtRowIndicesPerG(ns, side, iG=1)

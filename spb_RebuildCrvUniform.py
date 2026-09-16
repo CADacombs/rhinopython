@@ -1,25 +1,38 @@
-"""
-An alternative to _Rebuild for curves, this script can test different degrees and control
-point counts to find a rebuild result within a deviation tolerance of the input curve.
-
-TODO:
-    Limit distance between consecutive control points?
-"""
-
+#! python 2
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
+An alternative to _Rebuild for curves, this script can test different degrees
+and control point counts to find a rebuild result within a deviation tolerance
+of the input curve.
+
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums ( https://discourse.mcneel.com/ ).
+"""
+"""
 170624-27: Created.
 ...
-200307: When degree is not specified, now iterates from degree 3 to 5 before incrementing the number of control points.
+200307: When degree is not specified, now iterates from degree 3 to 5 before
+        incrementing the number of control points.
 200401, 10: Improved handling of bad deviation result for closed curves.
 200610: Import-related update.  Purged some of this history.
 200611: Bug fix.
 200622: Modified some option inputs.
-210312: Modified some option default values.  Removed a print(statement used for debugging.
+210312: Modified some option default values. Removed a print statement used
+        for debugging.
 210412: Added filter for PolylineCurves.
 220328: Added bPreserveEndG2 option.
-220809, 0823, 0910: Import-related update.
+220809, 0823, 0910, 240905: Import-related update.
+260915: WIP: Input curves are now selected before dialog is displayed.
+        Added bUseDialog option.
+        Changed end continuity from check boxes to radio buttons.
+        Prepared script for translation to C#.
+
+TODO:
+    Remove/refactor degree-1 routine in rebuildCurves.
+    Limit distance between consecutive control points?
+    Limit degree in rebuildCurves to a single degree.
+    Testing other degrees should be done by an external/calling function?
 """
 
 
@@ -27,7 +40,6 @@ import Rhino
 import Rhino.DocObjects as rd
 import Rhino.Geometry as rg
 import Rhino.Input as ri
-import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from System import Guid
@@ -36,7 +48,7 @@ import Eto.Drawing as drawing
 import Eto.Forms as forms
 
 import xCurve
-import spb_Crv_deviation
+import spb_CrvDeviation
 import spb_NurbsCrv_fitByTranslatingControlPts
 
 
@@ -47,79 +59,37 @@ class Opts:
     names = {}
     sDialogTexts = {}
     riOpts = {}
-    riAddOpts = {}
+    listValues = {}
     stickyKeys = {}
 
 
-    def addOptionDouble(key, names, riOpts):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionDouble(
-            getObj, englishName=names[key], numberValue=riOpts[key])
+    key = 'bUseDialog'; keys.append(key)
+    values[key] = True
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
 
-
-    def addOptionInteger(key, names, riOpts):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionInteger(
-            getObj, englishName=names[key], intValue=riOpts[key])
-
-
-    def addOptionList(key, names, listValues, values):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionList(
-            getObj,
-            englishOptionName=names[key],
-            listValues=listValues,
-            listCurrentIndex=values[key])
-
-
-    def addOptionToggle(key, names, riOpts):
-        return lambda getObj: ri.Custom.GetBaseClass.AddOptionToggle(
-            getObj, englishName=names[key], toggleValue=riOpts[key])
-
+    key = 'bLimitCrvDev'; keys.append(key)
+    values[key] = True
+    sDialogTexts[key] = "Limit crv dev"
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'fDevTol'; keys.append(key)
     values[key] = 0.1 * sc.doc.ModelAbsoluteTolerance
-    names[key] = key[1:]
-    sDialogTexts[key] = ""
+    sDialogTexts[key] = "Dev tol:"
     riOpts[key] = ri.Custom.OptionDouble(values[key])
-    riAddOpts[key] = addOptionDouble(key, names, riOpts)
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
-
-    key = 'bPreserveEndG1'; keys.append(key)
-    values[key] = True
-    names[key] = key[1:]
-    sDialogTexts[key] = "Preserve end tangent dirs."
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'bPreserveEndG2'; keys.append(key)
-    values[key] = False
-    names[key] = key[1:]
-    sDialogTexts[key] = "Preserve end curvatures/radii"
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'bFurtherTranslateCps'; keys.append(key)
-    values[key] = False
-    names[key] = key[1:]
-    sDialogTexts[key] = "Further translate CPs to minimize CP count  (May be slow.)"
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
-    stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bLimitDegree'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     sDialogTexts[key] = "Limit degree"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bMatchDegree'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     sDialogTexts[key] = "Same as input curve"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iDegree'; keys.append(key)
@@ -127,47 +97,49 @@ class Opts:
     names[key] = 'CrvDegree'
     sDialogTexts[key] = ""
     riOpts[key] = ri.Custom.OptionInteger(values[key])
-    riAddOpts[key] = addOptionInteger(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bLimitMinCpCt'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     sDialogTexts[key] = "Limit min. CP count"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iMinCpCt'; keys.append(key)
     values[key] = 4
-    names[key] = key[1:]
     sDialogTexts[key] = "Min. CP count"
     riOpts[key] = ri.Custom.OptionInteger(values[key])
-    riAddOpts[key] = addOptionInteger(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bLimitMaxCpCt'; keys.append(key)
     values[key] = True
-    names[key] = key[1:]
     sDialogTexts[key] = "Limit max. CP count"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bMatchMaxCpCt'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     sDialogTexts[key] = "Same as input curve"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iMaxCpCt'; keys.append(key)
     values[key] = 32
-    names[key] = key[1:]
     sDialogTexts[key] = "Max. CP count"
     riOpts[key] = ri.Custom.OptionInteger(values[key])
-    riAddOpts[key] = addOptionInteger(key, names, riOpts)
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'iPreserveEndG'; keys.append(key)
+    values[key] = 1 # 0: G0, 1: G1, 2: G2
+    names[key] = 'PreserveEnds'
+    sDialogTexts[key] = ("Preserve ends:", "G0", "G1", "G2")
+    listValues[key] = ['G0', 'G1', 'G2']
+    stickyKeys[key] = '{}({})'.format(key, __file__)
+
+    key = 'bFurtherTranslateCps'; keys.append(key)
+    values[key] = False
+    sDialogTexts[key] = "Further translate CPs to minimize CP count  (May be slow.)"
+    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessPolyCrv'; keys.append(key)
@@ -175,7 +147,6 @@ class Opts:
     names[key] = 'PolyCrv'
     sDialogTexts[key] = "Polycurves"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessPolyCrvSegs'; keys.append(key)
@@ -186,7 +157,6 @@ class Opts:
         "In whole  ",
         "Each segment individually")
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'WholePolyCrv', 'EachSegment')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessLinear'; keys.append(key)
@@ -194,7 +164,6 @@ class Opts:
     names[key] = 'Linear'
     sDialogTexts[key] = "Lines"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessPolyline'; keys.append(key)
@@ -202,7 +171,6 @@ class Opts:
     names[key] = 'PolylineInWhole'
     sDialogTexts[key] = "Polylines in whole"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessArc'; keys.append(key)
@@ -210,7 +178,6 @@ class Opts:
     names[key] = 'Arc'
     sDialogTexts[key] = "Arcs"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessEllipse'; keys.append(key)
@@ -218,7 +185,6 @@ class Opts:
     names[key] = 'Ellipse'
     sDialogTexts[key] = "Ellipses"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessOtherRat'; keys.append(key)
@@ -226,7 +192,6 @@ class Opts:
     names[key] = 'OtherRationalNurbs'
     sDialogTexts[key] = "Other rational NURBS"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessNonRatWithInternalPolyknot'; keys.append(key)
@@ -234,7 +199,6 @@ class Opts:
     names[key] = 'NurbsWithInternalPolyknots'
     sDialogTexts[key] = "Having internal polyknots"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessNonRatWithSomeFullPolyknot'; keys.append(key)
@@ -245,7 +209,6 @@ class Opts:
         "Any multiplicity  ",
         "Some full")
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Any', 'SomeFull')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessUniformNonRat'; keys.append(key)
@@ -253,7 +216,6 @@ class Opts:
     names[key] = 'Uniform'
     sDialogTexts[key] = "Uniform"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessBezierNonRat'; keys.append(key)
@@ -261,7 +223,6 @@ class Opts:
     names[key] = 'Bezier'
     sDialogTexts[key] = "Bezier"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bProcessOtherNonRat'; keys.append(key)
@@ -269,7 +230,6 @@ class Opts:
     names[key] = 'NonrationalNurbs'
     sDialogTexts[key] = "Other"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bReplace'; keys.append(key)
@@ -277,41 +237,80 @@ class Opts:
     names[key] = 'Action'
     sDialogTexts[key] = "Output:", "Add new    ", "Replace input"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Add', 'Replace')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bEcho'; keys.append(key)
     values[key] = True
-    names[key] = key[1:]
     sDialogTexts[key] = "Echo"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bDebug'; keys.append(key)
     values[key] = False
-    names[key] = key[1:]
     sDialogTexts[key] = "Debug"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
 
-    @classmethod
-    def loadSticky(cls):
-        for key in cls.stickyKeys:
-            if cls.stickyKeys[key] in sc.sticky:
-                if key in cls.riOpts:
-                    cls.riOpts[key].CurrentValue = cls.values[key] = sc.sticky[cls.stickyKeys[key]]
-                else:
-                    cls.values[key] = sc.sticky[cls.stickyKeys[key]]
+    for key in keys:
+        if key not in names:
+            names[key] = key[1:]
+
+
+    # Load sticky.
+    for key in stickyKeys:
+        if stickyKeys[key] in sc.sticky:
+            if key in riOpts:
+                riOpts[key].CurrentValue = values[key] = sc.sticky[stickyKeys[key]]
+            else:
+                values[key] = sc.sticky[stickyKeys[key]]
 
 
     @classmethod
-    def setValues(cls):
-        for key in cls.keys:
-            if key in cls.riOpts:
-                cls.values[key] = cls.riOpts[key].CurrentValue
+    def addOption(cls, go, key):
+
+        idxOpt = None
+
+        if key in cls.riOpts:
+            if key[0] == 'b':
+                idxOpt = go.AddOptionToggle(
+                        cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'f':
+                idxOpt = go.AddOptionDouble(
+                    cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'i':
+                idxOpt = go.AddOptionInteger(
+                    englishName=cls.names[key], intValue=cls.riOpts[key])[0]
+        elif key in cls.listValues:
+            idxOpt = go.AddOptionList(
+                englishOptionName=cls.names[key],
+                listValues=cls.listValues[key],
+                listCurrentIndex=cls.values[key])
+        else:
+            print("{} is not a valid key in Opts.".format(key))
+
+        return idxOpt
+
+
+    @classmethod
+    def setValue(cls, key, idxList=None):
+
+        if key == 'fDevTol':
+            if cls.riOpts[key].CurrentValue < 0.0:
+                cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
+            elif cls.riOpts[key].CurrentValue < Rhino.RhinoMath.ZeroTolerance:
+                cls.riOpts[key].CurrentValue = Rhino.RhinoMath.ZeroTolerance
+            sc.sticky[cls.stickyKeys[key]] = cls.values[key] = cls.riOpts[key].CurrentValue
+            return
+
+        if key in cls.riOpts:
+            cls.values[key] = cls.riOpts[key].CurrentValue
+        elif key in cls.listValues:
+            cls.values[key] = idxList
+        else:
+            return
+
+        sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
     @classmethod
@@ -328,10 +327,10 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
 
     def __init__(self):
 
-        Opts.loadSticky()
+        #Opts.loadSticky()
 
         # Initialize dialog box
-        self.Title = 'Rebuild Curve'
+        self.Title = 'Rebuild Curve Uniform by SPB'
         self.Padding = drawing.Padding(10)
         self.Resizable = False
 
@@ -347,6 +346,7 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
         self.textBoxes = {}
 
         for key in Opts.keys:
+            if key == 'bUseDialog': continue
             if key[0] == 'b':
                 if isinstance(Opts.sDialogTexts[key], str):
                     self.checkBoxes[key] = forms.CheckBox(Text=Opts.sDialogTexts[key])
@@ -360,27 +360,35 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
                 self.labels[key] = forms.Label(Text=Opts.sDialogTexts[key])
                 self.textBoxes[key] = forms.TextBox(Text=str(Opts.values[key]))
             elif key[0] == 'i':
-                self.labels[key] = forms.Label(Text=Opts.sDialogTexts[key])
-                self.textBoxes[key] = forms.TextBox(Text=str(int(Opts.values[key])))
+                if isinstance(Opts.sDialogTexts.get(key), tuple):
+                    self.radioButtonList[key] = forms.RadioButtonList()
+                    self.radioButtonList[key].DataStore = Opts.sDialogTexts[key][1:]
+                    self.radioButtonList[key].SelectedIndex = int(Opts.values[key])
+                    self.radioButtonList[key].Orientation = forms.Orientation.Horizontal
+                    self.radioButtonList[key].Spacing = drawing.Size(15, 0)
+                else:
+                    self.labels[key] = forms.Label(Text=Opts.sDialogTexts[key])
+                    self.textBoxes[key] = forms.TextBox(Text=str(int(Opts.values[key])))
             elif key[0] == 's':
                 self.radioButtonList[key] = forms.RadioButtonList()
                 self.radioButtonList[key].DataStore = Opts.sDialogTexts[key]
                 self.radioButtonList[key].SelectedIndex = Opts.sDialogTexts[key].index(Opts.values[key])
 
 
-
         # Set initial state.
+        self.enableTextBox_fDevTol()
+        self.enableCheckBox_bMatchDegree()
         self.enableTextBox_iDegree()
         self.enableTextBox_iMinCpCt()
+        self.enableCheckBox_bMatchMaxCpCt()
         self.enableTextBox_iMaxCpCt()
-        self.enableCheckBox_bPreserveEndG2()
         self.enableRadioButtonList_bProcessPolyCrvSegs()
         self.enableRadioButtonList_bProcessNonRatWithOnlyFullyMultiK()
         self.enableCheckBox_bProcessBezier()
 
 
-
         # Events.
+        self.checkBoxes['bLimitCrvDev'].CheckedChanged += self.onChange_bLimitCrvDev
         self.textBoxes['fDevTol'].TextChanged += self.onChange_fDevTol
 
         self.checkBoxes['bLimitDegree'].CheckedChanged += self.onChange_bLimitDegree
@@ -393,8 +401,6 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
         self.checkBoxes['bLimitMaxCpCt'].CheckedChanged += self.onChange_bLimitMaxCpCt
         self.checkBoxes['bMatchMaxCpCt'].CheckedChanged += self.onChange_bMatchMaxCpCt
         self.textBoxes['iMaxCpCt'].TextChanged += self.onChange_iMaxCpCt
-
-        self.checkBoxes['bPreserveEndG1'].CheckedChanged += self.onChange_bPreserveEndG1
 
         self.checkBoxes['bProcessPolyCrv'].CheckedChanged += self.OnChange_bProcessPolyCrv
 
@@ -416,8 +422,9 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
         layout.DefaultSpacing = drawing.Size(5, 5)
 
         layout.AddSeparateRow(
+            self.checkBoxes['bLimitCrvDev'],
             None,
-            "Deviation tolerance",
+            Opts.sDialogTexts['fDevTol'],
             self.textBoxes['fDevTol'],
             )
 
@@ -445,12 +452,7 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
         layout.AddSpace()
         layout.AddSpace()
 
-        layout.BeginVertical()
-        layout.AddRow(
-            self.checkBoxes['bPreserveEndG1'],
-            self.checkBoxes['bPreserveEndG2'],
-            )
-        layout.EndVertical()
+        layout.AddSeparateRow(Opts.sDialogTexts['iPreserveEndG'][0], self.radioButtonList['iPreserveEndG'])
 
         layout.AddSpace()
         layout.AddSpace()
@@ -523,21 +525,22 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
 
     # Functions that set properties of controls based on the values of other controls.
     # This is used in both __init__ and by individual onChange methods.
+    def enableTextBox_fDevTol(self):
+        self.textBoxes['fDevTol'].Enabled = (
+            self.checkBoxes['bLimitCrvDev'].Checked)
+
     def enableCheckBox_bMatchDegree(self):
         self.checkBoxes['bMatchDegree'].Enabled = (
             self.checkBoxes['bLimitDegree'].Checked)
-
 
     def enableTextBox_iDegree(self):
         self.textBoxes['iDegree'].Enabled = (
             self.checkBoxes['bLimitDegree'].Checked and
             not self.checkBoxes['bMatchDegree'].Checked)
 
-
     def enableTextBox_iMinCpCt(self):
         self.textBoxes['iMinCpCt'].Enabled = (
             self.checkBoxes['bLimitMinCpCt'].Checked)
-
 
     def enableCheckBox_bMatchMaxCpCt(self):
         self.checkBoxes['bMatchMaxCpCt'].Enabled = (
@@ -548,28 +551,17 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
             self.checkBoxes['bLimitMaxCpCt'].Checked and
             not self.checkBoxes['bMatchMaxCpCt'].Checked)
 
-
-    def enableCheckBox_bPreserveEndG2(self):
-        self.checkBoxes['bPreserveEndG2'].Enabled = (
-            self.checkBoxes['bPreserveEndG1'].Checked)
-
-
-
     def enableRadioButtonList_bProcessPolyCrvSegs(self):
         self.radioButtonList['bProcessPolyCrvSegs'].Enabled = (
             self.checkBoxes['bProcessPolyCrv'].Checked)
-
 
     def enableRadioButtonList_bProcessNonRatWithOnlyFullyMultiK(self):
         self.radioButtonList['bProcessNonRatWithSomeFullPolyknot'].Enabled = (
             self.checkBoxes['bProcessNonRatWithInternalPolyknot'].Checked)
 
-
     def enableCheckBox_bProcessBezier(self):
         self.checkBoxes['bProcessBezierNonRat'].Enabled = (
             self.checkBoxes['bProcessUniformNonRat'].Checked)
-
-
 
     def onChange_bLimitCrvDev(self, sender, e):
         self.enableTextBox_fDevTol()
@@ -580,7 +572,6 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
             self.textBoxes['fDevTol'].BackgroundColor = drawing.SystemColors.ControlBackground
         except:
             self.textBoxes['fDevTol'].BackgroundColor = drawing.Colors.Red
-
 
     def onChange_bLimitDegree(self, sender, e):
         self.enableCheckBox_bMatchDegree()
@@ -601,7 +592,6 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
         except:
             self.textBoxes['iDegree'].BackgroundColor = drawing.Colors.Red
 
-
     def onChange_bLimitMinCpCt(self, sender, e):
         self.enableTextBox_iMinCpCt()
 
@@ -611,7 +601,6 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
             self.textBoxes['iMinCpCt'].BackgroundColor = drawing.SystemColors.ControlBackground
         except:
             self.textBoxes['iMinCpCt'].BackgroundColor = drawing.Colors.Red
-
 
     def onChange_bLimitMaxCpCt(self, sender, e):
         self.enableCheckBox_bMatchMaxCpCt()
@@ -626,10 +615,6 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
             self.textBoxes['iMaxCpCt'].BackgroundColor = drawing.SystemColors.ControlBackground
         except:
             self.textBoxes['iMaxCpCt'].BackgroundColor = drawing.Colors.Red
-
-
-    def onChange_bPreserveEndG1(self, sender, e):
-        self.enableCheckBox_bPreserveEndG2()
 
 
     def OnChange_bProcessPolyCrv(self, sender, e):
@@ -660,8 +645,8 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
                     Opts.values[key] = (
                         Opts.sDialogTexts[key][self.radioButtonList[key].SelectedIndex]
                     )
-                if key[0] == 'b':
-                    Opts.values[key] = bool(self.radioButtonList[key].SelectedIndex)
+                elif key[0] == 'b' or key[0] == 'i':
+                    Opts.values[key] = int(self.radioButtonList[key].SelectedIndex)
             elif key in self.textBoxes:
                 if key[0] == 'f':
                     try:
@@ -687,6 +672,22 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
         self.Close(True)
 
 
+class FilterSettings:
+    def __init__(self):
+        self.bProcessPolyCrv = True
+        self.bProcessPolyCrvSegs = True
+        self.bProcessLinear = False
+        self.bProcessPolyline = False
+        self.bProcessArc = False
+        self.bProcessEllipse = True
+        self.bProcessOtherRat = True
+        self.bProcessNonRatWithInternalPolyknot = True
+        self.bProcessNonRatWithSomeFullPolyknot = False
+        self.bProcessUniformNonRat = False
+        self.bProcessBezierNonRat = False
+        self.bProcessOtherNonRat = True
+
+
 def getPreselectedCurves():
     gObjs_Preselected = [rdObj.Id for rdObj in sc.doc.Objects.GetSelectedObjects(includeLights=False, includeGrips=False)]
     if gObjs_Preselected:
@@ -709,7 +710,9 @@ def getPreselectedCurves():
 
 
 def getInput():
-    """Get curves with optional input."""
+    """
+    Get curves with optional input.
+    """
 
 
 
@@ -778,7 +781,7 @@ def getInput():
     #        return geom.GetType() == rg.Curve
     #    go.SetCustomGeometryFilter(curvesEdgesNotInBlockInstGeomFilter)    
     
-    go.AcceptNumber(True, True)
+    go.AcceptNumber(True, acceptZero=True)
     
     go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
     go.EnableClearObjectsOnEntry(False) # Do not clear objects in go on repeats of While loop.
@@ -790,43 +793,40 @@ def getInput():
         ', '.join([s for s in sCrvFilterOpts if Opts.values['bProcess'+s]])))
 
 
-    #bPreselectedObjsChecked = False
-
-    Opts.loadSticky()
-
     idxs_Opts = {}
 
+    def addOption(key): idxs_Opts[key] = Opts.addOption(go, key)
+
     while True:
-        idxs_Opts['CrvFilter'] = go.AddOption('CrvTypesToProcess')
-        key = 'fDevTol'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bPreserveEndG1'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bPreserveEndG2'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bFurtherTranslateCps'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bLimitDegree'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bMatchDegree'; idxs_Opts[key] = (Opts.riAddOpts[key](go)[0]
-                                           if Opts.values['bLimitDegree']
-                                           else None)
-        key = 'iDegree'; idxs_Opts[key] = (Opts.riAddOpts[key](go)[0]
-                                           if (
-                                               Opts.values['bLimitDegree'] and
-                                               not Opts.values['bMatchDegree'])
-                                           else None)
-        key = 'bLimitMinCpCt'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'iMinCpCt'; idxs_Opts[key] = (Opts.riAddOpts[key](go)[0]
-                                           if Opts.values['bLimitMinCpCt']
-                                           else None)
-        key = 'bLimitMaxCpCt'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bMatchMaxCpCt'; idxs_Opts[key] = (Opts.riAddOpts[key](go)[0]
-                                           if Opts.values['bLimitMaxCpCt']
-                                           else None)
-        key = 'iMaxCpCt'; idxs_Opts[key] = (Opts.riAddOpts[key](go)
-                                           if (
-                                               Opts.values['bLimitMaxCpCt'] and
-                                               not Opts.values['bMatchDegree'])
-                                           else None)
-        key = 'bReplace'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bEcho'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
-        key = 'bDebug'; idxs_Opts[key] = Opts.riAddOpts[key](go)[0]
+        go.ClearCommandOptions()
+
+        idxs_Opts.clear()
+
+        addOption('bUseDialog')
+        if not Opts.values['bUseDialog']:
+            idxs_Opts['CrvFilter'] = go.AddOption('CrvTypesToProcess')
+            addOption('bLimitCrvDev')
+            if Opts.values['bLimitCrvDev']:
+                addOption('fDevTol')
+            addOption('bLimitDegree')
+            if Opts.values['bLimitDegree']:
+                addOption('bMatchDegree')
+                if not Opts.values['bMatchDegree']:
+                    addOption('iDegree')
+            addOption('bLimitMinCpCt')
+            if Opts.values['bLimitMinCpCt']:
+                addOption('iMinCpCt')
+            addOption('bLimitMaxCpCt')
+            if Opts.values['bLimitMaxCpCt']:
+                addOption('bMatchMaxCpCt')
+                addOption('iMinCpCt')
+                if not Opts.values['bMatchMaxCpCt']:
+                    addOption('iMaxCpCt')
+            addOption('iPreserveEndG')
+            addOption('bFurtherTranslateCps')
+            addOption('bReplace')
+        addOption('bEcho')
+        addOption('bDebug')
 
 
         res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
@@ -840,27 +840,22 @@ def getInput():
         if res == ri.GetResult.Cancel:
             go.Dispose()
             return
-        elif res == ri.GetResult.Object:
+
+        if res == ri.GetResult.Object:
             objrefs = go.Objects()
             go.Dispose()
-            return tuple(
-                    [objrefs]
-                    +
-                    [Opts.values[key] for key in Opts.keys])
-        else:
-            # An option was selected or a number was entered.
-            key = 'fDevTol'
-            if go.Option().Index == idxs_Opts['CrvFilter']:
-                setCurveFilter()
-            if res == ri.GetResult.Number:
-                Opts.riOpts[key].CurrentValue = go.Number()
-            if Opts.riOpts[key].CurrentValue < 0.0:
-                Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
+            return objrefs
 
-            
-            Opts.setValues()
-            Opts.saveSticky()
-            go.ClearCommandOptions()
+        if res == ri.GetResult.Number and Opts.values['bLimitCrvDev']:
+            key = 'fDevTol'
+            Opts.riOpts[key].CurrentValue = go.Number()
+            Opts.setValue(key)
+            continue
+
+        for key in idxs_Opts:
+            if go.Option().Index == idxs_Opts[key]:
+                Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                break
 
 
 def removeNesting(rgCrv0):
@@ -939,54 +934,39 @@ def removeNesting(rgCrv0):
     rgCrv_WIP.Dispose()
 
 
-def doesCurvePassTypeFilter(rgCurve0, **kwargs):
+def doesCurvePassTypeFilter(rgCurve0, filterSettings):
     """
-    Returns: bool
+    Returns: bool, str(Log message)
     """
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    bProcessPolyCrv = getOpt('bProcessPolyCrv')
-    bProcessLinear = getOpt('bProcessLinear')
-    bProcessPolyline = getOpt('bProcessPolyline')
-    bProcessArc = getOpt('bProcessArc')
-    bProcessEllipse = getOpt('bProcessEllipse')
-    bProcessOtherRat = getOpt('bProcessOtherRat')
-    bProcessNonRatWithInternalPolyknot = getOpt('bProcessNonRatWithInternalPolyknot')
-    bProcessNonRatWithSomeFullPolyknot = getOpt('bProcessNonRatWithSomeFullPolyknot')
-    bProcessUniformNonRat = getOpt('bProcessUniformNonRat')
-    bProcessBezierNonRat = getOpt('bProcessBezierNonRat')
-    bProcessOtherNonRat = getOpt('bProcessOtherNonRat')
-
 
     sType_c0 = rgCurve0.GetType().Name
 
     if sType_c0 == 'PolyCurve':
-        if bProcessPolyCrv:
+        if filterSettings.bProcessPolyCrv:
             return True, None
         else:
             return False, "Skipped PolyCurve."
 
     if sType_c0 == 'LineCurve':
-        if bProcessLinear:
+        if filterSettings.bProcessLinear:
             return True, None
         else:
             return False, "Skipped LineCurve."
 
     if sType_c0 == 'PolylineCurve':
-        if bProcessPolyline:
+        if filterSettings.bProcessPolyline:
             return True, None
         else:
             return False, "Skipped PolylineCurve."
 
     if sType_c0 == 'ArcCurve':
-        if bProcessArc:
+        if filterSettings.bProcessArc:
             return True, None
         else:
             return False, "Skipped ArcCurve."
 
     if rgCurve0.IsLinear(1e-6):
-        if bProcessLinear:
+        if filterSettings.bProcessLinear:
             return True, None
         else:
             return False, "Skipped linear {}.".format(sType_c0)
@@ -999,35 +979,35 @@ def doesCurvePassTypeFilter(rgCurve0, **kwargs):
             fMinNewCrvLen=100.0*sc.doc.ModelAbsoluteTolerance,
             fMaxRadius=(1e6)*sc.doc.ModelAbsoluteTolerance)
     if rc is not None and rc[0] is not None:
-        if bProcessArc:
+        if filterSettings.bProcessArc:
             return True, None
         else:
             return False, "Skipped arc-shaped {}.".format(sType_c0)
 
     if sType_c0 == "NurbsCurve":
         rc = xCurve.getEllipticalNurbsCurve(
-                rgCrv0=rgCurve0,
-                bTolByRatio=False,
-                fTolRatio=None,
-                fDevTol=1e-9,
-                fMinNewCrvLen=100.0*sc.doc.ModelAbsoluteTolerance,
-                fMaxRadius=(1e6)*sc.doc.ModelAbsoluteTolerance)
+            rgCrv0=rgCurve0,
+            bTolByRatio=False,
+            fTolRatio=None,
+            fDevTol=1e-9,
+            fMinNewCrvLen=100.0*sc.doc.ModelAbsoluteTolerance,
+            fMaxRadius=(1e6)*sc.doc.ModelAbsoluteTolerance)
         if rc is not None and rc[0] is not None:
-            if bProcessEllipse:
+            if filterSettings.bProcessEllipse:
                 return True, None
             else:
                 return False, "Skipped elliptical-shaped {}.".format(sType_c0)
 
         if rgCurve0.IsRational:
-            if bProcessOtherRat:
+            if filterSettings.bProcessOtherRat:
                 return True, None
             else:
                 return False, "Skipped rational non-arc, non-elliptical NurbsCurve."
 
 
         if xCurve.Nurbs.hasInternalPolyknots(rgCurve0):
-            if bProcessNonRatWithInternalPolyknot:
-                if not bProcessNonRatWithSomeFullPolyknot:
+            if filterSettings.bProcessNonRatWithInternalPolyknot:
+                if not filterSettings.bProcessNonRatWithSomeFullPolyknot:
                     return True, None
                 else:
                     if xCurve.Nurbs.hasSomeFullyMultiplePolyknots(rgCurve0):
@@ -1039,9 +1019,9 @@ def doesCurvePassTypeFilter(rgCurve0, **kwargs):
 
 
         if xCurve.Nurbs.isUniform(rgCurve0):
-            if bProcessUniformNonRat:
+            if filterSettings.bProcessUniformNonRat:
                 if rgCurve0.SpanCount == 1:
-                    if bProcessBezierNonRat:
+                    if filterSettings.bProcessBezierNonRat:
                         return True, None
                     else:
                         return False, "Skipped Bezier NurbsCurve."
@@ -1050,16 +1030,40 @@ def doesCurvePassTypeFilter(rgCurve0, **kwargs):
             else:
                 return False, "Skipped uniform NurbsCurve."
 
-        if bProcessOtherNonRat:
+        if filterSettings.bProcessOtherNonRat:
             return True, None
         else:
             return False, "Skipped other non-rational NurbsCurve."
 
 
-def rebuildCurve(rgCurve0, fDevTol, iDegree=3, bPreserveEndG1=True, bPreserveEndG2=False, bFurtherTranslateCps=True, iMinCpCt=None, iMaxCpCt=20, bDebug=False):
+def rebuildCurve(rgCurve0, fDevTol, iDegree=3, iMinCpCt=None, iMaxCpCt=20, iPreserveEndG=1, bFurtherTranslateCps=True, bDebug=False):
     """
-    Returns tuple of 3 values:
-        On success: rg.NurbsCurve, float(Max. deviation), None
+
+    Parameters:
+        fDevTol:
+            < 0: Do not limit deviation.
+            >= 0: Use this exact value for min. curve deviation tolerance.
+        iDegree:
+            0: Do not limit degree.
+            < 0: Match the input curve's degree.
+            > 0: Use this exact value for degree.
+        iMinCpCt:
+            in (0, 1): Do not limit min. CP count.
+            <= -1: Match the input curve's min. CP count.
+            >= 2: Use this exact value for min. CP count.
+        iMaxCpCt:
+            in (0, 1): Do not limit max. CP count.
+            <= -1: Match the input curve's max CP count.
+            >= 2: Use this exact value for max CP count.
+        iPreserveEndG:
+        bFurtherTranslateCps:
+        bDebug:
+
+
+
+    Returns tuple of 3 values: rg.NurbsCurve, float, str
+        On success:
+            rg.NurbsCurve, float(Max. deviation), None
         On fail:
             None, float(Last deviation calculated (required deviation), None
             None, None, str(Feedback)
@@ -1074,16 +1078,21 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, bPreserveEndG1=True, bPreserveEnd
     
     if not nc_In:
         return None, None, "NurbsCurve could not be constructed from {}.".format(rgCurve0)
-    
+
+    bPreserveEndG1 = (iPreserveEndG >= 1)
+    bPreserveEndG2 = (iPreserveEndG == 2)
+
     if iDegree < 0:
         iDegs = nc_In.Degree,
     elif not iDegree:
-        iDegs = 3, 5
+        if bPreserveEndG2:
+            iDegs = 5,
+        else:
+            iDegs = 3, 5
     else:
         iDegs = iDegree,
-    
-    if bDebug: sEval = 'iDegs'; print(sEval + ':', eval(sEval))
 
+    if bDebug: sEval = 'iDegs'; print(sEval + ':', eval(sEval))
 
     if 1 in iDegs:
         if nc_In.IsClosed:
@@ -1104,7 +1113,7 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, bPreserveEndG1=True, bPreserveEnd
             return None, None, "Could not rebuild curve to a 2-point degree 1."
 
 
-        rc = spb_Crv_deviation.isMaxClosestDistBtwn2CrvsWithinTol(
+        rc = spb_CrvDeviation.isMaxClosestDistBtwn2CrvsWithinTol(
             nc_In,
             nc_Out,
             tolerance=fDevTol)
@@ -1189,7 +1198,7 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, bPreserveEndG1=True, bPreserveEnd
                     nc_Out = rc
 
 
-            rc = spb_Crv_deviation.isMaxClosestDistBtwn2CrvsWithinTol(
+            rc = spb_CrvDeviation.isMaxClosestDistBtwn2CrvsWithinTol(
                 nc_In,
                 nc_Out,
                 tolerance=fDevTol)
@@ -1204,32 +1213,9 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, bPreserveEndG1=True, bPreserveEnd
         ct_cp += 1
 
 
-def rebuildPolyCurveSegments(rgPolyCrv0, fDevTol, **kwargs):
+def rebuildPolyCurveSegments(rgPolyCrv0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreserveEndG, filterSettings, bDebug=False):
     """
     """
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    iDegree = getOpt('iDegree')
-    bPreserveEndG1 = getOpt('bPreserveEndG1')
-    bPreserveEndG2 = getOpt('bPreserveEndG2')
-    bFurtherTranslateCps = getOpt('bFurtherTranslateCps')
-    iMinCpCt = getOpt('iMinCpCt')
-    iMaxCpCt = getOpt('iMaxCpCt')
-
-    bProcessLinear = getOpt('bProcessLinear')
-    bProcessPolyline = getOpt('bProcessPolyline')
-    bProcessArc = getOpt('bProcessArc')
-    bProcessEllipse = getOpt('bProcessEllipse')
-    bProcessOtherRat = getOpt('bProcessOtherRat')
-    bProcessNonRatWithInternalPolyknot = getOpt('bProcessNonRatWithInternalPolyknot')
-    bProcessNonRatWithSomeFullPolyknot = getOpt('bProcessNonRatWithSomeFullPolyknot')
-    bProcessUniformNonRat = getOpt('bProcessUniformNonRat')
-    bProcessBezierNonRat = getOpt('bProcessBezierNonRat')
-    bProcessOtherNonRat = getOpt('bProcessOtherNonRat')
-
-    bDebug = getOpt('bDebug')
-
 
     if not(rgPolyCrv0, rg.PolyCurve): return None, [], [], s
 
@@ -1250,20 +1236,18 @@ def rebuildPolyCurveSegments(rgPolyCrv0, fDevTol, **kwargs):
         if iSeg == 2:
             pass
 
+        # Temporarily override the setting
+        original_bProcessPolyCrv = filterSettings.bProcessPolyCrv
+        filterSettings.bProcessPolyCrv = True
+
         bPass, sLog = doesCurvePassTypeFilter(
             rgCurve0=seg_In,
-            bProcessPolyCrv=True,
-            bProcessLinear=bProcessLinear,
-            bProcessPolyline=bProcessPolyline,
-            bProcessArc=bProcessArc,
-            bProcessEllipse=bProcessEllipse,
-            bProcessOtherRat=bProcessOtherRat,
-            bProcessNonRatWithInternalPolyknot=bProcessNonRatWithInternalPolyknot,
-            bProcessNonRatWithSomeFullPolyknot=bProcessNonRatWithSomeFullPolyknot,
-            bProcessUniformNonRat=bProcessUniformNonRat,
-            bProcessBezierNonRat=bProcessBezierNonRat,
-            bProcessOtherNonRat=bProcessOtherNonRat,
+            filterSettings=filterSettings,
             )
+
+        # Restore the setting immediately
+        filterSettings.bProcessPolyCrv = original_bProcessPolyCrv
+
         if not bPass:
             segs_forOut.append(seg_In.Duplicate())
             sLogs.append(sLog)
@@ -1272,16 +1256,15 @@ def rebuildPolyCurveSegments(rgPolyCrv0, fDevTol, **kwargs):
 
         ##
         seg_forOut, dev, sLog = rebuildCurve(
-                rgCurve0=seg_In,
-                fDevTol=fDevTol,
-                iDegree=iDegree,
-                bPreserveEndG1=bPreserveEndG1,
-                bPreserveEndG2=bPreserveEndG2,
-                bFurtherTranslateCps=bFurtherTranslateCps,
-                iMinCpCt=iMinCpCt,
-                iMaxCpCt=iMaxCpCt,
-                bDebug=bDebug,
-                )
+            rgCurve0=seg_In,
+            fDevTol=fDevTol,
+            iDegree=iDegree,
+            iPreserveEndG=iPreserveEndG,
+            bFurtherTranslateCps=bFurtherTranslateCps,
+            iMinCpCt=iMinCpCt,
+            iMaxCpCt=iMaxCpCt,
+            bDebug=bDebug,
+            )
         ##
 
 
@@ -1317,40 +1300,43 @@ def rebuildPolyCurveSegments(rgPolyCrv0, fDevTol, **kwargs):
     return joined[0], devs_Pass, devs_Fail, sLogs
 
 
-def processCurves(curvesAndEdges0, **kwargs):
+def _coerceRhinoObject(rhObj):
+    rdObj = None
+    if isinstance(rhObj, rd.BrepObject):
+        rdObj = rhObj
+    elif isinstance(rhObj, rd.ObjRef):
+        rdObj = rhObj.Object()
+    elif isinstance(rhObj, Guid):
+        rdObj = sc.doc.Objects.FindId(rhObj) if Rhino.RhinoApp.ExeVersion >= 6 else sc.doc.Objects.Find(rhObj)
+    return rdObj
+
+
+def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreserveEndG, bFurtherTranslateCps, filterSettings, bReplace, bEcho=True, bDebug=False):
     """
-    curvesAndEdges0 = (GUIDs of CurveObjects) or BrepEdges
+    Parameters:
+        curvesAndEdges0 = (GUIDs of CurveObjects) or BrepEdges
+        fDevTol:
+            < 0: Do not limit deviation.
+            >= 0: Use this exact value for min. curve deviation tolerance.
+        iDegree:
+            0: Do not limit degree.
+            < 0: Match the input curve's degree.
+            > 0: Use this exact value for degree.
+        iMinCpCt:
+            in (0, 1): Do not limit min. CP count.
+            <= -1: Match the input curve's min. CP count.
+            >= 2: Use this exact value for min. CP count.
+        iMaxCpCt:
+            in (0, 1): Do not limit max. CP count.
+            <= -1: Match the input curve's max CP count.
+            >= 2: Use this exact value for max CP count.
+        iPreserveEndG:
+        bFurtherTranslateCps:
+        bReplace:
+        bEcho:
+        bDebug:
+
     """
-
-
-    def getOpt(key): return kwargs[key] if key in kwargs else Opts.values[key]
-
-    fDevTol = getOpt('fDevTol')
-    iDegree = getOpt('iDegree')
-    bPreserveEndG1 = getOpt('bPreserveEndG1')
-    bPreserveEndG2 = getOpt('bPreserveEndG2')
-    bFurtherTranslateCps = getOpt('bFurtherTranslateCps')
-    iMinCpCt = getOpt('iMinCpCt')
-    iMaxCpCt = getOpt('iMaxCpCt')
-
-    bProcessPolyCrv = getOpt('bProcessPolyCrv')
-    bProcessPolyCrvSegs = getOpt('bProcessPolyCrvSegs')
-    bProcessLinear = getOpt('bProcessLinear')
-    bProcessPolyline = getOpt('bProcessPolyline')
-    bProcessArc = getOpt('bProcessArc')
-    bProcessEllipse = getOpt('bProcessEllipse')
-    bProcessOtherRat = getOpt('bProcessOtherRat')
-    bProcessNonRatWithInternalPolyknot = getOpt('bProcessNonRatWithInternalPolyknot')
-    bProcessNonRatWithSomeFullPolyknot = getOpt('bProcessNonRatWithSomeFullPolyknot')
-    bProcessUniformNonRat = getOpt('bProcessUniformNonRat')
-    bProcessBezierNonRat = getOpt('bProcessBezierNonRat')
-    bProcessOtherNonRat = getOpt('bProcessOtherNonRat')
-
-    bReplace = getOpt('bReplace')
-    bEcho = getOpt('bEcho')
-    bDebug = getOpt('bDebug')
-
-
 
     def formatDistance(fDistance):
         if fDistance is None:
@@ -1411,7 +1397,7 @@ def processCurves(curvesAndEdges0, **kwargs):
     rdCs_In = []
     gCrvs0 = []
     for curveOrEdge0 in curvesAndEdges0:
-        rdC_In = rs.coercerhinoobject(curveOrEdge0)
+        rdC_In = _coerceRhinoObject(curveOrEdge0)
         rdCs_In.append(rdC_In)
         gC_In = rdC_In.Id
         if gC_In:
@@ -1428,7 +1414,8 @@ def processCurves(curvesAndEdges0, **kwargs):
 
 
     idxs_AtTenths = [int(round(0.1*i*len(rdCs_In),0)) for i in range(10)]
-    
+
+
     for iC, rdC_In in enumerate(rdCs_In):
         if iC in idxs_AtTenths:
             Rhino.RhinoApp.SetCommandPrompt(
@@ -1459,17 +1446,7 @@ def processCurves(curvesAndEdges0, **kwargs):
 
         bPass, sLog = doesCurvePassTypeFilter(
             rgCurve0=rgCrv0,
-            bProcessPolyCrv=bProcessPolyCrv,
-            bProcessLinear=bProcessLinear,
-            bProcessPolyline=bProcessPolyline,
-            bProcessArc=bProcessArc,
-            bProcessEllipse=bProcessEllipse,
-            bProcessOtherRat=bProcessOtherRat,
-            bProcessNonRatWithInternalPolyknot=bProcessNonRatWithInternalPolyknot,
-            bProcessNonRatWithSomeFullPolyknot=bProcessNonRatWithSomeFullPolyknot,
-            bProcessUniformNonRat=bProcessUniformNonRat,
-            bProcessBezierNonRat=bProcessBezierNonRat,
-            bProcessOtherNonRat=bProcessOtherNonRat,
+            filterSettings=filterSettings,
             )
         if not bPass:
             sFails.append(sLog)
@@ -1483,26 +1460,16 @@ def processCurves(curvesAndEdges0, **kwargs):
 
         if sType_Crv0 == 'PolyCurve' and bProcessPolyCrvSegs:
             rc = rebuildPolyCurveSegments(
-                    rgPolyCrv0=rgCrv0,
-                    fDevTol=fDevTol,
-                    iDegree=iDegree,
-                    bPreserveEndG1=bPreserveEndG1,
-                    bPreserveEndG2=bPreserveEndG2,
-                    bFurtherTranslateCps=bFurtherTranslateCps,
-                    iMinCpCt=iMinCpCt,
-                    iMaxCpCt=iMaxCpCt,
-                    bProcessLinear=bProcessLinear,
-                    bProcessPolyline=bProcessPolyline,
-                    bProcessArc=bProcessArc,
-                    bProcessEllipse=bProcessEllipse,
-                    bProcessOtherRat=bProcessOtherRat,
-                    bProcessNonRatWithInternalPolyknot=bProcessNonRatWithInternalPolyknot,
-                    bProcessNonRatWithSomeFullPolyknot=bProcessNonRatWithSomeFullPolyknot,
-                    bProcessUniformNonRat=bProcessUniformNonRat,
-                    bProcessBezierNonRat=bProcessBezierNonRat,
-                    bProcessOtherNonRat=bProcessOtherNonRat,
-                    bDebug=bDebug,
-                    )
+                rgPolyCrv0=rgCrv0,
+                fDevTol=calc_fDevTol,
+                iDegree=calc_iDegree,
+                iMinCpCt=calc_iMinCpCt,
+                iMaxCpCt=calc_iMaxCpCt,
+                iPreserveEndG=iPreserveEndG,
+                bFurtherTranslateCps=bFurtherTranslateCps,
+                filterSettings=filterSettings,
+                bDebug=bDebug,
+                )
             rgCrv_Res, devs_Pass, devs_Fail, sLogs = rc
             sFails.extend(sLogs)
             if rgCrv_Res is None:
@@ -1521,15 +1488,15 @@ def processCurves(curvesAndEdges0, **kwargs):
                 fTols_needed.extend(devs_Fail)
             sSummary = None
         else:
+            # Not Polycurve and process segments individually.
             rgCrv_Res, dev, sLog = rebuildCurve(
                 rgCurve0=rgCrv0,
                 fDevTol=fDevTol,
                 iDegree=iDegree,
-                bPreserveEndG1=bPreserveEndG1,
-                bPreserveEndG2=bPreserveEndG2,
-                bFurtherTranslateCps=bFurtherTranslateCps,
                 iMinCpCt=iMinCpCt,
                 iMaxCpCt=iMaxCpCt,
+                iPreserveEndG=iPreserveEndG,
+                bFurtherTranslateCps=bFurtherTranslateCps,
                 bDebug=bDebug,
                 )
 
@@ -1642,55 +1609,82 @@ def main():
 
     gCrvs0_Preselected = getPreselectedCurves()
 
-    dialog = FitRebuildCurveDialog()
-    if not dialog.ShowModal(Rhino.UI.RhinoEtoApp.MainWindow): return
-
 
     if gCrvs0_Preselected:
         objrefs = None
     else:
-        rc = getInput()
-        if rc is None: return
-        objrefs = rc[0]
+        rv = getInput()
+        if rv is None: return
+        objrefs = rv
 
-    
-    if Opts.values['bDebug']:
-        pass
-    else:
-        sc.doc.Views.RedrawEnabled = False
-    
-    sc.doc.Objects.UnselectAll()
-    
-    gCrvs0_Replaced, gNurbsCrvs1 = None, None
+    bUseDialog = Opts.values['bUseDialog']
+    if bUseDialog:
+        dialog = FitRebuildCurveDialog()
+        if not dialog.ShowModal(Rhino.UI.RhinoEtoApp.MainWindow): return
 
-    if Opts.values['bLimitDegree']:
-        if Opts.values['bMatchDegree']:
-            iDegree = -1
-        else:
-            iDegree = Opts.values['iDegree']
+    fDevTol = Opts.values['fDevTol'] if Opts.values['bLimitCrvDev'] else -1.0
+    if not Opts.values['bLimitDegree']:
+        iDegree = 0
+    elif Opts.values['bMatchDegree']:
+        iDegree = -1
     else:
-        iDegree = None
+        iDegree = Opts.values['iDegree']
 
     if Opts.values['bLimitMinCpCt']:
         iMinCpCt = Opts.values['iMinCpCt']
     else:
-        iMinCpCt = None
+        iMinCpCt = -1
 
-    if Opts.values['bLimitMaxCpCt']:
-        if Opts.values['bMatchMaxCpCt']:
-            iMaxCpCt = -1
-        else:
-            iMaxCpCt = Opts.values['iMaxCpCt']
+    if not Opts.values['bLimitMaxCpCt']:
+        iMaxCpCt = 0
+    elif Opts.values['bMatchMaxCpCt']:
+        iMaxCpCt = -1
     else:
-        iMaxCpCt = None
+        iMaxCpCt = Opts.values['iMaxCpCt']
+
+    iPreserveEndG = Opts.values['iPreserveEndG']
+    sEval = 'iPreserveEndG'; print(sEval,':',eval(sEval))
+    bFurtherTranslateCps = Opts.values['bFurtherTranslateCps']
+
+    filterSettings = FilterSettings()
+
+    filterSettings.bProcessPolyCrv = Opts.values['bProcessPolyCrv']
+    filterSettings.bProcessPolyCrvSegs = Opts.values['bProcessPolyCrvSegs']
+    filterSettings.bProcessLinear = Opts.values['bProcessLinear']
+    filterSettings.bProcessPolyline = Opts.values['bProcessPolyline']
+    filterSettings.bProcessArc = Opts.values['bProcessArc']
+    filterSettings.bProcessEllipse = Opts.values['bProcessEllipse']
+    filterSettings.bProcessOtherRat = Opts.values['bProcessOtherRat']
+    filterSettings.bProcessNonRatWithInternalPolyknot = Opts.values['bProcessNonRatWithInternalPolyknot']
+    filterSettings.bProcessNonRatWithSomeFullPolyknot = Opts.values['bProcessNonRatWithSomeFullPolyknot']
+    filterSettings.bProcessUniformNonRat = Opts.values['bProcessUniformNonRat']
+    filterSettings.bProcessBezierNonRat = Opts.values['bProcessBezierNonRat']
+    filterSettings.bProcessOtherNonRat = Opts.values['bProcessOtherNonRat']
+
+    bReplace = Opts.values['bReplace']
+    bEcho = Opts.values['bEcho']
+    bDebug = Opts.values['bDebug']
+
+    if not bDebug: sc.doc.Views.RedrawEnabled = False
+
+    sc.doc.Objects.UnselectAll()
+    
+    gCrvs0_Replaced, gNurbsCrvs1 = None, None
 
     rc = processCurves(
         curvesAndEdges0=gCrvs0_Preselected if gCrvs0_Preselected else objrefs,
-        fDevTol=Opts.values['fDevTol'],
-        iDegree=iDegree,
-        iMinCpCt=iMinCpCt,
-        iMaxCpCt=iMaxCpCt,
+        fDevTol=fDevTol,
+        iDegree = iDegree,
+        iMinCpCt = iMinCpCt,
+        iMaxCpCt = iMaxCpCt,
+        iPreserveEndG = iPreserveEndG,
+        bFurtherTranslateCps = bFurtherTranslateCps,
+        filterSettings=filterSettings,
+        bReplace = bReplace,
+        bEcho = bEcho,
+        bDebug=bDebug,
         )
+
     if rc is not None:
         gCrvs0_Replaced, gNurbsCrvs1 = rc
     

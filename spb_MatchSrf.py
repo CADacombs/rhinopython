@@ -54,7 +54,7 @@ Send any questions, comments, or script development service needs to @spb on the
 260415: Bug fix in G1 matching routine: When matching to a reference with parallel
         CP spans, the span distances will now sometimes be adjusted, such as when
         the G2 matching is later implemented. A boolean parameter was added for this.
-260829: Bug fix: Now direction of Pushup'ed curve is corrected if reversed to reference curve in createTanSrfFromEdge.
+260830: Bug fix: Now direction of Pushup'ed curve is corrected if reversed to reference curve in createTanSrfFromEdge.
 """
 
 import Rhino
@@ -1282,7 +1282,7 @@ def pivot_M_about_C_onto_CR(R, C, M):
 
 
 def get_all_parallel_G01_vector(ns, side):
-    pts = [cp.Location for cp in yns.Points]
+    pts = [cp.Location for cp in ns.Points]
     idxPts = {} # Key is tuple(str('M' or 'R'), int(G continuity))
     idxs_G0 = getPtRowIndicesPerG(ns, side, iG=0)
     idxs_G1 = getPtRowIndicesPerG(ns, side, iG=1)

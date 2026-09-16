@@ -6,8 +6,9 @@ Tangent and Curvature matches (at least with Average disabled)
 For Tangent matches, NurbsCurve.SetEndCondition results are identical.
 For Curvature matches, identical results were not found but were closer when using
 the unitized tangent vector than when using the 1st derivative vector of Curve B directly.
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums ( https://discourse.mcneel.com/ ).
 """
-
 """
 190708-25: Created.
 190824: Now, a unit vector is used when target continuity is G1.  Otherwise, SetEndCondition may move the control point quite far from the closest possible position.
@@ -29,8 +30,12 @@ the unitized tangent vector than when using the 1st derivative vector of Curve B
 201122, 210908: Import-related updates.
 211029: Simplified curve to modify option from 3 to 2 choices.  Added fAngleTol_Deg.
 220328, 0425, 1122: Import-related update.
+230721: Bug fix.
+230723: Bug fix.  Now, entering '0', '1', or '2' will set continuity target to 'G0', 'G1', or 'G2', respectively.
+260915: Import-related update.
 
 TODO:
+When the endpoints intially do not match, try Curve.Extend first since this may result in less deviation.
 Try to adjust for G1 to same G0G1 length as original curve.  Check its deviation against SetEndCondition result.
 Determine whether to keep C1 continuity (and add C2).
     If so, one scenario is to set all curve domains to [0.0,1.0] before matching.
@@ -46,7 +51,7 @@ from System import Guid
 from System.Drawing import Color
 
 import spb_Crv_continuityBetween2
-import spb_Crv_fitRebuild
+import spb_RebuildCrvUniform
 import spb_Crv_inflections
 import spb_Crv_radiusMinima
 import spb_NurbsCrv_maximizeMinimumRadius
@@ -135,7 +140,8 @@ class Opts():
 
     key = 'bModOnly1stPicked'; keys.append(key)
     values[key] = True
-    riOpts[key] = ri.Custom.OptionToggle(initialValue=values[key], offValue='No', onValue='Yes')
+    names[key] = 'ModifyCrv'
+    riOpts[key] = ri.Custom.OptionToggle(initialValue=values[key], offValue='EitherOrBoth', onValue='Only1stPicked')
     riAddOpts[key] = addOptionToggle(key, names, riOpts)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -278,7 +284,15 @@ def getInput():
             Opts.riOpts[key].CurrentValue = Opts.riOpts[key].InitialValue
 
         if res == ri.GetResult.Number:
-            Opts.riOpts['fDevTol'].CurrentValue = go.Number()
+            number = go.Number()
+            if number == 0.0:
+                Opts.values['iContinuity'] = sOpts_Continuity.index('G0')
+            elif number == 1.0:
+                Opts.values['iContinuity'] = sOpts_Continuity.index('G1')
+            elif number == 2.0:
+                Opts.values['iContinuity'] = sOpts_Continuity.index('G2')
+            else:
+                Opts.riOpts['fDevTol'].CurrentValue = number
         elif res == ri.GetResult.Option:
             if go.Option().Index == idxs_Opts['iContinuity']:
                 Opts.values['iContinuity'] = (
@@ -457,16 +471,22 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                 if rc:
                     return rc
             else:
-                rc = spb_Crv_fitRebuild.rebuildCurve(
-                        crv,
-                        fDevTol=0.5*fDevTol,
-                        iDegree=degree,
-                        bPreserveEndTans=True,
-                        bFurtherTranslateCps=True,
-                        iMinCpCt=None,
-                        iMaxCpCt=40,
-                        bDebug=False,
-                        )
+                if degree >= 5:
+                    iPreserveEndG = 2
+                elif degree >= 3:
+                    iPreserveEndG = 1
+                else:
+                    iPreserveEndG = 0
+                rc = spb_RebuildCrvUniform.rebuildCurve(
+                    crv,
+                    fDevTol=0.5*fDevTol,
+                    iDegree=degree,
+                    iPreserveEndG=iPreserveEndG,
+                    bFurtherTranslateCps=True,
+                    iMinCpCt=None,
+                    iMaxCpCt=40,
+                    bDebug=False,
+                    )
                 if rc[0] is not None:
                     return rc[0]
 
@@ -1160,7 +1180,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
     def createNcWithLessDevResult(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B):
         """
         Returns on success:
-            (NurbsCurve, None), (NurbsCurve, None), or (None, NurbsCurve)
+            (NurbsCurve, NurbsCurve), (NurbsCurve, None), or (None, NurbsCurve)
         Returns on fail: None
         """
 
@@ -1217,50 +1237,43 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
         # There are 2 or 3 sets of results.
 
-        devA_Alone = getMaximumDeviation(c0_A, ncA_Alone)
-        devB_Alone = getMaximumDeviation(c0_B, ncB_Alone)
-        devA_Both = getMaximumDeviation(c0_A, ncs_Both[0])
-        devB_Both = getMaximumDeviation(c0_B, ncs_Both[1])
-        devs_Both = (devA_Both, devB_Both) if devA_Both and devB_Both else None
+        devA_Alone = getMaximumDeviation(c0_A, ncA_Alone) if ncA_Alone else None
+        devB_Alone = getMaximumDeviation(c0_B, ncB_Alone) if ncB_Alone else None
+        if ncs_Both:
+            devA_Both = getMaximumDeviation(c0_A, ncs_Both[0])
+            devB_Both = getMaximumDeviation(c0_B, ncs_Both[1])
+            devs_Both_Max = max(devA_Both, devB_Both)
+        else:
+            devs_Both_Max = None
 
-        if ncA_Alone and (devA_Alone < devB_Alone) and (devA_Alone < max(devs_Both)):
-            if bDebug:
-                s  = "Curve created for A has less deviation ({})".format(
-                        formatDistance(devA_Alone))
-                s += " than that for B ({}).".format(
-                        formatDistance(devB_Alone))
-                print s
-            ncB_Alone.Dispose()
+        devs = [devA_Alone, devB_Alone, devs_Both_Max]
+
+        if all(_ is None for _ in devs):
+            return
+
+        dev_min = min(_ for _ in devs if _ is not None)
+
+        if bDebug:
+            sEval = "devA_Alone"; print("{}: {}".format(sEval, eval(sEval)))
+            sEval = "devB_Alone"; print("{}: {}".format(sEval, eval(sEval)))
+            sEval = "devs_Both_Max"; print("{}: {}".format(sEval, eval(sEval)))
+
+        idx_dev_min = devs.index(dev_min)
+
+        if idx_dev_min == 0:
+            if ncB_Alone: ncB_Alone.Dispose()
+            if ncs_Both: ncs_Both[0].Dispose(), ncs_Both[1].Dispose()
             return ncA_Alone, None
 
-        if ncB_Alone and (devB_Alone < devA_Alone) and (devB_Alone < max(devs_Both)):
-            if bDebug:
-                s  = "Curve created for B has less deviation ({})".format(
-                        formatDistance(devB_Alone))
-                s += " than that for A ({}).".format(
-                        formatDistance(devA_Alone))
-                print s
-            ncA_Alone.Dispose()
+        if idx_dev_min == 1:
+            if ncA_Alone: ncA_Alone.Dispose()
+            if ncs_Both: ncs_Both[0].Dispose(), ncs_Both[1].Dispose()
             return None, ncB_Alone
 
-        if ncs_Both and (max(devs_Both) < devA_Alone) and (max(devs_Both) < devB_Alone):
-            if bDebug:
-                s  = "Curve created for both has less deviation ({})".format(
-                        formatDistance(max(devs_Both)))
-                s += " than that for either alone ({} and {}).".format(
-                        formatDistance(devA_Alone), formatDistance(devB_Alone))
-                print s
-            if ncA_Alone: ncA_Alone.Dispose()
+        if idx_dev_min == 2:
+            if ncA_Alone: ncB_Alone.Dispose()
             if ncB_Alone: ncB_Alone.Dispose()
             return ncs_Both
-
-
-            #            s  = "Created curves have the same deviation ({}).".format(
-            #                    formatDistance(devA_Alone))
-            #            s += "  Will modify A."
-            #            ncB_Alone.Dispose()
-            #            return ncA_Alone, None
-
 
 
     if bSkipIfAlreadyAtContinuity:

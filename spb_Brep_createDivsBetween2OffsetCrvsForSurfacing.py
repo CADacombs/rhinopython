@@ -1,9 +1,12 @@
 """
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums ( https://discourse.mcneel.com/ ).
 """
 
 """
 200402-04: Created, starting with other scripts.
 220328: Import-related update.
+260915: Import-related update.
 """
 
 import Rhino
@@ -15,7 +18,7 @@ import scriptcontext as sc
 from System import Enum
 from System import Guid
 
-import spb_Crv_fitRebuild
+import spb_RebuildCrvUniform
 
 
 sBrepMethods = 'Loft2Crvs', 'LoftSectionLines', 'Sweep2A', 'Sweep2B', 'Network'
@@ -213,11 +216,11 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
             if not bRebuild:
                 rgCrvs_SplitPoly = [rgCrv_Joined.Duplicate()]
             else:
-                rc = spb_Crv_fitRebuild.rebuildCurve(
+                rc = spb_RebuildCrvUniform.rebuildCurve(
                     rgCrv_Joined,
                     0.25*sc.doc.ModelAbsoluteTolerance,
                     iDegree=3,
-                    bPreserveEndTans=True,
+                    iPreserveEndG=1,
                     bFurtherTranslateCps=False,
                     iMinCpCt=None,
                     iMaxCpCt=50,
@@ -235,11 +238,11 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
                     else:
                         rgCrvs_SplitPoly = []
                         for c in rgCrvs_Exploded:
-                            rc = spb_Crv_fitRebuild.rebuildCurve(
+                            rc = spb_RebuildCrvUniform.rebuildCurve(
                                 c,
                                 0.25*sc.doc.ModelAbsoluteTolerance,
                                 iDegree=3,
-                                bPreserveEndTans=True,
+                                iPreserveEndG=1,
                                 bFurtherTranslateCps=False,
                                 iMinCpCt=None,
                                 iMaxCpCt=50,
@@ -251,11 +254,11 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
                 if not bRebuild:
                     rgCrvs_SplitPoly = [rgCrv_Joined.Duplicate()]
                 else:
-                    rc = spb_Crv_fitRebuild.rebuildCurve(
+                    rc = spb_RebuildCrvUniform.rebuildCurve(
                         rgCrv_Joined,
                         0.25*sc.doc.ModelAbsoluteTolerance,
                         iDegree=3,
-                        bPreserveEndTans=True,
+                        iPreserveEndG=1,
                         bFurtherTranslateCps=False,
                         iMinCpCt=None,
                         iMaxCpCt=50,
@@ -269,11 +272,11 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
             else:
                 rgCrvs_Final = []
                 for rgCrv_SplitPoly in rgCrvs_SplitPoly:
-                    rc = spb_Crv_fitRebuild.rebuildCurve(
+                    rc = spb_RebuildCrvUniform.rebuildCurve(
                         rgCrv_SplitPoly,
                         0.25*sc.doc.ModelAbsoluteTolerance,
                         iDegree=3,
-                        bPreserveEndTans=True,
+                        iPreserveEndG=1,
                         bFurtherTranslateCps=False,
                         iMinCpCt=None,
                         iMaxCpCt=50,
@@ -293,11 +296,11 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
                     else:
                         rgCrvs_Final = []
                         for rgCrv_SplitAtKnots in rgCrvs_SplitAtKnots:
-                            rc = spb_Crv_fitRebuild.rebuildCurve(
+                            rc = spb_RebuildCrvUniform.rebuildCurve(
                                 rgCrv_SplitAtKnots,
                                 0.25*sc.doc.ModelAbsoluteTolerance,
                                 iDegree=3,
-                                bPreserveEndTans=True,
+                                iPreserveEndG=1,
                                 bFurtherTranslateCps=False,
                                 iMinCpCt=None,
                                 iMaxCpCt=50,

@@ -1,7 +1,10 @@
-"""
-"""
-
+#! python 2
 from __future__ import absolute_import, division, print_function, unicode_literals
+
+"""
+Send any questions, comments, or script development service needs to
+@spb on the McNeel Forums ( https://discourse.mcneel.com/ ).
+"""
 
 """
 190417: This script started as a split from another.
@@ -10,6 +13,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 210316: Bug fix for BrepEdge support.
 220328: Import-related update.
 221221-22: Import-related update.  Removed an option.  Refactored.
+260915-16: Import-related update.
 """
 
 import Rhino
@@ -19,7 +23,7 @@ import Rhino.Input as ri
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
-import spb_Crv_fitRebuild
+import spb_RebuildCrvUniform
 
 
 class Opts:
@@ -228,11 +232,11 @@ def processCurves(rgCrvs_In, **kwargs):#fDevTol=None, iDegree=None, bPreserveEnd
     devs1 = []
 
     for i, nc0 in enumerate(rgCrvs_In):
-        nc1, dev1, sLog = spb_Crv_fitRebuild.rebuildCurve(
+        nc1, dev1, sLog = spb_RebuildCrvUniform.findRebuild(
                 rgCurve0=nc0,
                 fDevTol=fDevTol,
                 iDegree=iDegree,
-                bPreserveEndG1=bPreserveEndG1,
+                iPreserveEndG=1 if bPreserveEndG1 else 0,
                 bFurtherTranslateCps=False,
                 iMinCpCt=None,
                 iMaxCpCt=iMaxCpCt,

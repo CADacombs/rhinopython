@@ -1,6 +1,26 @@
-"""
-"""
+#! python 2
+from __future__ import absolute_import, division, print_function, unicode_literals
 
+"""
+Alternative to _ArrayCrv, where
+    The objects to array
+        May yaw,
+        Roll only a fixed or variable amount,
+        Never pitch.
+        See https://docs.mcneel.com/rhino/7/help/en-us/index.htm#commands/arraycrv.htm
+    Array positions can be any combination of points at
+        Grevilles,
+        Knots,
+        Divisions along path.
+    Object to array may be rotated 
+
+Set objects to array on the World XY plane where the
+    Origin will be on the sweep path,
+    X axis will be the axis that remains parallel to the orientation plane,
+    Y axis will be the axis normal to the orientation plane
+
+
+"""
 """
 190530-0531: Created.
 190602: Replaced Sweep1 creation with Loft.
@@ -13,6 +33,8 @@
 191020: Import-related update.
 191126: Bug fix.
 200115-200121, 220328: Import-related updates.
+220609: Replaced Loft with Sweep1 for Brep creation.
+260915-16: Import-related update.
 
 TODO: Finish creating smooth taper for variable taper angles.
 """
@@ -23,102 +45,78 @@ import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
 
-from System import Enum
-from System import Guid
+from System import Enum, Guid
 from System.Drawing import Color
 
-import spb_Crv_fitRebuild
-
-
-sOpts = (
-        'bRebuildPath',
-        'fTaper_Start_Deg',
-        'bVariableTaper',
-        'fTaper_End_Deg',
-        'bTaperChangePerCrvParam',
-        'bCPlane',
-        'pt_Base',
-        'bAtGrevilles',
-        'bAtKnots',
-        'bAtEqualDivisions',
-        'iDivisionCt',
-        'bSplitPolyCrvToSegs',
-        'bSplitPathsAtKnots',
-        'bAddArrayedObjects',
-        'bLoftCrvs',
-        'iLoftType',
-        'bEcho',
-        'bDebug',
-)
+try: import spb_RebuildCrvUniform
+except: spb_RebuildCrvUniform = None
 
 
 class Opts():
-    
+
     keys = []
     values = {}
     names = {}
     riOpts = {}
+    listValues = {}
     stickyKeys = {}
-    
-    for key in sOpts:
-        keys.append(key)
-        names[key] = key[1:] # Overwrite as wanted in the following.
-    
-    key = 'bRebuildPath'
+
+
+    key = 'bRebuildPath'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'fTaper_Start_Deg'
+
+    key = 'fTaper_Start_Deg'; keys.append(key)
     values[key] = 0.0
     names[key] = 'TaperAngle'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bVariableTaper'
+
+    key = 'bVariableTaper'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'fTaper_End_Deg'
+    key = 'fTaper_End_Deg'; keys.append(key)
     values[key] = 45.0
     names[key] = 'EndTaperAngle'
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bTaperChangePerCrvParam'
+    key = 'bTaperChangePerCrvParam'; keys.append(key)
     values[key] = False
     names[key] = 'TaperChangePerCrv'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'Length', 'Param')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bCPlane'
+    key = 'bCPlane'; keys.append(key)
     values[key] = False
     names[key] = 'PlanView'
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'World', 'CPlane')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'pt_Base'
+    key = 'pt_Base'; keys.append(key)
     names[key] = 'BasePoint'
     values[key] = rg.Point3d(0.0,0.0,0.0)
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bAtGrevilles'
+    key = 'bAtGrevilles'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bAtKnots'
+    key = 'bAtKnots'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bAtEqualDivisions'
+    key = 'bAtEqualDivisions'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'iDivisionCt'
+    key = 'iDivisionCt'; keys.append(key)
     values[key] = 2
     riOpts[key] = ri.Custom.OptionInteger(
             initialValue=values[key],
@@ -126,68 +124,106 @@ class Opts():
             limit=1)
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bSplitPolyCrvToSegs'
+    key = 'bSplitPolyCrvToSegs'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bSplitPathsAtKnots'
+    key = 'bSplitPathsAtKnots'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bAddArrayedObjects'
+    key = 'bAddArrayedObjects'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'bLoftCrvs'
-    values[key] = True
+    key = 'bSweepCrvs'; keys.append(key)
+    values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
     
-    key = 'iLoftType'
+    key = 'iSweepMiter'; keys.append(key)
     values[key] = 0
+    listValues[key] = Enum.GetNames(rg.SweepMiter)
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bEcho'
+
+    key = 'fTol'; keys.append(key)
+    values[key] = sc.doc.ModelAbsoluteTolerance
+    riOpts[key] = ri.Custom.OptionDouble(initialValue=values[key])
+    stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
+
+    key = 'bEcho'; keys.append(key)
     values[key] = True
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
-    key = 'bDebug'
+
+    key = 'bDebug'; keys.append(key)
     values[key] = False
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
-    
+
+
+    for key in keys:
+        if key not in names:
+            names[key] = key[1:]
+
+
     # Load sticky.
     for key in stickyKeys:
         if stickyKeys[key] in sc.sticky:
             if key in riOpts:
                 values[key] = riOpts[key].CurrentValue = sc.sticky[stickyKeys[key]]
             else:
-                # For OptionList.
                 values[key] = sc.sticky[stickyKeys[key]]
-    
-    
+
+
     @classmethod
-    def setValues(cls):
-        for key in sOpts:
-            if key in cls.riOpts:
-                cls.values[key] = cls.riOpts[key].CurrentValue
-    
-    
+    def addOption(cls, go, key):
+
+        idxOpt = None
+
+        if key in cls.riOpts:
+            if key[0] == 'b':
+                idxOpt = go.AddOptionToggle(
+                        cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'f':
+                idxOpt = go.AddOptionDouble(
+                    cls.names[key], cls.riOpts[key])[0]
+            elif key[0] == 'i':
+                idxOpt = go.AddOptionInteger(
+                    englishName=cls.names[key], intValue=cls.riOpts[key])[0]
+        elif key in cls.listValues:
+            idxOpt = go.AddOptionList(
+                englishOptionName=cls.names[key],
+                listValues=cls.listValues[key],
+                listCurrentIndex=cls.values[key])
+        else:
+            print("{} is not a valid key in Opts.".format(key))
+
+        return idxOpt
+
+
     @classmethod
-    def saveSticky(cls):
-        for key in cls.stickyKeys:
-            if key in cls.riOpts:
-                sc.sticky[cls.stickyKeys[key]] = cls.riOpts[key].CurrentValue
-            else:
-                # For OptionList.
+    def setValue(cls, key, idxList=None):
+
+        if key == 'fTol':
+            if cls.riOpts[key].CurrentValue <= 2**-52:
+                cls.values[key] = cls.riOpts[key].CurrentValue = cls.riOpts[key].InitialValue
                 sc.sticky[cls.stickyKeys[key]] = cls.values[key]
+                return
+
+        if key in cls.riOpts:
+            cls.values[key] = cls.riOpts[key].CurrentValue
+        elif key in cls.listValues:
+            cls.values[key] = idxList
+        else:
+            return
+        sc.sticky[cls.stickyKeys[key]] = cls.values[key]
 
 
-def getInput(sCmdPromp, rdObjectType):
+def getInput(sCmdPromp, rdObjectType, bAppendSelection=False):
     """
     Get objects with optional input.
     
@@ -203,53 +239,61 @@ def getInput(sCmdPromp, rdObjectType):
     go.GeometryFilter = rdObjectType
 
     go.AcceptNumber(True, acceptZero=False)
-    
+
     idxs_Opts = {}
 
-    go.AddOptionToggle(Opts.names['bRebuildPath'], Opts.riOpts['bRebuildPath'])
-    go.AddOptionDouble(Opts.names['fTaper_Start_Deg'], Opts.riOpts['fTaper_Start_Deg'])
-    go.AddOptionToggle(Opts.names['bVariableTaper'], Opts.riOpts['bVariableTaper'])
+    def addOption(key): idxs_Opts[key] = Opts.addOption(go, key)
+
+    if spb_RebuildCrvUniform:
+        addOption('bRebuildPath')
+    addOption('fTaper_Start_Deg')
+    addOption('bVariableTaper')
     if Opts.values['bVariableTaper']:
-        go.AddOptionDouble(Opts.names['fTaper_End_Deg'], Opts.riOpts['fTaper_End_Deg'])
+        addOption('fTaper_End_Deg')
         idxs_Opts['SwapAngles'] = go.AddOption('SwapAngles')
-        go.AddOptionToggle(Opts.names['bTaperChangePerCrvParam'], Opts.riOpts['bTaperChangePerCrvParam'])
+        addOption('bTaperChangePerCrvParam')
     idxs_Opts['FlipAngle'] = go.AddOption('FlipAngle')
     idxs_Opts['FlipDir'] = go.AddOption('FlipDir')
     idxs_Opts['pt_Base'] = go.AddOption(Opts.names['pt_Base'])
-    go.AddOptionToggle(Opts.names['bCPlane'], Opts.riOpts['bCPlane'])
-    go.AddOptionToggle(Opts.names['bAtGrevilles'], Opts.riOpts['bAtGrevilles'])
-    go.AddOptionToggle(Opts.names['bAtKnots'], Opts.riOpts['bAtKnots'])
-    go.AddOptionToggle(Opts.names['bAtEqualDivisions'], Opts.riOpts['bAtEqualDivisions'])
+    addOption('bCPlane')
+    addOption('bAtGrevilles')
+    addOption('bAtKnots')
+    addOption('bAtEqualDivisions')
     if Opts.values['bAtEqualDivisions']:
-        go.AddOptionInteger(Opts.names['iDivisionCt'], Opts.riOpts['iDivisionCt'])
-    go.AddOptionToggle(Opts.names['bSplitPolyCrvToSegs'], Opts.riOpts['bSplitPolyCrvToSegs'])
-    go.AddOptionToggle(Opts.names['bSplitPathsAtKnots'], Opts.riOpts['bSplitPathsAtKnots'])
-    go.AddOptionToggle(Opts.names['bLoftCrvs'], Opts.riOpts['bLoftCrvs'])
-    if Opts.values['bLoftCrvs']:
-        idxs_Opts['iLoftType'] = go.AddOptionList(
-                englishOptionName=Opts.names['iLoftType'],
-                listValues=Enum.GetNames(rg.LoftType),
-                listCurrentIndex=Opts.values['iLoftType'])
-    if Opts.values['bLoftCrvs']:
-        go.AddOptionToggle(Opts.names['bAddArrayedObjects'], Opts.riOpts['bAddArrayedObjects'])
-    go.AddOptionToggle(Opts.names['bEcho'], Opts.riOpts['bEcho'])
-    go.AddOptionToggle(Opts.names['bDebug'], Opts.riOpts['bDebug'])
-        
+        addOption('iDivisionCt')
+    addOption('bSplitPolyCrvToSegs')
+    addOption('bSplitPathsAtKnots')
+    addOption('bSweepCrvs')
+    if Opts.values['bSweepCrvs']:
+        addOption('iSweepMiter')
+        addOption('fTol')
+        addOption('bAddArrayedObjects')
+    addOption('bEcho')
+    addOption('bDebug')
+
+
     go.AlreadySelectedObjectSelect = True # So objects can be reselected after being unselected in same go.GetMultiple.
     go.DeselectAllBeforePostSelect = False # So objects won't be deselected on repeats of While loop.
     go.EnableClearObjectsOnEntry(False) # Do not clear objects in go on repeats of While loop.
     go.EnableUnselectObjectsOnExit(False) # Do not unselect object when an option selected, a number is entered, etc.
 
     res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
-        
-    if go.ObjectsWerePreselected:
+
+    if not go.ObjectsWerePreselected:
         objrefs = None
         iCt_Crvs_PreSelctd = 0
     else:
+        # Remember, we are here because res == ri.GetResult.Object
+        # Objects were preselected, so either
+        # 1. Selection of objects to array.
+        # 2. Re-selection of path.
         if rdObjectType == rd.ObjectType.AnyObject:
             objrefs = go.Objects()
             go.Dispose()
-            return tuple([objrefs] + [Opts.values[key] for key in sOpts])
+            return objrefs
+        
+        # Re-selecting patch.
+        objrefs = None
 
         iCt_Crvs_PreSelctd = go.ObjectCount
         objrefs = go.Objects()
@@ -264,11 +308,14 @@ def getInput(sCmdPromp, rdObjectType):
             else:
                 # Curves other than BrepEdges.
                 gCrvs_PreSelctd.append(objref.ObjectId)
-            rgCrv.Dispose()
 
         go.EnablePreSelect(False, ignoreUnacceptablePreselectedObjects=True)
         res = go.GetMultiple(minimumNumber=1, maximumNumber=0)
-    
+
+    if res == ri.GetResult.Cancel:
+        go.Dispose()
+        return
+
     if res == ri.GetResult.Object:
         if iCt_Crvs_PreSelctd == go.ObjectCount:
             def wasThereChangeInObjectsSelected(gCrvs_PreSelctd, gBreps_PreSelctd, idxs_Edges_PerBrep):
@@ -302,11 +349,9 @@ def getInput(sCmdPromp, rdObjectType):
                 return False
         objrefs = go.Objects()
         go.Dispose()
-        return tuple([objrefs] + [Opts.values[key] for key in sOpts])
-    elif res == ri.GetResult.Cancel:
-        go.Dispose()
-        return
-    elif res == ri.GetResult.Number:
+        return objrefs
+
+    if res == ri.GetResult.Number:
         Opts.riOpts['fTaper_Start_Deg'].CurrentValue = go.Number()
     elif Opts.values['bVariableTaper'] and go.OptionIndex() == idxs_Opts['SwapAngles']:
         Opts.riOpts['fTaper_Start_Deg'].CurrentValue, Opts.riOpts['fTaper_End_Deg'].CurrentValue = (
@@ -338,10 +383,12 @@ def getInput(sCmdPromp, rdObjectType):
         if cmdres == Rhino.Commands.Result.Success:
             Opts.values['pt_Base'] = pt
 
-    Opts.setValues()
-    Opts.saveSticky()
-    
-    return tuple([objrefs] + [Opts.values[key] for key in sOpts])
+    for key in idxs_Opts:
+        if go.Option().Index == idxs_Opts[key]:
+            Opts.setValue(key, go.Option().CurrentListOptionIndex)
+            break
+
+    return objrefs
 
 
 def prepareCurves(rgCrvs0, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPathsAtKnots=False):
@@ -366,14 +413,14 @@ def prepareCurves(rgCrvs0, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
             if not bRebuild:
                 rgCrvs_SplitPoly = [rgCrv_Joined.Duplicate()]
             else:
-                rc = spb_Crv_fitRebuild.rebuildCurve(
+                rc = spb_RebuildCrvUniform.findRebuild(
                     rgCrv_Joined,
                     0.1*sc.doc.ModelAbsoluteTolerance,
                     iDegree=3,
-                    bPreserveEndTans=True,
-                    bFurtherTranslateCps=False,
                     iMinCpCt=None,
                     iMaxCpCt=50,
+                    iPreserveEndG=1,
+                    bFurtherTranslateCps=False,
                     bDebug=False,
                     )
                 rgCrvs_SplitPoly = [rgCrv_Joined.Duplicate()] if rc[0] is None else [rc[0]]
@@ -387,14 +434,14 @@ def prepareCurves(rgCrvs0, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
                     else:
                         rgCrvs_SplitPoly = []
                         for c in rgCrvs_Exploded:
-                            rc = spb_Crv_fitRebuild.rebuildCurve(
+                            rc = spb_RebuildCrvUniform.findRebuild(
                                 c,
                                 0.1*sc.doc.ModelAbsoluteTolerance,
                                 iDegree=3,
-                                bPreserveEndTans=True,
-                                bFurtherTranslateCps=False,
                                 iMinCpCt=None,
                                 iMaxCpCt=50,
+                                iPreserveEndG=1,
+                                bFurtherTranslateCps=False,
                                 bDebug=False,
                                 )
                             rgCrvs_SplitPoly.append(c if rc[0] is None else rc[0])
@@ -403,14 +450,14 @@ def prepareCurves(rgCrvs0, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
                 if not bRebuild:
                     rgCrvs_SplitPoly = [rgCrv_Joined.Duplicate()]
                 else:
-                    rc = spb_Crv_fitRebuild.rebuildCurve(
+                    rc = spb_RebuildCrvUniform.findRebuild(
                         rgCrv_Joined,
                         0.1*sc.doc.ModelAbsoluteTolerance,
                         iDegree=3,
-                        bPreserveEndTans=True,
-                        bFurtherTranslateCps=False,
                         iMinCpCt=None,
                         iMaxCpCt=50,
+                        iPreserveEndG=1,
+                        bFurtherTranslateCps=False,
                         bDebug=False,
                         )
                     rgCrvs_SplitPoly = [rgCrv_Joined.Duplicate()] if rc[0] is None else [rc[0]]
@@ -421,14 +468,14 @@ def prepareCurves(rgCrvs0, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
             else:
                 rgCrvs_Final = []
                 for rgCrv_SplitPoly in rgCrvs_SplitPoly:
-                    rc = spb_Crv_fitRebuild.rebuildCurve(
+                    rc = spb_RebuildCrvUniform.findRebuild(
                         rgCrv_SplitPoly,
                         0.1*sc.doc.ModelAbsoluteTolerance,
                         iDegree=3,
-                        bPreserveEndTans=True,
-                        bFurtherTranslateCps=False,
                         iMinCpCt=None,
                         iMaxCpCt=50,
+                        iPreserveEndG=1,
+                        bFurtherTranslateCps=False,
                         bDebug=False,
                         )
                     rgCrvs_Final.append(rgCrv_SplitPoly.Duplicate() if rc[0] is None else rc[0])
@@ -445,14 +492,14 @@ def prepareCurves(rgCrvs0, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
                     else:
                         rgCrvs_Final = []
                         for rgCrv_SplitAtKnots in rgCrvs_SplitAtKnots:
-                            rc = spb_Crv_fitRebuild.rebuildCurve(
+                            rc = spb_RebuildCrvUniform.findRebuild(
                                 rgCrv_SplitAtKnots,
                                 0.1*sc.doc.ModelAbsoluteTolerance,
                                 iDegree=3,
-                                bPreserveEndTans=True,
-                                bFurtherTranslateCps=False,
                                 iMinCpCt=None,
                                 iMaxCpCt=50,
+                                iPreserveEndG=1,
+                                bFurtherTranslateCps=False,
                                 bDebug=False
                                 )
                             rgCrvs_Final.append(rgCrv_SplitAtKnots if rc[0] is None else rc[0])
@@ -473,7 +520,7 @@ def createArrayedGeometry(rgCrv_Path, rgObjs_ToArray, plane_Proj, fTaper_Start_D
 
     nc2_Path = rgCrv_Path.ToNurbsCurve()
     if nc2_Path is None:
-        print "NurbsCurve could not be calculated from curve."
+        print("NurbsCurve could not be calculated from curve.")
         return
     #sc.doc.Objects.AddCurve(nc2_Path)
         
@@ -498,7 +545,7 @@ def createArrayedGeometry(rgCrv_Path, rgObjs_ToArray, plane_Proj, fTaper_Start_D
         if rc: ts.extend(rc)
         
     if ts is None:
-        print "No parameters were obtained."
+        print("No parameters were obtained.")
         return
 
     ts = sorted(set(ts)) # Remove duplicates and sort.
@@ -506,14 +553,14 @@ def createArrayedGeometry(rgCrv_Path, rgObjs_ToArray, plane_Proj, fTaper_Start_D
     # Remove overlaps for closed (including periodic) curves.
     if nc2_Path.IsClosed:
         if bDebug:
-            print nc2_Path.Domain
-            print ts
+            print(nc2_Path.Domain)
+            print(ts)
         ts_WIP = []
         for t in ts:
             if t >= nc2_Path.Domain.T0 and t < nc2_Path.Domain.T1:
                 ts_WIP.append(t)
         ts = ts_WIP
-        if bDebug: print ts
+        if bDebug: print(ts)
 
     if fTaper_Start_Deg == fTaper_End_Deg:
         angle_Rad = Rhino.RhinoMath.ToRadians(fTaper_Start_Deg)
@@ -528,7 +575,7 @@ def createArrayedGeometry(rgCrv_Path, rgObjs_ToArray, plane_Proj, fTaper_Start_D
     for iT, t in enumerate(ts):
         bSuccess, frame = rgCrv_Path_Flattened.PerpendicularFrameAt(t=t)
         if not bSuccess:
-            print "Perpendicular frame could not be calculated."
+            print("Perpendicular frame could not be calculated.")
             continue
                 
         angle_StraightenFrame_Rad = rg.Vector3d.VectorAngle(frame.YAxis, plane_Proj.ZAxis, frame)
@@ -559,9 +606,9 @@ def createArrayedGeometry(rgCrv_Path, rgObjs_ToArray, plane_Proj, fTaper_Start_D
                             fTaper_End_Deg * length_to_t/length_Full)
 
 
-            if bDebug: print angle_Rad
+            if bDebug: print(angle_Rad)
         frame.Rotate(angle=angle_StraightenFrame_Rad+angle_Rad, axis=frame.ZAxis)
-                
+
         # Debug frame orientation.
         #                sc.doc.Objects.AddPoint(frame.PointAt(0.0,0.0,0.0))
         #                attr_Red = rd.ObjectAttributes()
@@ -592,48 +639,51 @@ def createArrayedGeometry(rgCrv_Path, rgObjs_ToArray, plane_Proj, fTaper_Start_D
     return rgObjs1_Arrayed_PerSection
 
 
-def createLofts(rgObjs_ToLoft_PerSect, iLoftType, bClosedLoft):
+def createSweeps(rgCrvs_ToSweep_PerSect, rgCrv_Path, plane_Proj, iSweepMiter=rg.SweepMiter.None, fTol=None):
 
-    rgBreps_Lofts = []
+    rgBs_Sweeps = []
 
-    for i in xrange(len(rgObjs_ToLoft_PerSect[0])):
-        if not isinstance(rgObjs_ToLoft_PerSect[0][i], rg.Curve):
+    for i in xrange(len(rgCrvs_ToSweep_PerSect[0])):
+        if not isinstance(rgCrvs_ToSweep_PerSect[0][i], rg.Curve):
             continue
 
-        rgCrvsToLoft = []
-        for rgObjs_ToLoft_1Sect in rgObjs_ToLoft_PerSect:
-            rgCrvsToLoft.append(rgObjs_ToLoft_1Sect[i])
+        rgCs_SameShape = []
+        for rgCs_ToSweep_1Sect in rgCrvs_ToSweep_PerSect:
+            rgCs_SameShape.append(rgCs_ToSweep_1Sect[i])
 
-        rc = rg.Brep.CreateFromLoft(
-                curves=rgCrvsToLoft,
-                start=rg.Point3d.Unset,
-                end=rg.Point3d.Unset,
-                loftType=Enum.ToObject(rg.LoftType, iLoftType),
-                closed=bClosedLoft)
-        if rc:
-            rgBreps_Lofts.extend(rc)
+        rc = rg.Brep.CreateFromSweep(
+            rail=rgCrv_Path, 
+            shapes=rgCs_SameShape,
+            startPoint=rg.Point3d.Unset,
+            endPoint=rg.Point3d.Unset,
+            frameType=rg.SweepFrame.Roadlike,
+            roadlikeNormal=plane_Proj.Normal,
+            closed=rgCrv_Path.IsClosed,
+            blendType=rg.SweepBlend.Local,
+            miterType=Enum.ToObject(rg.SweepMiter, iSweepMiter),
+            tolerance=fTol,
+            rebuildType=rg.SweepRebuild.None,
+            rebuildPointCount=0,
+            refitTolerance=0.0)
 
-    return rgBreps_Lofts
+        if not rc: continue
+
+        rgBs_Sweeps.extend(rc)
+
+    return rgBs_Sweeps
 
 
 def main():
     
     while True:
-        rc = getInput("Select objects to array", rd.ObjectType.AnyObject)
-        if rc is None: return
-        if rc[0] is None: continue
-        objrefs_ToArray = rc[0]
-        for key, value in zip(sOpts, rc[1:]):
-            exec("{} = {}".format(key, value))
+        objrefs_ToArray = getInput("Select objects to array", rd.ObjectType.AnyObject)
+        if not objrefs_ToArray: return
         break
 
     sc.doc.Objects.UnselectAll()
 
-    rc = getInput("Select path curves", rd.ObjectType.Curve)
-    if rc is None: return
-    objrefs_Paths = rc[0]
-    for key, value in zip(sOpts, rc[1:]):
-        exec("{} = {}".format(key, value))
+    objrefs_Paths = getInput("Select path curves", rd.ObjectType.Curve)
+    if not objrefs_Paths: return
 
     rgObjs0_ToArray = []
     bCrvInToArray = False
@@ -648,18 +698,61 @@ def main():
 
     while True:
 
+        bRebuildPath = Opts.values['bRebuildPath']
+        fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+        bVariableTaper = Opts.values['bVariableTaper']
+        fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+        bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
+        bCPlane = Opts.values['bCPlane']
+        pt_Base = Opts.values['pt_Base']
+        bAtGrevilles = Opts.values['bAtGrevilles']
+        bAtKnots = Opts.values['bAtKnots']
+        bAtEqualDivisions = Opts.values['bAtEqualDivisions']
+        iDivisionCt = Opts.values['iDivisionCt']
+        bSplitPolyCrvToSegs = Opts.values['bSplitPolyCrvToSegs']
+        bSplitPathsAtKnots = Opts.values['bSplitPathsAtKnots']
+        bAddArrayedObjects = Opts.values['bAddArrayedObjects']
+        bSweepCrvs = Opts.values['bSweepCrvs']
+        iSweepMiter = Opts.values['iSweepMiter']
+        fTol = Opts.values['fTol']
+        bEcho = Opts.values['bEcho']
+        bDebug = Opts.values['bDebug']
+
+
+
         while not (bAtGrevilles or bAtKnots or bAtEqualDivisions):
-            print "No path point sampling is enabled."
+            print("No path point sampling is enabled.")
             sc.doc.Views.Redraw()
-            rc = getInput("Select path curves", rd.ObjectType.Curve)
+            rc = getInput("Select path curves", rd.ObjectType.Curve, bAppendSelection=True)
             if rc is None or rc is False:
                 for o in rgObjs0_ToArray: o.Dispose()
                 for c in rgCrvs0_Path: c.Dispose()
                 return
-            objrefs_Paths = rc[0]
-            for key, value in zip(sOpts, rc[1:]):
-                exec("{} = {}".format(key, value))
-        
+
+            objrefs_Paths = rc
+
+            bRebuildPath = Opts.values['bRebuildPath']
+            fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+            bVariableTaper = Opts.values['bVariableTaper']
+            fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+            bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
+            bCPlane = Opts.values['bCPlane']
+            pt_Base = Opts.values['pt_Base']
+            bAtGrevilles = Opts.values['bAtGrevilles']
+            bAtKnots = Opts.values['bAtKnots']
+            bAtEqualDivisions = Opts.values['bAtEqualDivisions']
+            iDivisionCt = Opts.values['iDivisionCt']
+            bSplitPolyCrvToSegs = Opts.values['bSplitPolyCrvToSegs']
+            bSplitPathsAtKnots = Opts.values['bSplitPathsAtKnots']
+            bAddArrayedObjects = Opts.values['bAddArrayedObjects']
+            bSweepCrvs = Opts.values['bSweepCrvs']
+            iSweepMiter = Opts.values['iSweepMiter']
+            fTol = Opts.values['fTol']
+            bEcho = Opts.values['bEcho']
+            bDebug = Opts.values['bDebug']
+
+
+
         rgCrvs0_Path = []
         for objref_Path in objrefs_Paths:
             c = objref_Path.Curve()
@@ -667,10 +760,10 @@ def main():
 
         Rhino.RhinoApp.SetCommandPrompt("Preparing path curves ...")
         rc = prepareCurves(
-                rgCrvs0=rgCrvs0_Path,
-                bRebuild=bRebuildPath,
-                bSplitPolyCrvToSegs=bSplitPolyCrvToSegs,
-                bSplitPathsAtKnots=bSplitPathsAtKnots)
+            rgCrvs0=rgCrvs0_Path,
+            bRebuild=bRebuildPath if spb_RebuildCrvUniform else False,
+            bSplitPolyCrvToSegs=bSplitPolyCrvToSegs,
+            bSplitPathsAtKnots=bSplitPathsAtKnots)
         if not rc: return
         rgCrvs1_Path = rc
 
@@ -704,7 +797,7 @@ def main():
             if rc is None: continue
             rgObjs_Arrayed_PerSect_1PathSeg = rc
     
-            if bAddArrayedObjects or not bLoftCrvs:
+            if bAddArrayedObjects or not bSweepCrvs:
                 for rgObjs_Arrayed_1Sect in rgObjs_Arrayed_PerSect_1PathSeg:
                     for i, rgObj_Arrayed_1Sect in enumerate(rgObjs_Arrayed_1Sect):
                         gObj_Arrayed = sc.doc.Objects.Add(rgObj_Arrayed_1Sect)
@@ -713,11 +806,13 @@ def main():
                             #rgDot_ = rg.TextDot(str(i), rgObj1_Arrayed_1Seg.PointAtStart)
                             #sc.doc.Objects.AddTextDot(rgDot_)
 
-            if bLoftCrvs and bCrvInToArray:
-                rc = createLofts(
-                        rgObjs_ToLoft_PerSect=rgObjs_Arrayed_PerSect_1PathSeg,
-                        iLoftType=iLoftType,
-                        bClosedLoft=rgCrv1_Path.IsClosed)
+            if bSweepCrvs and bCrvInToArray:
+                rc = createSweeps(
+                        rgCrvs_ToSweep_PerSect=rgObjs_Arrayed_PerSect_1PathSeg,
+                        rgCrv_Path=rgCrv1_Path,
+                        plane_Proj=plane_Proj,
+                        iSweepMiter=iSweepMiter,
+                        fTol=fTol)
                 if rc:
                     rgBreps1_Lofts_PerSect_PerSeg.extend(rc)
             for rgOs in rgObjs_Arrayed_PerSect_1PathSeg:
@@ -745,11 +840,11 @@ def main():
             if s: s += "  "
             s += "Added {} brep(s) with {} total face(s).".format(
                     len(gBreps1), iCt_Faces_All)
-            print s
+            print(s)
 
         sc.doc.Views.Redraw()
 
-        rc = getInput("Select path curves", rd.ObjectType.Curve)
+        rc = getInput("Select path curves", rd.ObjectType.Curve, bAppendSelection=True)
         if rc is None:
             for gO in gObjs1_Arrayed_All:
                 sc.doc.Objects.Delete(gO, True)
@@ -758,9 +853,28 @@ def main():
             break
         elif rc is False:
             break
-        objrefs_Paths = rc[0]
-        for key, value in zip(sOpts, rc[1:]):
-            exec("{} = {}".format(key, value))
+
+        objrefs_Paths = rc
+
+        bRebuildPath = Opts.values['bRebuildPath']
+        fTaper_Start_Deg = Opts.values['fTaper_Start_Deg']
+        bVariableTaper = Opts.values['bVariableTaper']
+        fTaper_End_Deg = Opts.values['fTaper_End_Deg']
+        bTaperChangePerCrvParam = Opts.values['bTaperChangePerCrvParam']
+        bCPlane = Opts.values['bCPlane']
+        pt_Base = Opts.values['pt_Base']
+        bAtGrevilles = Opts.values['bAtGrevilles']
+        bAtKnots = Opts.values['bAtKnots']
+        bAtEqualDivisions = Opts.values['bAtEqualDivisions']
+        iDivisionCt = Opts.values['iDivisionCt']
+        bSplitPolyCrvToSegs = Opts.values['bSplitPolyCrvToSegs']
+        bSplitPathsAtKnots = Opts.values['bSplitPathsAtKnots']
+        bAddArrayedObjects = Opts.values['bAddArrayedObjects']
+        bSweepCrvs = Opts.values['bSweepCrvs']
+        iSweepMiter = Opts.values['iSweepMiter']
+        fTol = Opts.values['fTol']
+        bEcho = Opts.values['bEcho']
+        bDebug = Opts.values['bDebug']
 
         for gO in gObjs1_Arrayed_All:
             sc.doc.Objects.Delete(gO, True)

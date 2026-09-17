@@ -1,3 +1,6 @@
+#! python 2
+from __future__ import absolute_import, division, print_function, unicode_literals
+
 """
 
 Notes on UI's _Match:
@@ -9,6 +12,7 @@ the unitized tangent vector than when using the 1st derivative vector of Curve B
 Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums ( https://discourse.mcneel.com/ ).
 """
+
 """
 190708-25: Created.
 190824: Now, a unit vector is used when target continuity is G1.  Otherwise, SetEndCondition may move the control point quite far from the closest possible position.
@@ -32,7 +36,7 @@ Send any questions, comments, or script development service needs to
 220328, 0425, 1122: Import-related update.
 230721: Bug fix.
 230723: Bug fix.  Now, entering '0', '1', or '2' will set continuity target to 'G0', 'G1', or 'G2', respectively.
-260915: Import-related update.
+260915-16: Import-related update.
 
 TODO:
 When the endpoints intially do not match, try Curve.Extend first since this may result in less deviation.
@@ -330,6 +334,43 @@ def formatDistance(fDistance):
     return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
 
 
+def _rebuildRationalCurve(crv):
+    if not crv.IsRational:
+        return
+
+    if crv.Degree <= 3:
+        degree = 3
+    degree = 3 if crv.Degree < 3 else crv.Degree
+
+    if not fDevTol:
+        # Create Bezier.
+        rc = crv.Rebuild(
+            pointCount=degree+1,
+            degree=degree,
+            preserveTangents=True)
+        if rc:
+            return rc
+    else:
+        if degree >= 5:
+            iPreserveEndG = 2
+        elif degree >= 3:
+            iPreserveEndG = 1
+        else:
+            iPreserveEndG = 0
+        rc = spb_RebuildCrvUniform.findRebuild(
+            crv,
+            fDevTol=0.5*fDevTol,
+            iDegree=degree,
+            iPreserveEndG=iPreserveEndG,
+            bFurtherTranslateCps=True,
+            iMinCpCt=None,
+            iMaxCpCt=40,
+            bDebug=False,
+            )
+        if rc[0] is not None:
+            return rc[0]
+
+
 def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, bModifyB, **kwargs):
     """
     Parameters:
@@ -367,7 +408,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
 
     if not bModifyA and not bModifyB:
-        print "Neither curve is supposed to be modified."
+        print("Neither curve is supposed to be modified.")
         return
 
 
@@ -410,19 +451,19 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                 bDebug=bDebug,
         )
         if not rc:
-            print "Error in obtaining data from spb_Crv_continuityBetween2.processCurves."
+            print("Error in obtaining data from spb_Crv_continuityBetween2.processCurves.")
             return
         iContinuity0_G, iContinuity0_C, sContinuityDescr = rc
         if bDebug:
-            print sContinuityDescr
-            sEval='sContinuity'; print sEval+': ',eval(sEval)
+            print(sContinuityDescr)
+            sEval='sContinuity'; print(sEval+': ',eval(sEval))
         s  = "Starting continuity: G{}/C{}  ".format(iContinuity0_G, iContinuity0_C)
         if sContinuity == 'G0':
             if iContinuity0_G:
                 if bEcho:
                     s += "  Curves' endpoints already meet at G{} continuity.".format(
                             iContinuity0_G)
-                    print s
+                    print(s)
                 nc0_A.Dispose()
                 nc0_B.Dispose()
                 return True
@@ -431,7 +472,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                 if bEcho:
                     s += "  Curves' endpoints already meet at G{} continuity.".format(
                             iContinuity0_G)
-                    print s
+                    print(s)
                 nc0_A.Dispose()
                 nc0_B.Dispose()
                 return True
@@ -440,7 +481,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                 if bEcho:
                     s += "  Curves' endpoints already meet at G{} continuity.".format(
                             iContinuity0_G)
-                    print s
+                    print(s)
                 nc0_A.Dispose()
                 nc0_B.Dispose()
                 return True
@@ -449,57 +490,24 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                 if bEcho:
                     s += " Curves' endpoints already meet at G{} continuity.".format(
                             iContinuity0_G)
-                    print s
+                    print(s)
                 nc0_A.Dispose()
                 nc0_B.Dispose()
                 return True
-        if bEcho: print s
+        if bEcho: print(s)
 
         return False
-
-
-    def rebuildRationalCurve(crv):
-        if bRebuildRationals and crv.IsRational:
-            degree = 3 if crv.Degree < 3 else crv.Degree
-
-            if not fDevTol:
-                # Create Bezier.
-                rc = crv.Rebuild(
-                    pointCount=degree+1,
-                    degree=degree,
-                    preserveTangents=True)
-                if rc:
-                    return rc
-            else:
-                if degree >= 5:
-                    iPreserveEndG = 2
-                elif degree >= 3:
-                    iPreserveEndG = 1
-                else:
-                    iPreserveEndG = 0
-                rc = spb_RebuildCrvUniform.rebuildCurve(
-                    crv,
-                    fDevTol=0.5*fDevTol,
-                    iDegree=degree,
-                    iPreserveEndG=iPreserveEndG,
-                    bFurtherTranslateCps=True,
-                    iMinCpCt=None,
-                    iMaxCpCt=40,
-                    bDebug=False,
-                    )
-                if rc[0] is not None:
-                    return rc[0]
 
 
     def doCrvsMatchWithinDistDev(cA, cB, fDevTol=fDevTol):
         if fDevTol:
             fDev = getMaximumDeviation(cA, cB)
             if fDev is None:
-                print "Curve is not acceptable because its deviation cannot be determined."
+                print("Curve is not acceptable because its deviation cannot be determined.")
                 return False
             elif fDev > fDevTol:
-                print "Curve is not acceptable because deviation would be {}.".format(
-                        formatDistance(fDev))
+                print("Curve is not acceptable because deviation would be {}.".format(
+                    formatDistance(fDev)))
                 return False
         return True
 
@@ -519,7 +527,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
         if bRebuildRationals:
             for i in 0,1:
-                rc = rebuildRationalCurve(ncs_PreMatch[i])
+                rc = _rebuildRationalCurve(ncs_PreMatch[i])
                 if rc:
                     ncs_PreMatch[i].Dispose()
                     ncs_PreMatch[i] = rc
@@ -557,13 +565,13 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
         #        t_WorkEnd_A,
         #        derivativeCount=2,
         #        side=crvEvalSide_A)
-        #print vectsDerivatives_A[2], nc0_A.CurvatureAt(t_WorkEnd_A)
+        #print(vectsDerivatives_A[2], nc0_A.CurvatureAt(t_WorkEnd_A)
 
         #vectsDerivatives_B = nc0_B.DerivativeAt(
         #        t_WorkEnd_B,
         #        derivativeCount=2,
         #        side=crvEvalSide_B)
-        #print vectsDerivatives_B[2], nc0_B.CurvatureAt(t_WorkEnd_B)
+        #print(vectsDerivatives_B[2], nc0_B.CurvatureAt(t_WorkEnd_B)
 
 
         # (PC to maintain condition type at opposite end of curve) + (PC to modify working side of curve), where PC is "required min. point count".
@@ -600,17 +608,17 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                 and
                 nc_B_PreMatch.Points.Count < iCt_Cp_MinNeeded
         ):
-            print "Neither curve has enough control points for this continuity modification."
+            print("Neither curve has enough control points for this continuity modification.")
             for i in 0,1:
                 if ncs_PreMatch[i] is not None: ncs_PreMatch[i].Dispose()
             return
         elif nc_A_PreMatch.Points.Count < iCt_Cp_MinNeeded:
-            print "Curve A doesn't have enough control points for this continuity modification."
+            print("Curve A doesn't have enough control points for this continuity modification.")
             for i in 0,1:
                 if ncs_PreMatch[i] is not None: ncs_PreMatch[i].Dispose()
             return
         elif nc_B_PreMatch.Points.Count < iCt_Cp_MinNeeded:
-            print "Curve B doesn't have enough control points for this continuity modification."
+            print("Curve B doesn't have enough control points for this continuity modification.")
             for i in 0,1:
                 if ncs_PreMatch[i] is not None: ncs_PreMatch[i].Dispose()
             return
@@ -715,7 +723,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
             if bMaximizeMinRadius and sContinuity not in ('C1', 'C2', 'G2'):
                 s = "Adjusting tangent control point spread ..."
-                if bEcho: print s
+                if bEcho: print(s)
                 nc_WIPs = [nc_WIP_A.ToNurbsCurve(), nc_WIP_B.ToNurbsCurve()]
                 for i in 0,1:
                     rc = spb_NurbsCrv_maximizeMinimumRadius.adjustTanCpSpread_OneEndOnly(
@@ -772,7 +780,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
         for i in 0,1:
             if nc_WIPs[i].EpsilonEquals(ncs_PreMatch[i], 1e-12):
-                print "Curve was not modified."
+                print("Curve was not modified.")
                 ncs_PreMatch[0].Dispose()
                 ncs_PreMatch[1].Dispose()
                 nc_WIPs[0].Dispose()
@@ -824,12 +832,12 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
 
         if bRebuildRationals and ncOne_PreMatch.IsRational:
-            rc = rebuildRationalCurve(ncOne_PreMatch)
+            rc = _rebuildRationalCurve(ncOne_PreMatch)
             if rc:
                 ncOne_PreMatch.Dispose()
                 ncOne_PreMatch = rc
             else:
-                print "Rational curve was not rebuit."
+                print("Rational curve was not rebuit.")
                 return
 
 
@@ -865,19 +873,19 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
         #        t_WorkEnd_A,
         #        derivativeCount=2,
         #        side=crvEvalSide_A)
-        #print vectsDerivatives_A[2], nc0_A.CurvatureAt(t_WorkEnd_A)
+        #print(vectsDerivatives_A[2], nc0_A.CurvatureAt(t_WorkEnd_A)
 
         vectsDerivatives_B = nc_Ref.DerivativeAt(
                 t_WorkEnd_Ref,
                 derivativeCount=2,
                 side=crvEvalSide_Ref)
-        #print vectsDerivatives_B[2], nc0_B.CurvatureAt(t_WorkEnd_B)
+        #print(vectsDerivatives_B[2], nc0_B.CurvatureAt(t_WorkEnd_B)
 
 
         if ncOne_PreMatch.Points.Count < iCt_Cp_MinNeeded:
             if nc_Ref.Points.Count < iCt_Cp_MinNeeded:
-                print "Neither curve has enough control points" \
-                    " for this continuity modification."
+                print("Neither curve has enough control points" \
+                    " for this continuity modification.")
                 ncOne_PreMatch.Dispose()
                 nc_Ref.Dispose()
                 return
@@ -893,7 +901,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                         s += "."
                 else:
                     s += ", but Curve B does."
-                print s
+                print(s)
             ncOne_PreMatch.Dispose()
             nc_Ref.Dispose()
             return
@@ -905,7 +913,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
         
             if bT1WorkEnd_One == bT1WorkEnd_Ref:
                 bReversedTanForA = vectTanForA.Reverse()
-                if bDebug: sEval='bReversedTanForA'; print sEval+': ',eval(sEval)
+                if bDebug: sEval='bReversedTanForA'; print(sEval+': ',eval(sEval))
 
             bEndConditionSet_A = rgNurbsCrv_WIP_A.SetEndCondition(
                     bSetEnd=bT1WorkEnd_One,
@@ -938,7 +946,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             dist_Cp0Cp1_R_Scaled = float(degA)*dist_Cp0Cp1_R
             if dist_Cp0Cp2_A_Scaled < dist_Cp0Cp1_R_Scaled:
                 if bDebug:
-                    print "Avoided moving Tan Cp beyond Crv Cp."
+                    print("Avoided moving Tan Cp beyond Crv Cp.")
                 return
 
             # Now, modify the tangent (second from end) control point's position.
@@ -1002,7 +1010,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             vectTanForA = nc_Ref.TangentAt(t_WorkEnd_Ref)
             if bT1WorkEnd_One == bT1WorkEnd_Ref:
                 bReversedTanForA = vectTanForA.Reverse()
-                if bDebug: sEval='bReversedTanForA'; print sEval+': ',eval(sEval)
+                if bDebug: sEval='bReversedTanForA'; print(sEval+': ',eval(sEval))
             
             bEndConditionSet_A = ncs[-1].SetEndCondition(
                     bSetEnd=bT1WorkEnd_One,
@@ -1020,7 +1028,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             ncs = []
 
             #if nc0_A.Points[idxCp_Pos_A] == nc0_B.Points[idxCp_Pos_B]:
-            #    print "Curves' endpoints already match."
+            #    print("Curves' endpoints already match."
             #    return
 
             # Version: Move only end control point.
@@ -1042,8 +1050,8 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             fRadius_Min_RcSet = spb_Crv_radiusMinima.getMinimumRadius(ncs[-1])
 
             if fRadius_Min_MoveEndCp >= fRadius_Min_RcSet:
-                print "Moving just the end control point produces a result with" \
-                    " minimum radius >= that from Curve.SetStartPoint/SetEndPoint."
+                print("Moving just the end control point produces a result with" \
+                    " minimum radius >= that from Curve.SetStartPoint/SetEndPoint.")
 
             return ncs
 
@@ -1063,11 +1071,11 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
         #for nc in ncs: sc.doc.Objects.AddCurve(nc)
         #sc.doc.Views.Redraw()
 
-        if bEcho: print "{} curves initially generated.".format(len(ncs))
+        if bEcho: print("{} curves initially generated.".format(len(ncs)))
 
         if bMaximizeMinRadius and sContinuity not in ('C1', 'C2'):
             s = "Adjusting tangent control point spread ..."
-            if bEcho: print s #Rhino.RhinoApp.CommandPrompt = s
+            if bEcho: print(s) #Rhino.RhinoApp.CommandPrompt = s
             nc_MaxMinRads = []
             for nc in ncs:
                 rc = spb_NurbsCrv_maximizeMinimumRadius.adjustTanCpSpread_OneEndOnly(
@@ -1081,18 +1089,18 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
                 if rc[0]: nc_MaxMinRads.append(rc[0])
 
             ncs.extend(nc_MaxMinRads)
-            if bDebug: sEval='len(ncs)'; print sEval+': ',eval(sEval)
+            if bDebug: sEval='len(ncs)'; print(sEval+': ',eval(sEval))
 
 
         devs = [getMaximumDeviation(ncOne_PreMatch, nc) for nc in ncs]
-        if bDebug: sEval='devs'; print sEval+': ',eval(sEval)
+        if bDebug: sEval='devs'; print(sEval+': ',eval(sEval))
 
 
         minRadii = []
         for nc in ncs:
             rad = spb_Crv_radiusMinima.getMinimumRadius(nc)
             minRadii.append(rad)
-        if bDebug: sEval='minRadii'; print sEval+': ',eval(sEval)
+        if bDebug: sEval='minRadii'; print(sEval+': ',eval(sEval))
 
 
         ncs_PassingTols = []
@@ -1130,7 +1138,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             s += " with MinRadius:{}".format(formatDistance(minRadii[idx_minDev]))
             s += "\nMaxMinRadius:{}".format(formatDistance(max_minRad))
             s += " with Dev:{}".format(formatDistance(devs[idx_max_minRad]))
-            print s
+            print(s)
 
             ncOne_PreMatch.Dispose()
             nc_Ref.Dispose()
@@ -1164,8 +1172,8 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
         if nc.EpsilonEquals(ncOne_PreMatch, 1e-12):
             if bDebug:
-                print "New curve is within 1e-12 of old." \
-                    "  The curve will not be modified."
+                print("New curve is within 1e-12 of old." \
+                    "  The curve will not be modified.")
             ncOne_PreMatch.Dispose()
             nc_Ref.Dispose()
             nc.Dispose()
@@ -1214,7 +1222,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
 
         if not any((ncA_Alone, ncB_Alone, ncs_Both)):
-            if bDebug: print "No curve could be created (within deviation?)."
+            if bDebug: print("No curve could be created (within deviation?).")
             return
 
         if ncs_Both and (not ncA_Alone) and (not ncB_Alone):
@@ -1223,15 +1231,15 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
         if ncA_Alone and (not ncB_Alone) and (not ncs_Both):
             if bDebug:
                 devA = getMaximumDeviation(c0_A, ncA_Alone)
-                print "Curve could only be created for A (Deviation:{}).".format(
-                        formatDistance(devA))
+                print("Curve could only be created for A (Deviation:{}).".format(
+                        formatDistance(devA)))
             return ncA_Alone, None
 
         if ncB_Alone and (not ncA_Alone) and (not ncs_Both):
             if bDebug:
                 devB = getMaximumDeviation(c0_B, ncB_Alone)
-                print "Curve could only be created for B (Deviation:{}).".format(
-                        formatDistance(devB))
+                print("Curve could only be created for B (Deviation:{}).".format(
+                        formatDistance(devB)))
             return None, ncB_Alone
 
 
@@ -1282,7 +1290,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
 
 
     if bModifyA and not bModifyB:
-        if bDebug: print "Modifying A and not B ..."
+        if bDebug: print("Modifying A and not B ...")
         rc = createForOneCurve(
             rgCurve_One=rgCurveA,
             rgCurve_Ref=rgCurveB,
@@ -1293,7 +1301,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             return
         return rc, None
     elif not bModifyA and bModifyB:
-        if bDebug: print "Modifying B and not A ..."
+        if bDebug: print("Modifying B and not A ...")
         rc = createForOneCurve(
             rgCurve_One=rgCurveB,
             rgCurve_Ref=rgCurveA,
@@ -1305,7 +1313,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
         return None, rc
     else:
         # not bModifyA and not bModifyB
-        if bDebug: print "Will look for result with less deviation ..."
+        if bDebug: print("Will look for result with less deviation ...")
         rc = createNcWithLessDevResult(
             rgCurveA=rgCurveA,
             rgCurveB=rgCurveB,
@@ -1314,7 +1322,7 @@ def createNurbsCurves(rgCurveA, rgCurveB, bT1WorkEnd_A, bT1WorkEnd_B, bModifyA, 
             )
         if rc is None:
             if bDebug:
-                print "None from createNcWithLessDevResult."
+                print("None from createNcWithLessDevResult.")
             return
         return rc
 
@@ -1340,18 +1348,18 @@ def processCurveObjects(objrefs, **kwargs):
     bDebug = getOpt('bDebug')
     
     if bDebug:
-        for key in kwargs: print key, kwargs[key]
+        for key in kwargs: print(key, kwargs[key])
 
     gCrv0_A = objrefs[0].ObjectId
     c0_A = objrefs[0].Curve()
     
     if not bRebuildRationals:
         if isinstance(c0_A, rg.ArcCurve):
-            print "ArcCurve skipped."
+            print("ArcCurve skipped.")
             c0_A.Dispose()
             return
         elif isinstance(c0_A, rg.NurbsCurve) and c0_A.IsRational and c0_A.IsArc(1e-9):
-            print "Arc-shaped (within 1e-9), Rational NurbsCurve skipped."
+            print("Arc-shaped (within 1e-9), Rational NurbsCurve skipped.")
             c0_A.Dispose()
             return
 
@@ -1408,7 +1416,7 @@ def processCurveObjects(objrefs, **kwargs):
 
 
     if rgNurbsCrv1_A is None and rgNurbsCrv1_B is None:
-        print "Curve(s) within tolerance not created, so they were not modified."
+        print("Curve(s) within tolerance not created, so they were not modified.")
 
     def processResults(gCrv0_ToMod, rgCrv0_ToMod, rgNurbsCrv1):
 
@@ -1416,7 +1424,7 @@ def processCurveObjects(objrefs, **kwargs):
 
         if bReplace:
             if sc.doc.Objects.Replace(gCrv0_ToMod, rgNurbsCrv1):
-                if bEcho: print "Curve was replaced."
+                if bEcho: print("Curve was replaced.")
                 g1 = gCrv0_ToMod
             else:
                 g1 = None
@@ -1424,7 +1432,7 @@ def processCurveObjects(objrefs, **kwargs):
             g1 = sc.doc.Objects.AddCurve(rgNurbsCrv1)
             if g1 == Guid.Empty: g1 = None 
             if not g1:
-                if bEcho: print "Curve was added."
+                if bEcho: print("Curve was added.")
 
         sc.doc.Views.Redraw()
 
@@ -1441,7 +1449,7 @@ def processCurveObjects(objrefs, **kwargs):
         rc = spb_Crv_radiusMinima.getMinimumRadius(rgNurbsCrv1)
         fRadius_Min_New = rc if rc is not None else None
         sRadius_Min_Original = formatDistance(fRadius_Min_Original)
-        if bDebug: sEval='fRadius_Min_New'; print sEval+': ',eval(sEval)
+        if bDebug: sEval='fRadius_Min_New'; print(sEval+': ',eval(sEval))
         sRadius_Min_New = formatDistance(fRadius_Min_New)
         #sRadius_Min_New = '{:.{}f}'.format(fRadius_Min_New, sc.doc.ModelDistanceDisplayPrecision)
         if s: s += "  "
@@ -1449,7 +1457,7 @@ def processCurveObjects(objrefs, **kwargs):
     
         fDev = getMaximumDeviation(rgCrv0_ToMod, rgNurbsCrv1)
         s += "  Deviation:{}".format(formatDistance(fDev))
-        print s
+        print(s)
 
         return g1
 
@@ -1480,18 +1488,18 @@ def main():
     objrefs = rc[0]
 
     if Opts.values['bDebug']:
-        print "Running with Debug mode on."
+        print("Running with Debug mode on.")
         import sys
         for sModule in list(sys.modules):
             if sModule[0] == 'x':
                 try:
                     reload(sys.modules[sModule])
-                    print "{} reloaded.".format(sModule)
+                    print("{} reloaded.".format(sModule))
                 except:
                     s  = "{} NOT reloaded.".format(sModule)
                     s += "  Does the module contain a bug,"
                     s += " or was its name changed?"
-                    print s
+                    print(s)
     else:
         sc.doc.Views.RedrawEnabled = False
 
@@ -1500,7 +1508,7 @@ def main():
             fDevTol=Opts.values['fDevTol'] if Opts.values['bLimitCrvDev'] else None,
     )
 
-    if not rc: print "No curves were modified."
+    if not rc: print("No curves were modified.")
 
     sc.doc.Views.RedrawEnabled = True
 

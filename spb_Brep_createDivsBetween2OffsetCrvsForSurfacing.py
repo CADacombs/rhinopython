@@ -1,3 +1,6 @@
+#! python 2
+from __future__ import absolute_import, division, print_function, unicode_literals
+
 """
 Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums ( https://discourse.mcneel.com/ ).
@@ -6,7 +9,7 @@ Send any questions, comments, or script development service needs to
 """
 200402-04: Created, starting with other scripts.
 220328: Import-related update.
-260915: Import-related update.
+260915-16: Import-related update.
 """
 
 import Rhino
@@ -216,7 +219,7 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
             if not bRebuild:
                 rgCrvs_SplitPoly = [rgCrv_Joined.Duplicate()]
             else:
-                rc = spb_RebuildCrvUniform.rebuildCurve(
+                rc = spb_RebuildCrvUniform.findRebuild(
                     rgCrv_Joined,
                     0.25*sc.doc.ModelAbsoluteTolerance,
                     iDegree=3,
@@ -238,7 +241,7 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
                     else:
                         rgCrvs_SplitPoly = []
                         for c in rgCrvs_Exploded:
-                            rc = spb_RebuildCrvUniform.rebuildCurve(
+                            rc = spb_RebuildCrvUniform.findRebuild(
                                 c,
                                 0.25*sc.doc.ModelAbsoluteTolerance,
                                 iDegree=3,
@@ -254,7 +257,7 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
                 if not bRebuild:
                     rgCrvs_SplitPoly = [rgCrv_Joined.Duplicate()]
                 else:
-                    rc = spb_RebuildCrvUniform.rebuildCurve(
+                    rc = spb_RebuildCrvUniform.findRebuild(
                         rgCrv_Joined,
                         0.25*sc.doc.ModelAbsoluteTolerance,
                         iDegree=3,
@@ -272,7 +275,7 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
             else:
                 rgCrvs_Final = []
                 for rgCrv_SplitPoly in rgCrvs_SplitPoly:
-                    rc = spb_RebuildCrvUniform.rebuildCurve(
+                    rc = spb_RebuildCrvUniform.findRebuild(
                         rgCrv_SplitPoly,
                         0.25*sc.doc.ModelAbsoluteTolerance,
                         iDegree=3,
@@ -296,7 +299,7 @@ def prepareCurves(rgCs_In, bRebuild=False, bSplitPolyCrvToSegs=True, bSplitPaths
                     else:
                         rgCrvs_Final = []
                         for rgCrv_SplitAtKnots in rgCrvs_SplitAtKnots:
-                            rc = spb_RebuildCrvUniform.rebuildCurve(
+                            rc = spb_RebuildCrvUniform.findRebuild(
                                 rgCrv_SplitAtKnots,
                                 0.25*sc.doc.ModelAbsoluteTolerance,
                                 iDegree=3,
@@ -338,7 +341,7 @@ def getParameters(nc, bAtGrevilles, iDivisionCt=None, fDivisionLength=None):
         rc = nc.DivideByLength(
             segmentLength=fDivisionLength,
             includeEnds=True)
-        print rc[-1]
+        print(rc[-1])
         if rc: ts.extend(rc)
         if not nc.IsClosed:
             # DivideByLength doesn't add the T1 segment
@@ -348,7 +351,7 @@ def getParameters(nc, bAtGrevilles, iDivisionCt=None, fDivisionLength=None):
             ts.append(nc.Domain.T1)
 
     if ts is None:
-        print "No parameters were obtained."
+        print("No parameters were obtained.")
         return
 
     ts = sorted(set(ts)) # Remove duplicates and sort.
@@ -391,7 +394,7 @@ def createCrossSectionLines_NoProjection(ncs_A, ncs_B, ts_perA, bDebug=False):
 
             bSuccess, frame = ncA.PerpendicularFrameAt(t=tA)
             if not bSuccess:
-                print "Perpendicular frame could not be calculated."
+                print("Perpendicular frame could not be calculated.")
                 continue
 
             pt_A = ncA.PointAt(tA)
@@ -420,7 +423,7 @@ def createCrossSectionLines_NoProjection(ncs_A, ncs_B, ts_perA, bDebug=False):
                     if bDebug: sc.doc.Objects.AddPoint(ptB_PerpToA)
 
                     dist = ptB_PerpToA.DistanceTo(pt_B_ClosestPt)
-                    if bDebug: print dist
+                    if bDebug: print(dist)
 
                     if dist <= 1.0*sc.doc.ModelAbsoluteTolerance:
                         if bDebug: sc.doc.Objects.AddLine(rg.Line(pt_A, ptB_PerpToA))
@@ -470,7 +473,7 @@ def createCrossSectionLines_PerProjection(ncs_A, ncs_B, ts_perA, plane_Proj, bDe
 
             bSuccess, frame = ncA_Flattened.PerpendicularFrameAt(t=tA)
             if not bSuccess:
-                print "Perpendicular frame could not be calculated."
+                print("Perpendicular frame could not be calculated.")
                 continue
 
             ptA_Flat = ncA_Flattened.PointAt(tA)
@@ -500,7 +503,7 @@ def createCrossSectionLines_PerProjection(ncs_A, ncs_B, ts_perA, plane_Proj, bDe
                     if bDebug: sc.doc.Objects.AddPoint(ptB_Flat_PerpToA)
 
                     dist = ptB_Flat_PerpToA.DistanceTo(ptB_Flat_ClosestPt)
-                    if bDebug: print dist
+                    if bDebug: print(dist)
 
                     if dist <= 1.0*sc.doc.ModelAbsoluteTolerance:
                         if bDebug: sc.doc.Objects.AddLine(rg.Line(ptA_Flat, ptB_Flat_PerpToA))
@@ -538,15 +541,15 @@ def createBrep(iBrepMethod, iLoftType, fBrepTol, ncs_A, ncs_B, lines_perA):
                     closed=False)
         elif sBrepMethods[Opts.values['iBrepMethod']] == 'LoftSectionLines':
             for L in lines_A:
-                print L.PointAtStart, L.PointAtEnd
-            print lines_A[0].PointAtEnd.EpsilonEquals(lines_A[-1].PointAtEnd, epsilon=1e-12)
+                print(L.PointAtStart, L.PointAtEnd)
+            print(lines_A[0].PointAtEnd.EpsilonEquals(lines_A[-1].PointAtEnd, epsilon=1e-12))
             rgBreps1 = rg.Brep.CreateFromLoft(
                     curves=lines_A,
                     start=rg.Point3d.Unset,
                     end=rg.Point3d.Unset,
                     loftType=Enum.ToObject(rg.LoftType, iLoftType),
                     closed=rgNurbsCrv1_PathSeg.IsClosed)
-            print rgBreps1
+            print(rgBreps1)
         elif sBrepMethods[Opts.values['iBrepMethod']] == 'Sweep2A':
             rgBreps1 = rg.Brep.CreateFromSweep(
                     rail1=rgNurbsCrv1_PathSeg,
@@ -572,7 +575,7 @@ def createBrep(iBrepMethod, iLoftType, fBrepTol, ncs_A, ncs_B, lines_perA):
                     interiorTolerance=fBrepTol,
                     angleTolerance=0.1*sc.doc.ModelAngleToleranceDegrees)
             if iError:
-                print "CreateNetworkSurface error code: {}".format(iError)
+                print("CreateNetworkSurface error code: {}".format(iError))
             else:
                 rgBreps1 = [rgNurbsSrf.ToBrep()]
                 rgNurbsSrf.Dispose()
@@ -627,7 +630,7 @@ def createGeometry(rgCs_A_In, rgCs_B_In, **kwargs):
             iDivisionCt=iDivisionCt,
             fDivisionLength=None)
         if ts is None:
-            print "Parameters could not be obtained for curve."
+            print("Parameters could not be obtained for curve.")
             return
         ts_perA.append(ts)
 
@@ -789,8 +792,8 @@ def getOptions(rgCs_A_In, rgCs_B_In):
                 break
         else:
             for key in Opts.keys:
-                print valuesBefore[key], Opts.values[key]
-            print "No options were changed."
+                print(valuesBefore[key], Opts.values[key])
+            print("No options were changed.")
 
 
 def main():
@@ -875,7 +878,7 @@ def main():
     rgCrvs1_Path = []
 
     while not (bAtGrevilles or bAtEqualDivisions):
-        print "No path point sampling is enabled."
+        print("No path point sampling is enabled.")
         sc.doc.Views.Redraw()
         rc = getOptions(bFirstGetObjects=False)
         if rc is None or rc is False:
@@ -896,7 +899,7 @@ def main():
 
     nc2_Path = ncA.ToNurbsCurve()
     if nc2_Path is None:
-        print "NurbsCurve could not be calculated from curve."
+        print("NurbsCurve could not be calculated from curve.")
         return
     #sc.doc.Objects.AddCurve(nc2_Path)
 
@@ -958,7 +961,7 @@ def main():
                     s += " only affects added arrayed lines"
                     s += " when BrepMethod == {},".format(sBrepMethods[iBrepMethod])
                     s += " but AddArrayed option is disabled."
-                    print s
+                    print(s)
 
         if bAddBrep:
 
@@ -996,7 +999,7 @@ def main():
                         rgNurbsCrv_TaperEnd_1Seg=rgNurbsCrv_TaperEnd,
                         rgLineCrvs_Arrayed=rgLineCrvs_Arrayed_1PathSeg_GrevsOnly)
                 if rc is None:
-                    print "Cannot create brep(s).  Check input."
+                    print("Cannot create brep(s).  Check input.")
                 else:
                     rgBreps1.extend(rc)
                 rgCrv1_Path_1Seg.Dispose()
@@ -1019,8 +1022,8 @@ def main():
                 if gBrep1 != Guid.Empty:
                     gBreps1.append(gBrep1)
             if bEcho:
-                print "{} brep(s) with {} face(s) created.".format(
-                len(gBreps1), len(rgBreps1))
+                print("{} brep(s) with {} face(s) created.".format(
+                    len(gBreps1), len(rgBreps1)))
 
     sc.doc.Views.Redraw()
 

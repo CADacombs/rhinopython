@@ -1,3 +1,6 @@
+#! python 2
+from __future__ import absolute_import, division, print_function, unicode_literals
+
 """
 This script is an alternative to _CrvDeviation and
 RhinoCommon's Curve.GetDistancesBetweenCurves; it is used by other scripts.
@@ -14,9 +17,6 @@ Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums, https://discourse.mcneel.com/
 """
 
-#! python 2  Must be on a line number less than 32.
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 """
 170927: Created.
 ...
@@ -29,6 +29,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
             Trialing a UX different than _CrvDeviation for when Mode=Abs,
             that gives the user the option to skip leaving marks.
 241212: Updated notes, comments, and some option default values.
+260916: Refactor.
 
 TODO:
     Clean code in spb_GDBCs_1Way that eliminates false positives at curve ends.
@@ -481,40 +482,44 @@ def getInput_2Sets():
         [Opts.values[key] for key in Opts.keys])
 
 
+def _isOutsideOfTolerance(rgC_Cat, rgC_Dog, ts_Cat, tolerance, fDevs):
+
+    for iT_Cat in xrange(len(ts_Cat)):
+
+        t_Cat = ts_Cat[iT_Cat]
+
+        pt_Cat = rgC_Cat.PointAt(t_Cat)
+
+        bSuccess, t_Dog = rgC_Dog.ClosestPoint(pt_Cat)
+
+        if not bSuccess:
+            raise ValueError("Closest point could not be calculated.")
+
+        pt_Dog = rgC_Dog.PointAt(t_Dog)
+
+        dist = pt_Cat.DistanceTo(pt_Dog)
+
+        if dist > tolerance:
+            return True
+
+        fDevs.append(dist)
+
+    return False
+
+
 def isMaxClosestDistBtwn2CrvsWithinTol(rgCrv_A, rgCrv_B, tolerance):
     """
     Alternative to Curve.GetDistancesBetweenCurves for better results when
     curves contain loops, etc.
 
     Returns:
-        False (If not within tolerance parameter)
-        float(Largest deviation found)
+        bool, float
+        Within tolerance:
+            True, float(Largest deviation found)
+        Not within tolerance:
+            False, Rhino.RhinoMath.UnsetValue
     """
 
-
-    def isOutsideOfTolerance(rgC_Cat, rgC_Dog, ts_Cat):
-
-        for iT_Cat in xrange(len(ts_Cat)):
-
-            t_Cat = ts_Cat[iT_Cat]
-
-            pt_Cat = rgC_Cat.PointAt(t_Cat)
-
-            bSuccess, t_Dog = rgC_Dog.ClosestPoint(pt_Cat)
-
-            if not bSuccess:
-                raise ValueError("Closest point could not be calculated.")
-
-            pt_Dog = rgC_Dog.PointAt(t_Dog)
-
-            dist = pt_Cat.DistanceTo(pt_Dog)
-
-            if dist > tolerance:
-                return True
-
-            fDevs.append(dist)
-
-        return False
 
     fDivLength = 10.0*sc.doc.ModelAbsoluteTolerance
 
@@ -529,8 +534,8 @@ def isMaxClosestDistBtwn2CrvsWithinTol(rgCrv_A, rgCrv_B, tolerance):
     if spanDomain.T1 not in ts_A:
         ts_A.append(spanDomain.T1)
 
-    if isOutsideOfTolerance(rgCrv_A, rgCrv_B, ts_A):
-        return False
+    if _isOutsideOfTolerance(rgCrv_A, rgCrv_B, ts_A, tolerance, fDevs):
+        return False, Rhino.RhinoMath.UnsetValue
 
     ts_B = []
     for iSpan in range(rgCrv_B.SpanCount):
@@ -539,8 +544,8 @@ def isMaxClosestDistBtwn2CrvsWithinTol(rgCrv_A, rgCrv_B, tolerance):
     if spanDomain.T1 not in ts_B:
         ts_B.append(spanDomain.T1)
 
-    if isOutsideOfTolerance(rgCrv_B, rgCrv_A, ts_B):
-        return False
+    if _isOutsideOfTolerance(rgCrv_B, rgCrv_A, ts_B, tolerance, fDevs):
+        return False, Rhino.RhinoMath.UnsetValue
 
 
     for M in 1000.0, 10.0:
@@ -553,8 +558,8 @@ def isMaxClosestDistBtwn2CrvsWithinTol(rgCrv_A, rgCrv_B, tolerance):
             includeEnds=True)
         if rc:
             ts_A = rc
-            if isOutsideOfTolerance(rgCrv_A, rgCrv_B, ts_A):
-                return False
+            if _isOutsideOfTolerance(rgCrv_A, rgCrv_B, ts_A, tolerance, fDevs):
+                return False, Rhino.RhinoMath.UnsetValue
 
         ts_B = []
 
@@ -563,10 +568,10 @@ def isMaxClosestDistBtwn2CrvsWithinTol(rgCrv_A, rgCrv_B, tolerance):
             includeEnds=True)
         if rc:
             ts_B = rc
-            if isOutsideOfTolerance(rgCrv_B, rgCrv_A, ts_B):
-                return False
+            if _isOutsideOfTolerance(rgCrv_B, rgCrv_A, ts_B, tolerance, fDevs):
+                return False, Rhino.RhinoMath.UnsetValue
 
-    return max(fDevs)
+    return True, max(fDevs)
 
 
 def spb_GDBC_1Way(curve_TestPts, curve_ClosestPt, fLocAlongCrvTol, bOnlyPerp=True, bDebug=False):

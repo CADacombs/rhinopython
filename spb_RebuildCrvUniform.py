@@ -9,6 +9,7 @@ of the input curve.
 Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums ( https://discourse.mcneel.com/ ).
 """
+
 """
 170624-27: Created.
 ...
@@ -23,10 +24,12 @@ Send any questions, comments, or script development service needs to
 210412: Added filter for PolylineCurves.
 220328: Added bPreserveEndG2 option.
 220809, 0823, 0910, 240905: Import-related update.
-260915: WIP: Input curves are now selected before dialog is displayed.
+260915-16: Various refactoring.
+        Input curves are now selected before dialog is displayed.
         Added bUseDialog option.
         Changed end continuity from check boxes to radio buttons.
         Prepared script for translation to C#.
+        Import-related changes.
 
 TODO:
     Remove/refactor degree-1 routine in rebuildCurves.
@@ -42,6 +45,8 @@ import Rhino.Geometry as rg
 import Rhino.Input as ri
 import scriptcontext as sc
 
+import re
+
 from System import Guid
 
 import Eto.Drawing as drawing
@@ -50,6 +55,31 @@ import Eto.Forms as forms
 import xCurve
 import spb_CrvDeviation
 import spb_NurbsCrv_fitByTranslatingControlPts
+
+
+def cleanDegreeString(input_str, default_str="3"):
+    """
+    Parses a string into a comma-separated list of unique integers from 1 to 11.
+    Falls back to default_str if no valid integers are found.
+    """
+    if not input_str: 
+        return default_str
+        
+    raw_nums = re.findall(r'\d+', input_str)
+    
+    valid_nums = []
+    for num_str in raw_nums:
+        num = int(num_str)
+        if 1 <= num <= 11:
+            valid_nums.append(str(num))
+            
+    if not valid_nums:
+        return default_str
+        
+    seen = set()
+    unique_nums = [x for x in valid_nums if not (x in seen or seen.add(x))]
+    
+    return ",".join(unique_nums)
 
 
 class Opts:
@@ -70,7 +100,7 @@ class Opts:
 
     key = 'bLimitCrvDev'; keys.append(key)
     values[key] = True
-    sDialogTexts[key] = "Limit crv dev"
+    sDialogTexts[key] = "Limit crv dev:"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -80,52 +110,32 @@ class Opts:
     riOpts[key] = ri.Custom.OptionDouble(values[key])
     stickyKeys[key] = '{}({})({})'.format(key, __file__, sc.doc.Name)
 
-    key = 'bLimitDegree'; keys.append(key)
-    values[key] = False
-    sDialogTexts[key] = "Limit degree"
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
     key = 'bMatchDegree'; keys.append(key)
     values[key] = False
-    sDialogTexts[key] = "Same as input curve"
+    sDialogTexts[key] = "Match input curve"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
-    key = 'iDegree'; keys.append(key)
-    values[key] = 3
-    names[key] = 'CrvDegree'
-    sDialogTexts[key] = ""
-    riOpts[key] = ri.Custom.OptionInteger(values[key])
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'bLimitMinCpCt'; keys.append(key)
-    values[key] = False
-    sDialogTexts[key] = "Limit min. CP count"
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    key = 'sDegrees'; keys.append(key)
+    values[key] = "3,5"
+    sDialogTexts[key] = "Degree(s)"
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iMinCpCt'; keys.append(key)
-    values[key] = 4
-    sDialogTexts[key] = "Min. CP count"
-    riOpts[key] = ri.Custom.OptionInteger(values[key])
-    stickyKeys[key] = '{}({})'.format(key, __file__)
-
-    key = 'bLimitMaxCpCt'; keys.append(key)
-    values[key] = True
-    sDialogTexts[key] = "Limit max. CP count"
-    riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
+    values[key] = 2
+    sDialogTexts[key] = "Min CP count"
+    riOpts[key] = ri.Custom.OptionInteger(values[key], setLowerLimit=True, limit=2)
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'bMatchMaxCpCt'; keys.append(key)
     values[key] = False
-    sDialogTexts[key] = "Same as input curve"
+    sDialogTexts[key] = "Match input curve"
     riOpts[key] = ri.Custom.OptionToggle(values[key], 'No', 'Yes')
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
     key = 'iMaxCpCt'; keys.append(key)
     values[key] = 32
-    sDialogTexts[key] = "Max. CP count"
+    sDialogTexts[key] = "Max CP count"
     riOpts[key] = ri.Custom.OptionInteger(values[key])
     stickyKeys[key] = '{}({})'.format(key, __file__)
 
@@ -370,17 +380,16 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
                     self.labels[key] = forms.Label(Text=Opts.sDialogTexts[key])
                     self.textBoxes[key] = forms.TextBox(Text=str(int(Opts.values[key])))
             elif key[0] == 's':
-                self.radioButtonList[key] = forms.RadioButtonList()
-                self.radioButtonList[key].DataStore = Opts.sDialogTexts[key]
-                self.radioButtonList[key].SelectedIndex = Opts.sDialogTexts[key].index(Opts.values[key])
+                #self.radioButtonList[key] = forms.RadioButtonList()
+                #self.radioButtonList[key].DataStore = Opts.sDialogTexts[key]
+                #self.radioButtonList[key].SelectedIndex = Opts.sDialogTexts[key].index(Opts.values[key])
+                self.labels[key] = forms.Label(Text=Opts.sDialogTexts[key])
+                self.textBoxes[key] = forms.TextBox(Text=Opts.values[key])
 
 
         # Set initial state.
         self.enableTextBox_fDevTol()
-        self.enableCheckBox_bMatchDegree()
-        self.enableTextBox_iDegree()
-        self.enableTextBox_iMinCpCt()
-        self.enableCheckBox_bMatchMaxCpCt()
+        self.enableTextBox_sDegrees()
         self.enableTextBox_iMaxCpCt()
         self.enableRadioButtonList_bProcessPolyCrvSegs()
         self.enableRadioButtonList_bProcessNonRatWithOnlyFullyMultiK()
@@ -391,14 +400,11 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
         self.checkBoxes['bLimitCrvDev'].CheckedChanged += self.onChange_bLimitCrvDev
         self.textBoxes['fDevTol'].TextChanged += self.onChange_fDevTol
 
-        self.checkBoxes['bLimitDegree'].CheckedChanged += self.onChange_bLimitDegree
         self.checkBoxes['bMatchDegree'].CheckedChanged += self.onChange_bMatchDegree
-        self.textBoxes['iDegree'].TextChanged += self.onChange_iDegree
+        self.textBoxes['sDegrees'].LostFocus += self.onChange_sDegree
 
-        self.checkBoxes['bLimitMinCpCt'].CheckedChanged += self.onChange_bLimitMinCpCt
         self.textBoxes['iMinCpCt'].TextChanged += self.onChange_iMinCpCt
 
-        self.checkBoxes['bLimitMaxCpCt'].CheckedChanged += self.onChange_bLimitMaxCpCt
         self.checkBoxes['bMatchMaxCpCt'].CheckedChanged += self.onChange_bMatchMaxCpCt
         self.textBoxes['iMaxCpCt'].TextChanged += self.onChange_iMaxCpCt
 
@@ -423,31 +429,35 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
 
         layout.AddSeparateRow(
             self.checkBoxes['bLimitCrvDev'],
-            None,
-            Opts.sDialogTexts['fDevTol'],
             self.textBoxes['fDevTol'],
+            None
             )
 
-        layout.BeginVertical()
         layout.AddSpace()
-        layout.AddRow(
-            self.checkBoxes['bLimitDegree'],
-            self.checkBoxes['bMatchDegree'],
-            self.textBoxes['iDegree'],
-            )
-        layout.AddSpace()
-        layout.AddRow(
-            self.checkBoxes['bLimitMinCpCt'],
+        layout.AddSeparateRow(
+            "Degrees:",
+            "Enter degrees in order, separated by commas.",
             None,
-            self.textBoxes['iMinCpCt'],
+            )
+        layout.AddSeparateRow(
+            None,
+            self.textBoxes['sDegrees'],
+            self.checkBoxes['bMatchDegree'],
+            None
             )
         layout.AddSpace()
-        layout.AddRow(
-            self.checkBoxes['bLimitMaxCpCt'],
-            self.checkBoxes['bMatchMaxCpCt'],
-            self.textBoxes['iMaxCpCt'],
+        layout.AddSeparateRow(
+            "Min CP count:",
+            self.textBoxes['iMinCpCt'],
+            None
             )
-        layout.EndVertical()
+        layout.AddSpace()
+        layout.AddSeparateRow(
+            "Max CP count:",
+            self.textBoxes['iMaxCpCt'],
+            self.checkBoxes['bMatchMaxCpCt'],
+            None
+            )
 
         layout.AddSpace()
         layout.AddSpace()
@@ -529,26 +539,12 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
         self.textBoxes['fDevTol'].Enabled = (
             self.checkBoxes['bLimitCrvDev'].Checked)
 
-    def enableCheckBox_bMatchDegree(self):
-        self.checkBoxes['bMatchDegree'].Enabled = (
-            self.checkBoxes['bLimitDegree'].Checked)
-
-    def enableTextBox_iDegree(self):
-        self.textBoxes['iDegree'].Enabled = (
-            self.checkBoxes['bLimitDegree'].Checked and
+    def enableTextBox_sDegrees(self):
+        self.textBoxes['sDegrees'].Enabled = (
             not self.checkBoxes['bMatchDegree'].Checked)
-
-    def enableTextBox_iMinCpCt(self):
-        self.textBoxes['iMinCpCt'].Enabled = (
-            self.checkBoxes['bLimitMinCpCt'].Checked)
-
-    def enableCheckBox_bMatchMaxCpCt(self):
-        self.checkBoxes['bMatchMaxCpCt'].Enabled = (
-            self.checkBoxes['bLimitMaxCpCt'].Checked)
 
     def enableTextBox_iMaxCpCt(self):
         self.textBoxes['iMaxCpCt'].Enabled = (
-            self.checkBoxes['bLimitMaxCpCt'].Checked and
             not self.checkBoxes['bMatchMaxCpCt'].Checked)
 
     def enableRadioButtonList_bProcessPolyCrvSegs(self):
@@ -573,27 +569,14 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
         except:
             self.textBoxes['fDevTol'].BackgroundColor = drawing.Colors.Red
 
-    def onChange_bLimitDegree(self, sender, e):
-        self.enableCheckBox_bMatchDegree()
-        self.enableTextBox_iDegree()
-
     def onChange_bMatchDegree(self, sender, e):
-        self.enableTextBox_iDegree()
+        self.enableTextBox_sDegrees()
 
-    def onChange_iDegree(self, sender, e):
-        try:
-            iDegree = int(self.textBoxes['iDegree'].Text)
-            if iDegree < 3:
-                iDegree = 3
-            elif iDegree > 5:
-                iDegree = 5
-            self.textBoxes['iDegree'].Text = str(iDegree)
-            self.textBoxes['iDegree'].BackgroundColor = drawing.SystemColors.ControlBackground
-        except:
-            self.textBoxes['iDegree'].BackgroundColor = drawing.Colors.Red
-
-    def onChange_bLimitMinCpCt(self, sender, e):
-        self.enableTextBox_iMinCpCt()
+    def onChange_sDegree(self, sender, e):
+        # Clean the string on focus lost and update the text box visually
+        cleaned = cleanDegreeString(self.textBoxes['sDegrees'].Text, Opts.values['sDegrees'])
+        self.textBoxes['sDegrees'].Text = cleaned
+        self.textBoxes['sDegrees'].BackgroundColor = drawing.SystemColors.ControlBackground
 
     def onChange_iMinCpCt(self, sender, e):
         try:
@@ -601,10 +584,6 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
             self.textBoxes['iMinCpCt'].BackgroundColor = drawing.SystemColors.ControlBackground
         except:
             self.textBoxes['iMinCpCt'].BackgroundColor = drawing.Colors.Red
-
-    def onChange_bLimitMaxCpCt(self, sender, e):
-        self.enableCheckBox_bMatchMaxCpCt()
-        self.enableTextBox_iMaxCpCt()
 
     def onChange_bMatchMaxCpCt(self, sender, e):
         self.enableTextBox_iMaxCpCt()
@@ -655,13 +634,17 @@ class FitRebuildCurveDialog(forms.Dialog[bool]):
                         s  = "Invalid input for {}.".format(key[1:])
                         s += "  {} will be used instead.".format(Opts.values[key])
                         print(s)
-                if key[0] == 'i':
+                elif key[0] == 'i':
                     try:
                         Opts.values[key] = int(self.textBoxes[key].Text)
                     except:
                         s  = "Invalid input for {}.".format(key[1:])
                         s += "  {} will be used instead.".format(Opts.values[key])
                         print(s)
+                elif key[0] == 's':
+                    # Clean it right before saving, ensuring it is always formatted correctly even if LostFocus didn't fire
+                    cleaned = cleanDegreeString(self.textBoxes[key].Text, "3")
+                    Opts.values[key] = cleaned
 
 
         # Save sticky.
@@ -808,20 +791,15 @@ def getInput():
             addOption('bLimitCrvDev')
             if Opts.values['bLimitCrvDev']:
                 addOption('fDevTol')
-            addOption('bLimitDegree')
-            if Opts.values['bLimitDegree']:
-                addOption('bMatchDegree')
-                if not Opts.values['bMatchDegree']:
-                    addOption('iDegree')
-            addOption('bLimitMinCpCt')
-            if Opts.values['bLimitMinCpCt']:
-                addOption('iMinCpCt')
-            addOption('bLimitMaxCpCt')
-            if Opts.values['bLimitMaxCpCt']:
-                addOption('bMatchMaxCpCt')
-                addOption('iMinCpCt')
-                if not Opts.values['bMatchMaxCpCt']:
-                    addOption('iMaxCpCt')
+            addOption('bMatchDegree')
+            if not Opts.values['bMatchDegree']:
+                idxs_Opts['sDegrees'] = go.AddOption(
+                    Opts.names['sDegrees'], Opts.values['sDegrees'])
+            addOption('iMinCpCt')
+            addOption('bMatchMaxCpCt')
+            addOption('iMinCpCt')
+            if not Opts.values['bMatchMaxCpCt']:
+                addOption('iMaxCpCt')
             addOption('iPreserveEndG')
             addOption('bFurtherTranslateCps')
             addOption('bReplace')
@@ -854,7 +832,14 @@ def getInput():
 
         for key in idxs_Opts:
             if go.Option().Index == idxs_Opts[key]:
-                Opts.setValue(key, go.Option().CurrentListOptionIndex)
+                if key == 'sDegrees':
+                    res_GS, str_GS = ri.RhinoGet.GetString("Degrees to test (comma-separated)", Opts.values['sDegrees'])
+                    if res_GS == ri.GetResult.Cancel:
+                        break
+                    Opts.values[key] = cleanDegreeString(str_GS, "3")
+                    sc.sticky[Opts.stickyKeys[key]] = Opts.values[key]
+                else:
+                    Opts.setValue(key, go.Option().CurrentListOptionIndex)
                 break
 
 
@@ -934,12 +919,12 @@ def removeNesting(rgCrv0):
     rgCrv_WIP.Dispose()
 
 
-def doesCurvePassTypeFilter(rgCurve0, filterSettings):
+def doesCurvePassTypeFilter(rgC_In, filterSettings):
     """
     Returns: bool, str(Log message)
     """
 
-    sType_c0 = rgCurve0.GetType().Name
+    sType_c0 = rgC_In.GetType().Name
 
     if sType_c0 == 'PolyCurve':
         if filterSettings.bProcessPolyCrv:
@@ -965,14 +950,14 @@ def doesCurvePassTypeFilter(rgCurve0, filterSettings):
         else:
             return False, "Skipped ArcCurve."
 
-    if rgCurve0.IsLinear(1e-6):
+    if rgC_In.IsLinear(1e-6):
         if filterSettings.bProcessLinear:
             return True, None
         else:
             return False, "Skipped linear {}.".format(sType_c0)
     
     rc = xCurve.getArcCurve(
-            rgCrv0=rgCurve0,
+            rgCrv0=rgC_In,
             bTolByRatio=False,
             fTolRatio=None,
             fDevTol=1e-9,
@@ -986,7 +971,7 @@ def doesCurvePassTypeFilter(rgCurve0, filterSettings):
 
     if sType_c0 == "NurbsCurve":
         rc = xCurve.getEllipticalNurbsCurve(
-            rgCrv0=rgCurve0,
+            rgCrv0=rgC_In,
             bTolByRatio=False,
             fTolRatio=None,
             fDevTol=1e-9,
@@ -998,19 +983,19 @@ def doesCurvePassTypeFilter(rgCurve0, filterSettings):
             else:
                 return False, "Skipped elliptical-shaped {}.".format(sType_c0)
 
-        if rgCurve0.IsRational:
+        if rgC_In.IsRational:
             if filterSettings.bProcessOtherRat:
                 return True, None
             else:
                 return False, "Skipped rational non-arc, non-elliptical NurbsCurve."
 
 
-        if xCurve.Nurbs.hasInternalPolyknots(rgCurve0):
+        if xCurve.Nurbs.hasInternalPolyknots(rgC_In):
             if filterSettings.bProcessNonRatWithInternalPolyknot:
                 if not filterSettings.bProcessNonRatWithSomeFullPolyknot:
                     return True, None
                 else:
-                    if xCurve.Nurbs.hasSomeFullyMultiplePolyknots(rgCurve0):
+                    if xCurve.Nurbs.hasSomeFullyMultiplePolyknots(rgC_In):
                         return True, None
                     else:
                         return False, "Skipped non-rational NurbsCurve containing some internal full polyknots."
@@ -1018,9 +1003,9 @@ def doesCurvePassTypeFilter(rgCurve0, filterSettings):
                 return False, "Skipped non-rational NurbsCurve containing some internal polyknots"
 
 
-        if xCurve.Nurbs.isUniform(rgCurve0):
+        if xCurve.Nurbs.isUniform(rgC_In):
             if filterSettings.bProcessUniformNonRat:
-                if rgCurve0.SpanCount == 1:
+                if rgC_In.SpanCount == 1:
                     if filterSettings.bProcessBezierNonRat:
                         return True, None
                     else:
@@ -1036,16 +1021,15 @@ def doesCurvePassTypeFilter(rgCurve0, filterSettings):
             return False, "Skipped other non-rational NurbsCurve."
 
 
-def rebuildCurve(rgCurve0, fDevTol, iDegree=3, iMinCpCt=None, iMaxCpCt=20, iPreserveEndG=1, bFurtherTranslateCps=True, bDebug=False):
+def rebuildCurve_OLD(rgC_In, fDevTol, iDegree=3, iMinCpCt=None, iMaxCpCt=20, iPreserveEndG=1, bFurtherTranslateCps=True, bDebug=False):
     """
 
     Parameters:
         fDevTol:
-            < 0: Do not limit deviation.
-            >= 0: Use this exact value for min. curve deviation tolerance.
+            Rhino.RhinoMath.UnsetValue: Do not limit deviation.
+            >= 0.0: Use this exact value for min. curve deviation tolerance.
         iDegree:
-            0: Do not limit degree.
-            < 0: Match the input curve's degree.
+            <= 0: Match the input curve's degree.
             > 0: Use this exact value for degree.
         iMinCpCt:
             in (0, 1): Do not limit min. CP count.
@@ -1069,39 +1053,35 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, iMinCpCt=None, iMaxCpCt=20, iPres
             None, None, str(Feedback)
     """
     
-    sCrvType = rgCurve0.GetType().Name
+    sCrvType = rgC_In.GetType().Name
     
     if sCrvType == "NurbsCurve":
-        nc_In = rgCurve0.Duplicate()
+        nc_In = rgC_In.Duplicate()
     else:
-        nc_In = rgCurve0.ToNurbsCurve()
+        nc_In = rgC_In.ToNurbsCurve()
     
     if not nc_In:
-        return None, None, "NurbsCurve could not be constructed from {}.".format(rgCurve0)
+        return None, None, "NurbsCurve could not be constructed from {}.".format(rgC_In)
 
     bPreserveEndG1 = (iPreserveEndG >= 1)
     bPreserveEndG2 = (iPreserveEndG == 2)
 
-    if iDegree < 0:
-        iDegs = nc_In.Degree,
-    elif not iDegree:
-        if bPreserveEndG2:
-            iDegs = 5,
-        else:
-            iDegs = 3, 5
+    if iDegree <= 0:
+        calc_iDegree = nc_In.Degree,
     else:
-        iDegs = iDegree,
+        calc_iDegree = iDegree,
 
-    if bDebug: sEval = 'iDegs'; print(sEval + ':', eval(sEval))
+    if bDebug: sEval = 'calc_iDegree'; print(sEval,'=',eval(sEval))
 
-    if 1 in iDegs:
+    if calc_iDegree == 1:
         if nc_In.IsClosed:
             return None, None, "Skip closed curve for Degree 1 conversion."
 
 
-        # Attempt to replace curve with a line.
+        # Attempt to replace curve with a degree-1, 2-CP NurbsCurve.
         # Don't Rebuild a degree 1 curve with more than 2 control points
-        # because smooth curves, not polylines, should be the geometry output of this function.
+        # because smooth curves, not polylines, should be the geometry output
+        # of this function.
         nc_Out = nc_In.Rebuild(
                 pointCount=2,
                 degree=1,
@@ -1113,22 +1093,25 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, iMinCpCt=None, iMaxCpCt=20, iPres
             return None, None, "Could not rebuild curve to a 2-point degree 1."
 
 
-        rc = spb_CrvDeviation.isMaxClosestDistBtwn2CrvsWithinTol(
+        bWithinTol, dev = spb_CrvDeviation.isMaxClosestDistBtwn2CrvsWithinTol(
             nc_In,
             nc_Out,
             tolerance=fDevTol)
-        if rc is not False:
-            dev = rc
+
+        if bWithinTol:
             return nc_Out, dev, None
 
 
-    ct_cp = (iDegs[0] + 1 if not iMinCpCt
-             else (iMinCpCt if iMinCpCt >= iDegs[0] + 1 else iDegs[0] + 1))
+    if iMinCpCt >= calc_iDegree + 1:
+        ct_cp = iMinCpCt
+    else:
+        ct_cp = calc_iDegree + 1
+
 
     if iMaxCpCt > 0:
         if iMaxCpCt < ct_cp:
             return None, None, "Minimum control point count for curve degree already exceeds maximum allowed."
-    elif iMaxCpCt == -1: 
+    elif iMaxCpCt == Rhino.RhinoMath.UnsetValue: 
         iMaxCpCt = nc_In.Points.Count
 
     dev = None
@@ -1155,8 +1138,8 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, iMinCpCt=None, iMaxCpCt=20, iPres
 
 
             if bDebug:
-                sEval = 'ct_cp'; print(sEval + ':', eval(sEval),)
-                sEval = 'iDeg'; print(sEval + ':', eval(sEval))
+                sEval = 'ct_cp'; print(sEval,'=',eval(sEval),)
+                sEval = 'iDeg'; print(sEval,'=',eval(sEval))
 
             #
             #
@@ -1190,7 +1173,7 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, iMinCpCt=None, iMaxCpCt=20, iPres
             if bFurtherTranslateCps:
                 rc = spb_NurbsCrv_fitByTranslatingControlPts.fitCurve(
                         nc_Out,
-                        rgCurve0,
+                        rgC_In,
                         bPreserveEndTans=bPreserveEndG1,
                         bDebug=bDebug)
                 if rc is not None:
@@ -1198,12 +1181,11 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, iMinCpCt=None, iMaxCpCt=20, iPres
                     nc_Out = rc
 
 
-            rc = spb_CrvDeviation.isMaxClosestDistBtwn2CrvsWithinTol(
+            bWithinTol, dev = spb_CrvDeviation.isMaxClosestDistBtwn2CrvsWithinTol(
                 nc_In,
                 nc_Out,
                 tolerance=fDevTol)
-            if rc is not False:
-                dev = rc
+            if bWithinTol:
                 return nc_Out, dev, None
 
             # To next degree.
@@ -1211,6 +1193,331 @@ def rebuildCurve(rgCurve0, fDevTol, iDegree=3, iMinCpCt=None, iMaxCpCt=20, iPres
         # To next control point count increment.
 
         ct_cp += 1
+
+
+def rebuildCurve(nc_In, iDegree, iCpCt, iPreserveEndG, bFurtherTranslateCps, bDebug=False):
+    """
+    Executes a specific Rebuild operation. No iteration. No deviation checking.
+    Parameters:
+        nc_In (NurbsCurve): The input curve to rebuild.
+        iDegree (int): Exact degree to use.
+        iCpCt (int): Exact control point count to use.
+        iPreserveEndG (int): 0=G0, 1=G1, 2=G2
+    Returns: 
+        rg.NurbsCurve on success, or None on failure.
+    """
+    bPreserveEndG1 = (iPreserveEndG >= 1)
+    bPreserveEndG2 = (iPreserveEndG == 2)
+
+    # Degree 1, 2-CP curves cannot sustain G1/G2 modifications.
+    if iDegree == 1 and iCpCt == 2:
+        bPreserveEndG1 = False
+        bPreserveEndG2 = False
+
+    nc_Out = nc_In.Rebuild(
+            pointCount=iCpCt,
+            degree=iDegree,
+            preserveTangents=bPreserveEndG1)
+
+    if nc_Out is None:
+        return None
+
+    if bPreserveEndG2:
+        bSuccess = nc_Out.SetEndCondition(
+            bSetEnd=False,
+            continuity=rg.NurbsCurve.NurbsCurveEndConditionType.Curvature,
+            point=nc_Out.PointAtStart,
+            tangent=nc_In.TangentAtStart,
+            curvature=nc_In.CurvatureAt(nc_In.Domain.T0))
+        if not bSuccess and bDebug: print("SetEndCondition (Start) failed.")
+            
+        bSuccess = nc_Out.SetEndCondition(
+            bSetEnd=True,
+            continuity=rg.NurbsCurve.NurbsCurveEndConditionType.Curvature,
+            point=nc_Out.PointAtEnd,
+            tangent=nc_In.TangentAtEnd,
+            curvature=nc_In.CurvatureAt(nc_In.Domain.T1))
+        if not bSuccess and bDebug: print("SetEndCondition (End) failed.")
+
+    if bFurtherTranslateCps:
+        rc = spb_NurbsCrv_fitByTranslatingControlPts.fitCurve(
+                nc_Out,
+                nc_In, # Passing the original NurbsCurve as reference
+                bPreserveEndTans=bPreserveEndG1,
+                bDebug=bDebug)
+        if rc is not None:
+            nc_Out.Dispose()
+            nc_Out = rc
+
+    return nc_Out
+
+
+def areApproximatelyEqual(a, b, relTol, absTol=Rhino.RhinoMath.ZeroTolerance):
+    # Absolute comparison.
+    delta = abs(a-b)
+    if delta <= absTol:
+        return True
+
+    # Relative comparison.
+    maxAbs = max(abs(a), abs(b))
+    return delta / maxAbs <= relTol
+
+
+def areRequiredContinuitiesOfEndsOfCurvePreserved(nc_In, nc_Out, iPreserveEndG, fTol_Dist=None, fTol_Angle=None):
+    """
+    Parameters:
+        nc_In
+        nc_Out
+        iPreserveEndG
+        fTol_Dist: float
+        fTol_Angle: float of degrees (not radians)
+    Returns:
+        tuple of (bool, str)
+    """
+
+    if fTol_Dist is None:
+        fTol_Dist = 0.1 * sc.doc.ModelAbsoluteTolerance
+    if fTol_Angle is None:
+        fTol_Angle = sc.doc.ModelAngleToleranceDegrees
+
+
+    # --- G0 (POSITION) ---
+    bPointsMatchAtStart = nc_Out.PointAtStart.EpsilonEquals(nc_In.PointAtStart, fTol_Dist)
+    bPointsMatchAtEnd = nc_Out.PointAtEnd.EpsilonEquals(nc_In.PointAtEnd, fTol_Dist)
+
+    if not (bPointsMatchAtStart or bPointsMatchAtEnd):
+        if not bPointsMatchAtStart and not bPointsMatchAtEnd:
+            return False, "Both start and end point locations have changed."
+        elif not bPointsMatchAtStart:
+            return False, "Start point location has changed."
+        else:
+            return False, "End point location has changed."
+
+    if iPreserveEndG == 0:
+        return True, ""
+
+
+    # --- G1 (TANGENCY) ---
+    angle_diff_Tan_start_Deg = Rhino.RhinoMath.ToDegrees(rg.Vector3d.VectorAngle(nc_In.TangentAtStart, nc_Out.TangentAtStart))
+    angle_diff_Tan_end_Deg   = Rhino.RhinoMath.ToDegrees(rg.Vector3d.VectorAngle(nc_In.TangentAtEnd, nc_Out.TangentAtEnd))
+
+    bTansMatchAtStart = angle_diff_Tan_start_Deg <= fTol_Angle
+    bTansMatchAtEnd   = angle_diff_Tan_end_Deg   <= fTol_Angle
+
+    if not (bTansMatchAtStart or bTansMatchAtEnd):
+        if not bTansMatchAtStart and not bTansMatchAtEnd:
+            return False, "Both start and end tangency angles have changed."
+        elif not bTansMatchAtStart:
+            return False, "Start tangency angle has changed."
+        else:
+            return False, "End tangency angle has changed."
+
+    if iPreserveEndG == 1:
+        return True, ""
+
+
+    # --- G2 (CURVATURE) ---
+    vCrvtr_start_In = nc_In.CurvatureAt(nc_In.Domain.T0)
+    vCrvtr_end_In = nc_In.CurvatureAt(nc_In.Domain.T1)
+    vCrvtr_start_Out = nc_Out.CurvatureAt(nc_Out.Domain.T0)
+    vCrvtr_end_Out = nc_Out.CurvatureAt(nc_Out.Domain.T1)
+
+    # 1. Magnitude Check
+    bCrvtrMagMatchAtStart = areApproximatelyEqual(vCrvtr_start_In.Length, vCrvtr_start_Out.Length, 1e-9)
+    bCrvtrMagMatchAtEnd   = areApproximatelyEqual(vCrvtr_end_In.Length, vCrvtr_end_Out.Length, 1e-9)
+
+    if not (bCrvtrMagMatchAtStart and bCrvtrMagMatchAtEnd):
+        if not bCrvtrMagMatchAtStart and not bCrvtrMagMatchAtEnd:
+            return False, "Both start and end curvature magnitudes have changed."
+        elif not bCrvtrMagMatchAtStart:
+            return False, "Start curvature magnitude has changed."
+        else:
+            return False, "End curvature magnitude has changed."
+
+    # 2. Angle Check (Only run if magnitudes > 0 to prevent VectorAngle crash)
+    if vCrvtr_start_In.Length > 1e-12 and vCrvtr_start_Out.Length > 1e-12:
+        angle_start = Rhino.RhinoMath.ToDegrees(rg.Vector3d.VectorAngle(vCrvtr_start_In, vCrvtr_start_Out))
+        bCrvtrAngleMatchAtStart = angle_start <= fTol_Angle
+    else:
+        # If magnitudes are effectively zero, angles don't matter.
+        bCrvtrAngleMatchAtStart = True
+
+    if vCrvtr_end_In.Length > 1e-12 and vCrvtr_end_Out.Length > 1e-12:
+        angle_end   = Rhino.RhinoMath.ToDegrees(rg.Vector3d.VectorAngle(vCrvtr_end_In, vCrvtr_end_Out))
+        bCrvtrAngleMatchAtEnd   = angle_end   <= fTol_Angle
+    else:
+        bCrvtrAngleMatchAtEnd = True
+
+    if not (bCrvtrAngleMatchAtStart or bCrvtrAngleMatchAtEnd):
+        if not bCrvtrAngleMatchAtStart and not bCrvtrAngleMatchAtEnd:
+            return False, "Both start and end curvature angles have changed."
+        elif not bCrvtrAngleMatchAtStart:
+            return False, "Start curvature angle has changed."
+        else:
+            return False, "End curvature angle has changed."
+
+
+    return True, ""
+
+
+def tryRebuildDeg1(nc_In, iPreserveEndG=0, bDebug=False):
+    if nc_In.IsClosed:
+        return None, Rhino.RhinoMath.UnsetValue
+            
+    # Optional: Check if G1 was requested but the input is clearly not a line
+    if iPreserveEndG >= 1 and not nc_In.IsLinear(fDevTol if fDevTol >= 0 else sc.doc.ModelAbsoluteTolerance):
+        if bDebug: print("Warning: G1/G2 requested on Degree 1, but input is not linear.")
+
+    nc_Out = rebuildCurve(
+        nc_In=nc_In,
+        iDegree=1,
+        iCpCt=2,
+        iPreserveEndG=0,
+        bFurtherTranslateCps=False,
+        bDebug=bDebug)
+    if nc_Out is None:
+        return None, Rhino.RhinoMath.UnsetValue
+            
+    bWithinTol, dev = spb_CrvDeviation.isMaxClosestDistBtwn2CrvsWithinTol(nc_In, nc_Out, fDevTol)
+    if not bWithinTol:
+        return None, dev
+    bMatch, sReport = areRequiredContinuitiesOfEndsOfCurvePreserved(nc_In, nc_Out, iPreserveEndG)
+    if not bMatch:
+        if bDebug: print(sReport)
+        return None, Rhino.RhinoMath.UnsetValue
+
+    return nc_Out, dev
+
+
+def findRebuild(rgC_In, fDevTol, tDegrees, iMinCpCt, iMaxCpCt, iPreserveEndG, bFurtherTranslateCps, bDebug=False):
+    """
+    Iterates through degrees and CP counts to find a valid rebuild within tolerance.
+
+    Parameters:
+        rgC_In
+        fDevTol:
+            < 0.0: Do not limit deviation.
+            >= 0.0: Use this exact value for min. curve deviation tolerance.
+        tDegrees (tuple):
+            (0,): Match the input curve's degree.
+            Otherwise tuple(Use these exact values and order for degrees).
+        iMinCpCt:
+        iMaxCpCt:
+            < 2: Match the input curve's max CP count.
+            >= 2: Use this exact value for max CP count.
+        iPreserveEndG:
+        bFurtherTranslateCps:
+        bDebug:
+
+
+    Returns:
+        rg.NurbsCurve, float(Max. deviation), str(Feedback)
+    """
+    sCrvType = rgC_In.GetType().Name
+    if sCrvType == "NurbsCurve":
+        nc_In = rgC_In.Duplicate()
+    else:
+        nc_In = rgC_In.ToNurbsCurve()
+        
+    if not nc_In:
+        return None, None, "NurbsCurve could not be constructed from {}.".format(rgC_In)
+
+    if (len(tDegrees) == 0) and (0 in tDegrees):
+        iDegs = (nc_In.Degree,)
+    else:
+        iDegs = tDegrees
+    if bDebug: print('iDegs:', iDegs)
+
+    if bDebug: sEval = "iMinCpCt"; print(sEval,'=',eval(sEval))
+    if iMinCpCt < (min(iDegs) + 1):
+        ct_cp = min(iDegs) + 1
+    else:
+        ct_cp = iMinCpCt
+    if bDebug: sEval = "ct_cp"; print(sEval,'=',eval(sEval))
+
+    if iMaxCpCt >= 2:
+        if iMaxCpCt < iMinCpCt:
+            sReport = "Minimum control point count for curve degree already exceeds maximum allowed."
+            if bDebug: print(sReport)
+            return None, None, sReport
+    else:
+        if nc_In.Points.Count < iMinCpCt:
+            sReport = "Maximum control point count allowed is less than minimum allowed."
+            if bDebug: print(sReport)
+            return None, None, sReport
+
+    dev = Rhino.RhinoMath.UnsetValue
+    iC = 0
+
+    if bDebug: print('-'*40,"CP CT LOOP")
+
+    while True:
+        if sc.escape_test(False):
+            s = "Script stopped at iteration {} with last deviation of {}.".format(ct_cp, dev)
+            return None, dev, s
+        if bDebug:
+            print('-'*30)
+            sEval = "ct_cp"; print(sEval,'=',eval(sEval))
+            print('-'*10)
+
+        for iD, iDeg in enumerate(iDegs):
+
+            if iDeg == 0:
+                iDegree = nc_In.Degree
+            else:
+                iDegree = iDeg
+            if bDebug: sEval = "iDegree"; print(sEval,'=',eval(sEval))
+
+            if ct_cp < (iDeg + 1):
+                if bDebug:
+                    print("Not enough CPs for degree.")
+                continue
+
+            if iMaxCpCt < 2 and ct_cp > nc_In.Points.Count:
+                if bDebug: sEval = "iMaxCpCt < 2 and ct_cp > nc_In.Points.Count"; print(sEval,'=',eval(sEval))
+                if sCrvType == "NurbsCurve" and xCurve.Nurbs.isUniform(nc_In):
+                    pass
+                elif sCrvType == "PolyCurve":
+                    pass
+                else:
+                    return None, dev, None
+            elif iMaxCpCt > 0 and ct_cp > iMaxCpCt:
+                if bDebug: sEval = "iMaxCpCt > 0 and ct_cp > iMaxCpCt"; print(sEval,'=',eval(sEval))
+                return None, dev, None
+
+            if iDeg == 1:
+                nc_Out, dev = tryRebuildDeg1(
+                    nc_In=nc_In,
+                    iPreserveEndG=iPreserveEndG,
+                    bDebug=bDebug)
+            else:
+                nc_Out = rebuildCurve(
+                    nc_In=nc_In,
+                    iDegree=iDegree,
+                    iCpCt=ct_cp,
+                    iPreserveEndG=iPreserveEndG,
+                    bFurtherTranslateCps=False,
+                    bDebug=bDebug)
+            
+            if nc_Out is None:
+                if bDebug:
+                    print("rebuildCurve failed.")
+                continue
+
+            # Evaluation Call!
+            bWithinTol, dev = spb_CrvDeviation.isMaxClosestDistBtwn2CrvsWithinTol(nc_In, nc_Out, fDevTol)
+            if bWithinTol:
+                if bDebug:
+                    print("FOUND CURVE WITHIN TOL.")
+                return nc_Out, dev, None
+            if bDebug:
+                print("OUT OF TOL.")
+                
+            nc_Out.Dispose() # Clean up failed attempt from memory
+
+        ct_cp += 1
+
+        iC += 1
 
 
 def rebuildPolyCurveSegments(rgPolyCrv0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreserveEndG, filterSettings, bDebug=False):
@@ -1232,7 +1539,7 @@ def rebuildPolyCurveSegments(rgPolyCrv0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, i
     bSomeRebuilt = False # Could also be determined by comparing sFails and segment counts.
 
     for iSeg, seg_In in enumerate(pc_WIP.DuplicateSegments()):
-        if bDebug: sEval = 'iSeg'; print(sEval+':',eval(sEval))
+        if bDebug: sEval='iSeg'; print(sEval,'=',eval(sEval))
         if iSeg == 2:
             pass
 
@@ -1241,7 +1548,7 @@ def rebuildPolyCurveSegments(rgPolyCrv0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, i
         filterSettings.bProcessPolyCrv = True
 
         bPass, sLog = doesCurvePassTypeFilter(
-            rgCurve0=seg_In,
+            rgC_In=seg_In,
             filterSettings=filterSettings,
             )
 
@@ -1255,8 +1562,8 @@ def rebuildPolyCurveSegments(rgPolyCrv0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, i
 
 
         ##
-        seg_forOut, dev, sLog = rebuildCurve(
-            rgCurve0=seg_In,
+        seg_forOut, dev, sLog = findRebuild(
+            rgC_In=seg_In,
             fDevTol=fDevTol,
             iDegree=iDegree,
             iPreserveEndG=iPreserveEndG,
@@ -1311,24 +1618,82 @@ def _coerceRhinoObject(rhObj):
     return rdObj
 
 
-def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreserveEndG, bFurtherTranslateCps, filterSettings, bReplace, bEcho=True, bDebug=False):
+def _formatDistance(fDistance):
+    if fDistance is None:
+        return "(No deviation provided)"
+    elif fDistance < 10.0**(-(sc.doc.DistanceDisplayPrecision-3)):
+        return "{:.2e}".format(fDistance)
+    else:
+        return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
+
+
+def _createCurveComparisonReport(rgCrv0, rgCrv_Res, crv_dev):
+    
+    s = "Original curve is a {}.".format(rgCrv0.GetType().Name)
+    
+    # Uncomment this only if needed:
+    #    if not rgNurbsCrv0:
+    #        s += "\nNurbsCurve could not be constructed from {}.".format(curveOrEdge0)
+    #        s += "  Input vs. output will not be stated."
+    #        return s
+    
+    if not rgCrv_Res:
+        s += " Curve could not be created using entered parameters."
+        return s
+
+    sType_Crv_Res = rgCrv_Res.GetType().Name
+
+    if sType_Crv_Res != 'NurbsCurve':
+        s += "Output curve is a {}.".format(sType_Crv_Res)
+        return s
+
+    if not isinstance(rgCrv0, rg.NurbsCurve):
+        nc0 = rgCrv0.ToNurbsCurve()
+        s += " Its NURBS equivalent is used for comparison.\n"
+
+    if sType_Crv_Res == 'NurbsCurve':
+        s += "  Prop: Input->Output ::"
+        s += "  {}: {}->{}".format("Deg", nc0.Degree, rgCrv_Res.Degree)
+        s += "  {}: {}->{}".format("PtCt", nc0.Points.Count, rgCrv_Res.Points.Count)
+        s += "  {}: {}->{}".format("IsUniform",
+                str(xCurve.Nurbs.isUniform(nc0))[0],
+                str(xCurve.Nurbs.isUniform(rgCrv_Res))[0])
+        s += "  {}: {}->{}".format("IsRational",
+                str(nc0.IsRational)[0],
+                str(rgCrv_Res.IsRational)[0])
+        s += "  {}: {}->{}".format("IsClosed",
+                str(nc0.IsClosed)[0],
+                str(rgCrv_Res.IsClosed)[0])
+        if nc0.IsClosed or rgCrv_Res.IsClosed:
+            s += "  {}: {}->{}".format("IsPeriodic",
+                    str(nc0.IsPeriodic)[0],
+                    str(rgCrv_Res.IsPeriodic)[0])
+        
+        nc0.Dispose()
+        
+        if crv_dev:
+            s += "  Deviation: {}".format(_formatDistance(crv_dev))
+        else:
+            s += "  Curve deviation cannot be calculated!"
+
+    return s
+
+
+def processCurves(curvesAndEdges0, fDevTol, tDegrees, iMinCpCt, iMaxCpCt, iPreserveEndG, bFurtherTranslateCps, filterSettings, bReplace, bEcho=True, bDebug=False):
     """
     Parameters:
         curvesAndEdges0 = (GUIDs of CurveObjects) or BrepEdges
         fDevTol:
             < 0: Do not limit deviation.
             >= 0: Use this exact value for min. curve deviation tolerance.
-        iDegree:
-            0: Do not limit degree.
-            < 0: Match the input curve's degree.
-            > 0: Use this exact value for degree.
+        tDegrees (tuple):
+            (0,): Match the input curve's degree.
+            Otherwise tuple(Use these exact values and order for degrees).
         iMinCpCt:
-            in (0, 1): Do not limit min. CP count.
-            <= -1: Match the input curve's min. CP count.
+            < 2: Match the input curve's min. CP count.
             >= 2: Use this exact value for min. CP count.
         iMaxCpCt:
-            in (0, 1): Do not limit max. CP count.
-            <= -1: Match the input curve's max CP count.
+            < 2: Match the input curve's max CP count.
             >= 2: Use this exact value for max CP count.
         iPreserveEndG:
         bFurtherTranslateCps:
@@ -1337,62 +1702,6 @@ def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreser
         bDebug:
 
     """
-
-    def formatDistance(fDistance):
-        if fDistance is None:
-            return "(No deviation provided)"
-        elif fDistance < 10.0**(-(sc.doc.DistanceDisplayPrecision-3)):
-            return "{:.2e}".format(fDistance)
-        else:
-            return "{:.{}f}".format(fDistance, sc.doc.ModelDistanceDisplayPrecision)
-
-
-    def stringOutput(rgCrv0, rgCrv_Res, crv_dev):
-    
-        s = "Original curve is a {}.".format(rgCrv0.GetType().Name)
-    
-        # Uncomment this only if needed:
-        #    if not rgNurbsCrv0:
-        #        s += "\nNurbsCurve could not be constructed from {}.".format(curveOrEdge0)
-        #        s += "  Input vs. output will not be stated."
-        #        return s
-    
-        if rgCrv_Res:
-            sType_Crv_Res = rgCrv_Res.GetType().Name
-            
-            if sType_Crv_Res == 'NurbsCurve':
-                nc0 = rgCrv0.ToNurbsCurve()
-            
-            if sType_Crv_Res == 'NurbsCurve':
-                s += "  Prop:I,O"
-                s += "  {}:{},{}".format("Deg", nc0.Degree, rgCrv_Res.Degree)
-                s += "  {}:{},{}".format("PtCt", nc0.Points.Count, rgCrv_Res.Points.Count)
-                s += "  {}:{},{}".format("IsUniform",
-                        str(xCurve.Nurbs.isUniform(nc0))[0],
-                        str(xCurve.Nurbs.isUniform(rgCrv_Res))[0])
-                s += "  {}:{},{}".format("IsRational",
-                        str(nc0.IsRational)[0],
-                        str(rgCrv_Res.IsRational)[0])
-                s += "  {}:{},{}".format("IsClosed",
-                        str(nc0.IsClosed)[0],
-                        str(rgCrv_Res.IsClosed)[0])
-                if nc0.IsClosed or rgCrv_Res.IsClosed:
-                    s += "  {}:{},{}".format("IsPeriodic",
-                            str(nc0.IsPeriodic)[0],
-                            str(rgCrv_Res.IsPeriodic)[0])
-        
-            nc0.Dispose()
-        
-            if crv_dev:
-                s += "  Deviation: {}".format(formatDistance(crv_dev))
-            else:
-                s += "  Curve deviation cannot be calculated!"
-    
-        else:
-            s = "Curve could not be created using entered parameters."
-
-        return s
-
 
     rdCs_In = []
     gCrvs0 = []
@@ -1445,7 +1754,7 @@ def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreser
             rgCrv0 = rc
 
         bPass, sLog = doesCurvePassTypeFilter(
-            rgCurve0=rgCrv0,
+            rgC_In=rgCrv0,
             filterSettings=filterSettings,
             )
         if not bPass:
@@ -1462,7 +1771,7 @@ def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreser
             rc = rebuildPolyCurveSegments(
                 rgPolyCrv0=rgCrv0,
                 fDevTol=calc_fDevTol,
-                iDegree=calc_iDegree,
+                tDegrees=tDegrees,
                 iMinCpCt=calc_iMinCpCt,
                 iMaxCpCt=calc_iMaxCpCt,
                 iPreserveEndG=iPreserveEndG,
@@ -1480,8 +1789,8 @@ def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreser
                 s += "  {} segments not replaced.".format(len(devs_Fail))
                 if devs_Fail:
                     s += "  Last deviations ranged [{}, {}].".format(
-                        formatDistance(min(devs_Fail)),
-                        formatDistance(max(devs_Fail)),
+                        _formatDistance(min(devs_Fail)),
+                        _formatDistance(max(devs_Fail)),
                         )
                 devs_all.extend(devs_Pass)
                 dev = max(devs_all) if devs_all else None
@@ -1489,10 +1798,10 @@ def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreser
             sSummary = None
         else:
             # Not Polycurve and process segments individually.
-            rgCrv_Res, dev, sLog = rebuildCurve(
-                rgCurve0=rgCrv0,
+            rgCrv_Res, dev, sLog = findRebuild(
+                rgC_In=rgCrv0,
                 fDevTol=fDevTol,
-                iDegree=iDegree,
+                tDegrees=tDegrees,
                 iMinCpCt=iMinCpCt,
                 iMaxCpCt=iMaxCpCt,
                 iPreserveEndG=iPreserveEndG,
@@ -1501,7 +1810,7 @@ def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreser
                 )
 
             if bDebug or len(curvesAndEdges0) == 1:
-                sSummary = stringOutput(rgCrv0, rgCrv_Res, dev)
+                sSummary = _createCurveComparisonReport(rgCrv0, rgCrv_Res, dev)
 
             if rgCrv_Res is None:
                 if sLog is not None:
@@ -1510,8 +1819,8 @@ def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreser
                 elif dev is not None:
                     fTols_needed.append(dev)
                     if bDebug:
-                        s  = "Curve could not be Rebuilt within {}.".format(formatDistance(fDevTol))
-                        s += "  Last deviation was {}.".format(formatDistance(dev))
+                        s  = "Curve could not be Rebuilt within {}.".format(_formatDistance(fDevTol))
+                        s += "  Last deviation was {}.".format(_formatDistance(dev))
                         print(s)
                 continue
 
@@ -1576,10 +1885,10 @@ def processCurves(curvesAndEdges0, fDevTol, iDegree, iMinCpCt, iMaxCpCt, iPreser
                 s += "  Tolerance needed: {:.{}e}".format(fTols_needed[0], 2)
             if gCrvs0_Replaced:
                 s += "Curve was replaced"
-                s += " at a deviation of {:.{}e}.".format(devs_all[0], 2)
+                s += " at a deviation of {}.".format(_formatDistance(devs_all[0]))
             if gCrvs_Added:
                 s += "Curve was added"
-                s += " at a deviation of {:.{}e}.".format(devs_all[0], 2)
+                s += " at a deviation of {}.".format(_formatDistance(devs_all[0]))
     else:
         s = "Out of {} total curves:".format(len(curvesAndEdges0))
         for sFail in set(sFails):
@@ -1622,28 +1931,21 @@ def main():
         dialog = FitRebuildCurveDialog()
         if not dialog.ShowModal(Rhino.UI.RhinoEtoApp.MainWindow): return
 
-    fDevTol = Opts.values['fDevTol'] if Opts.values['bLimitCrvDev'] else -1.0
-    if not Opts.values['bLimitDegree']:
-        iDegree = 0
-    elif Opts.values['bMatchDegree']:
-        iDegree = -1
+    fDevTol = Opts.values['fDevTol'] if Opts.values['bLimitCrvDev'] else Rhino.RhinoMath.UnsetValue
+    if Opts.values['bMatchDegree']:
+        tDegrees = (0,) # 0 is our sentinel value for matching input degree
     else:
-        iDegree = Opts.values['iDegree']
+        sDeg = Opts.values['sDegrees']
+        tDegrees = tuple(int(x) for x in sDeg.split(','))
 
-    if Opts.values['bLimitMinCpCt']:
-        iMinCpCt = Opts.values['iMinCpCt']
-    else:
-        iMinCpCt = -1
+    iMinCpCt = Opts.values['iMinCpCt']
 
-    if not Opts.values['bLimitMaxCpCt']:
+    if Opts.values['bMatchMaxCpCt']:
         iMaxCpCt = 0
-    elif Opts.values['bMatchMaxCpCt']:
-        iMaxCpCt = -1
     else:
         iMaxCpCt = Opts.values['iMaxCpCt']
 
     iPreserveEndG = Opts.values['iPreserveEndG']
-    sEval = 'iPreserveEndG'; print(sEval,':',eval(sEval))
     bFurtherTranslateCps = Opts.values['bFurtherTranslateCps']
 
     filterSettings = FilterSettings()
@@ -1674,7 +1976,7 @@ def main():
     rc = processCurves(
         curvesAndEdges0=gCrvs0_Preselected if gCrvs0_Preselected else objrefs,
         fDevTol=fDevTol,
-        iDegree = iDegree,
+        tDegrees = tDegrees,
         iMinCpCt = iMinCpCt,
         iMaxCpCt = iMaxCpCt,
         iPreserveEndG = iPreserveEndG,

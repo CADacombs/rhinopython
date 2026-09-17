@@ -1,3 +1,6 @@
+#! python 2
+from __future__ import absolute_import, division, print_function, unicode_literals
+
 """
 This script is an alternative to _Drape. It uses Greville point locations for fitting to
 the target object and allows selection of a starting surface.
@@ -8,9 +11,6 @@ Starting surface's Greville points are used for fitting analysis.
 Send any questions, comments, or script development service needs to
 @spb on the McNeel Forums, https://discourse.mcneel.com/
 """
-
-#! python 2  Must be on a line number less than 32.
-from __future__ import absolute_import, division, print_function, unicode_literals
 
 """
 191018-19: Created.
@@ -26,7 +26,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 250119: Replaced the 2 bool options for missed targets to a 3-choice list.
         Now, negative values are allowed for SpansBeyondEachSide.
 250120-21: Added routine for assign lowest neighbor to target misses.
-
+260917: Corrected python 2 shebang for Script Editor.
 
 TODO:
     Create new HighToLow routine with a slightly new approach.
